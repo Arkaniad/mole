@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/lajosdeme/mole/internal/budget"
+	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/obs"
 	"github.com/lajosdeme/mole/internal/pricing"
@@ -37,6 +38,7 @@ Usage:
 
 Commands:
   migrate      Apply pending database migrations
+  config       Get, set, and list settings (see: mole config)
   doctor       Check configuration and environment
   sessions     List recent sessions
   trace        Show the cost and span breakdown for one session
@@ -76,6 +78,8 @@ func run(args []string) error {
 		return nil
 	case "migrate":
 		return cmdMigrate(ctx, rest)
+	case "config":
+		return cmdConfig(ctx, rest)
 	case "doctor":
 		return cmdDoctor(ctx, rest)
 	case "sessions":
@@ -272,13 +276,64 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		report(drifted == 0, "ledger", fmt.Sprintf("%d session(s) reconciled, %d drifted", sessionCount, drifted))
 	}
 
-	report(false, "providers", "not configured (M1: search, fetch, LLM keys)")
-	report(false, "contact email", "not set (required before academic providers, M6)")
+	reportConfig(report)
 
 	if !ok {
 		fmt.Println("\nsome checks are informational until their milestone lands")
 	}
 	return nil
+}
+
+// reportConfig checks credentials and settings. These are the "verify at
+// startup, not in a README" requirements: a missing search key is a session
+// that fails on its first lead, and a missing contact address is a ban from an
+// academic provider that requires identification.
+func reportConfig(report func(bool, string, string)) {
+	cfg, err := config.Load()
+	if err != nil && !errors.Is(err, config.ErrNotConfigured) {
+		report(false, "config", err.Error())
+		return
+	}
+
+	if permsOK, detail := config.CheckPermissions(); !permsOK {
+		// The config file holds API keys and nothing else protects them yet.
+		report(false, "config perms", detail)
+	} else {
+		report(true, "config perms", detail)
+	}
+
+	switch {
+	case cfg.Search.Provider == "":
+		report(false, "search provider", "not selected (run: mole config set search.provider brave|tavily)")
+	case cfg.Search.ActiveKey() == "":
+		report(false, "search provider",
+			fmt.Sprintf("%s selected but no key (run: mole config set search.%s-key ...)",
+				cfg.Search.Provider, cfg.Search.Provider))
+	default:
+		note := ""
+		if cfg.Search.Provider == "tavily" {
+			// Worth surfacing: it changes how many fetches a session makes.
+			note = " — returns page content, skips fetches"
+		}
+		report(true, "search provider",
+			fmt.Sprintf("%s, key %s%s", cfg.Search.Provider, config.Mask(cfg.Search.ActiveKey()), note))
+	}
+
+	if cfg.LLM.APIKey == "" {
+		report(false, "llm provider", "no key (run: mole config set llm.api-key ...)")
+	} else {
+		model := cfg.LLM.Model
+		if model == "" {
+			model = "(no default model set)"
+		}
+		report(true, "llm provider", fmt.Sprintf("%s, key %s", model, config.Mask(cfg.LLM.APIKey)))
+	}
+
+	if cfg.ContactEmail == "" {
+		report(false, "contact email", "not set — required by Unpaywall and NCBI before academic providers (M6)")
+	} else {
+		report(true, "contact email", cfg.ContactEmail)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -569,4 +624,134 @@ func cmdDevSeed(ctx context.Context, args []string) error {
 		sess.ID, core.FormatAmount(released, sess.BudgetUnit))
 	fmt.Printf("inspect: mole trace %s\n", sess.ID)
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// config
+// ---------------------------------------------------------------------------
+
+const configUsage = `mole config — settings and credentials
+
+Usage:
+  mole config list              Show all settings (secrets masked)
+  mole config get <key>         Print one value
+  mole config set <key> <value> Assign a value
+  mole config path              Print the config file location
+
+Keys:
+`
+
+func cmdConfig(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		printConfigUsage()
+		return nil
+	}
+	switch args[0] {
+	case "list":
+		return cmdConfigList()
+	case "get":
+		if len(args) != 2 {
+			return errors.New("usage: mole config get <key>")
+		}
+		return cmdConfigGet(args[1])
+	case "set":
+		if len(args) != 3 {
+			return errors.New("usage: mole config set <key> <value>")
+		}
+		return cmdConfigSet(args[1], args[2])
+	case "path":
+		fmt.Println(config.Path())
+		return nil
+	case "help", "-h", "--help":
+		printConfigUsage()
+		return nil
+	default:
+		return fmt.Errorf("unknown config subcommand %q", args[0])
+	}
+}
+
+func printConfigUsage() {
+	fmt.Print(configUsage)
+	w := newTabWriter()
+	for _, f := range config.Fields() {
+		secret := ""
+		if f.Secret {
+			secret = "  (secret)"
+		}
+		fmt.Fprintf(w, "  %s\t%s%s\n", f.Name, f.Help, secret)
+	}
+	_ = w.Flush()
+}
+
+// loadConfigForEdit tolerates a missing file: `mole config set` on a fresh
+// machine has to work, and that is the only way the file ever gets created.
+func loadConfigForEdit() (*config.Config, error) {
+	cfg, err := config.Load()
+	if err != nil && !errors.Is(err, config.ErrNotConfigured) {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func cmdConfigList() error {
+	cfg, err := loadConfigForEdit()
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%s\n\n", config.Path())
+	w := newTabWriter()
+	fmt.Fprintln(w, "KEY\tVALUE")
+	for _, f := range config.Fields() {
+		fmt.Fprintf(w, "%s\t%s\n", f.Name, config.Display(f, cfg))
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+
+	if ok, detail := config.CheckPermissions(); !ok {
+		fmt.Printf("\n! %s\n", detail)
+	}
+	return nil
+}
+
+func cmdConfigGet(key string) error {
+	cfg, err := loadConfigForEdit()
+	if err != nil {
+		return err
+	}
+	v, err := cfg.Get(key)
+	if err != nil {
+		return err
+	}
+	// Print secrets in full here: `get` on a single named key is a deliberate
+	// act, unlike `list`, which is browsing.
+	fmt.Println(v)
+	return nil
+}
+
+func cmdConfigSet(key, value string) error {
+	cfg, err := loadConfigForEdit()
+	if err != nil {
+		return err
+	}
+	if err := cfg.Set(key, value); err != nil {
+		return err
+	}
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+
+	f, _ := lookupConfigField(key)
+	fmt.Printf("set %s = %s\n", key, config.Display(f, cfg))
+	return nil
+}
+
+func lookupConfigField(name string) (config.Field, bool) {
+	for _, f := range config.Fields() {
+		if f.Name == name {
+			return f, true
+		}
+	}
+	return config.Field{}, false
 }

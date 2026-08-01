@@ -1,0 +1,340 @@
+// Package config stores machine-local settings and provider credentials.
+//
+// Secrets live here and nowhere else. §5.2 is explicit that keys must not
+// appear in .mcp.json — that file gets committed, and a key in it is a leaked
+// key. Everything Mole needs to authenticate is read from this file at
+// daemon start.
+//
+// Format is JSON rather than the TOML the sketch mentions, to keep the
+// dependency count at one. The file is written by `mole config set` rather
+// than hand-edited, so the ergonomic difference is small; revisit if users end
+// up editing it directly.
+package config
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+)
+
+// Config is the on-disk settings file.
+type Config struct {
+	// Search selects and authenticates the search backend.
+	Search SearchConfig `json:"search"`
+	// LLM selects and authenticates the model provider.
+	LLM LLMConfig `json:"llm"`
+
+	// ContactEmail is sent to academic providers that require identification
+	// (Unpaywall requires it; NCBI requires tool+email). Checked at startup
+	// rather than documented in a README, so a missing value is caught before
+	// it becomes a ban.
+	ContactEmail string `json:"contact_email,omitempty"`
+
+	// Budget defaults applied when a session does not specify.
+	DefaultBudgetUnit string `json:"default_budget_unit,omitempty"`
+	DefaultBudgetUSD  string `json:"default_budget_usd,omitempty"`
+	DefaultBudgetToks int64  `json:"default_budget_tokens,omitempty"`
+}
+
+type SearchConfig struct {
+	// Provider is "brave" or "tavily".
+	Provider string `json:"provider,omitempty"`
+	// BraveKey and TavilyKey are stored separately so switching providers does
+	// not require re-entering a key you already gave.
+	BraveKey  string `json:"brave_key,omitempty"`
+	TavilyKey string `json:"tavily_key,omitempty"`
+	// CostPerQueryMicros overrides the default price for the active provider,
+	// for users on a plan that differs from the published entry tier.
+	CostPerQueryMicros int64 `json:"cost_per_query_micros,omitempty"`
+}
+
+// ActiveKey returns the key for the selected provider.
+func (s SearchConfig) ActiveKey() string {
+	switch s.Provider {
+	case "brave":
+		return s.BraveKey
+	case "tavily":
+		return s.TavilyKey
+	}
+	return ""
+}
+
+type LLMConfig struct {
+	// Provider is "anthropic" or "openai-compatible".
+	Provider string `json:"provider,omitempty"`
+	APIKey   string `json:"api_key,omitempty"`
+	// BaseURL points at a self-hosted or proxied endpoint.
+	BaseURL string `json:"base_url,omitempty"`
+	// Model is the default model id.
+	Model string `json:"model,omitempty"`
+	// CheapModel handles chunk mining and extraction, where the strong model
+	// is not worth its price (§10.1).
+	CheapModel string `json:"cheap_model,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------
+
+// Dir is the config directory, honouring XDG.
+func Dir() string {
+	if p := os.Getenv("MOLE_CONFIG_DIR"); p != "" {
+		return p
+	}
+	base := os.Getenv("XDG_CONFIG_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ".mole"
+		}
+		base = filepath.Join(home, ".config")
+	}
+	return filepath.Join(base, "mole")
+}
+
+// Path is the config file location.
+func Path() string { return filepath.Join(Dir(), "config.json") }
+
+// ---------------------------------------------------------------------------
+// Load / Save
+// ---------------------------------------------------------------------------
+
+// ErrNotConfigured is returned by Load when no config file exists.
+var ErrNotConfigured = errors.New("config: not configured (run: mole init)")
+
+// Load reads the config, applying environment overrides.
+func Load() (*Config, error) {
+	c := &Config{}
+
+	b, err := os.ReadFile(Path())
+	switch {
+	case os.IsNotExist(err):
+		// Not fatal on its own: the environment may carry everything needed,
+		// which is how a container deployment supplies credentials.
+		c.applyEnv()
+		if c.Search.Provider == "" && c.LLM.APIKey == "" {
+			return c, ErrNotConfigured
+		}
+		return c, nil
+	case err != nil:
+		return nil, fmt.Errorf("config: read %s: %w", Path(), err)
+	}
+
+	if err := json.Unmarshal(b, c); err != nil {
+		return nil, fmt.Errorf("config: parse %s: %w", Path(), err)
+	}
+	c.applyEnv()
+	return c, nil
+}
+
+// applyEnv lets environment variables override the file. Containers and CI
+// supply secrets this way, and an env var should win over a stale file.
+func (c *Config) applyEnv() {
+	setIf := func(dst *string, keys ...string) {
+		for _, k := range keys {
+			if v := os.Getenv(k); v != "" {
+				*dst = v
+				return
+			}
+		}
+	}
+	setIf(&c.Search.Provider, "MOLE_SEARCH_PROVIDER")
+	setIf(&c.Search.BraveKey, "MOLE_BRAVE_API_KEY", "BRAVE_API_KEY")
+	setIf(&c.Search.TavilyKey, "MOLE_TAVILY_API_KEY", "TAVILY_API_KEY")
+	setIf(&c.LLM.APIKey, "MOLE_LLM_API_KEY", "ANTHROPIC_API_KEY")
+	setIf(&c.LLM.BaseURL, "MOLE_LLM_BASE_URL")
+	setIf(&c.LLM.Model, "MOLE_LLM_MODEL")
+	setIf(&c.ContactEmail, "MOLE_CONTACT_EMAIL")
+}
+
+// Save writes the config with owner-only permissions.
+//
+// The file holds API keys, so the mode is 0600 and the directory 0700. An OS
+// keyring is the better home for these and is planned with the daemon work in
+// M7; until then the permissions are the whole protection, which is why they
+// are set explicitly on every write rather than left to the umask.
+func (c *Config) Save() error {
+	dir := Dir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("config: create %s: %w", dir, err)
+	}
+
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+
+	// Write-then-rename so an interrupted save cannot truncate a good config.
+	tmp := Path() + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return fmt.Errorf("config: write: %w", err)
+	}
+	if err := os.Rename(tmp, Path()); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("config: commit: %w", err)
+	}
+	// Rename preserves the temp file's mode, but be explicit in case the
+	// destination already existed with a looser one.
+	if err := os.Chmod(Path(), 0o600); err != nil {
+		return fmt.Errorf("config: chmod: %w", err)
+	}
+	return nil
+}
+
+// CheckPermissions reports whether the config file is readable by anyone other
+// than its owner. Windows has no meaningful equivalent, so it is skipped there.
+func CheckPermissions() (ok bool, detail string) {
+	if runtime.GOOS == "windows" {
+		return true, "not checked on windows"
+	}
+	info, err := os.Stat(Path())
+	if err != nil {
+		return true, "no config file"
+	}
+	mode := info.Mode().Perm()
+	if mode&0o077 != 0 {
+		return false, fmt.Sprintf("%s is mode %04o — readable by others; run: chmod 600 %s", Path(), mode, Path())
+	}
+	return true, fmt.Sprintf("mode %04o", mode)
+}
+
+// ---------------------------------------------------------------------------
+// Field access for the CLI
+// ---------------------------------------------------------------------------
+
+// Field describes a settable key.
+type Field struct {
+	Name   string
+	Secret bool
+	Help   string
+	get    func(*Config) string
+	set    func(*Config, string) error
+}
+
+// Fields enumerates everything `mole config set` accepts.
+func Fields() []Field {
+	return []Field{
+		{
+			Name: "search.provider", Help: "search backend: brave | tavily",
+			get: func(c *Config) string { return c.Search.Provider },
+			set: func(c *Config, v string) error {
+				v = strings.ToLower(strings.TrimSpace(v))
+				if v != "brave" && v != "tavily" {
+					return fmt.Errorf("search.provider must be brave or tavily, got %q", v)
+				}
+				c.Search.Provider = v
+				return nil
+			},
+		},
+		{
+			Name: "search.brave-key", Secret: true, Help: "Brave Search API subscription token",
+			get: func(c *Config) string { return c.Search.BraveKey },
+			set: func(c *Config, v string) error { c.Search.BraveKey = strings.TrimSpace(v); return nil },
+		},
+		{
+			Name: "search.tavily-key", Secret: true, Help: "Tavily API key (tvly-…)",
+			get: func(c *Config) string { return c.Search.TavilyKey },
+			set: func(c *Config, v string) error { c.Search.TavilyKey = strings.TrimSpace(v); return nil },
+		},
+		{
+			Name: "llm.provider", Help: "model backend: anthropic | openai-compatible",
+			get: func(c *Config) string { return c.LLM.Provider },
+			set: func(c *Config, v string) error {
+				v = strings.ToLower(strings.TrimSpace(v))
+				if v != "anthropic" && v != "openai-compatible" {
+					return fmt.Errorf("llm.provider must be anthropic or openai-compatible, got %q", v)
+				}
+				c.LLM.Provider = v
+				return nil
+			},
+		},
+		{
+			Name: "llm.api-key", Secret: true, Help: "model provider API key",
+			get: func(c *Config) string { return c.LLM.APIKey },
+			set: func(c *Config, v string) error { c.LLM.APIKey = strings.TrimSpace(v); return nil },
+		},
+		{
+			Name: "llm.base-url", Help: "override endpoint for a self-hosted model",
+			get: func(c *Config) string { return c.LLM.BaseURL },
+			set: func(c *Config, v string) error { c.LLM.BaseURL = strings.TrimSpace(v); return nil },
+		},
+		{
+			Name: "llm.model", Help: "default model id",
+			get: func(c *Config) string { return c.LLM.Model },
+			set: func(c *Config, v string) error { c.LLM.Model = strings.TrimSpace(v); return nil },
+		},
+		{
+			Name: "llm.cheap-model", Help: "model for chunk mining and extraction",
+			get: func(c *Config) string { return c.LLM.CheapModel },
+			set: func(c *Config, v string) error { c.LLM.CheapModel = strings.TrimSpace(v); return nil },
+		},
+		{
+			Name: "contact-email", Help: "contact address sent to academic providers (required by Unpaywall and NCBI)",
+			get: func(c *Config) string { return c.ContactEmail },
+			set: func(c *Config, v string) error {
+				v = strings.TrimSpace(v)
+				if v != "" && !strings.Contains(v, "@") {
+					return fmt.Errorf("contact-email does not look like an address: %q", v)
+				}
+				c.ContactEmail = v
+				return nil
+			},
+		},
+	}
+}
+
+func lookupField(name string) (Field, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, f := range Fields() {
+		if f.Name == name {
+			return f, true
+		}
+	}
+	return Field{}, false
+}
+
+// Set assigns a field by name.
+func (c *Config) Set(name, value string) error {
+	f, ok := lookupField(name)
+	if !ok {
+		return fmt.Errorf("config: unknown key %q", name)
+	}
+	return f.set(c, value)
+}
+
+// Get reads a field by name.
+func (c *Config) Get(name string) (string, error) {
+	f, ok := lookupField(name)
+	if !ok {
+		return "", fmt.Errorf("config: unknown key %q", name)
+	}
+	return f.get(c), nil
+}
+
+// Display returns the value safe for printing: secrets are masked, because
+// `mole config list` output ends up in terminal scrollback, screenshots, and
+// bug reports.
+func Display(f Field, c *Config) string {
+	v := f.get(c)
+	if v == "" {
+		return "(unset)"
+	}
+	if !f.Secret {
+		return v
+	}
+	return Mask(v)
+}
+
+// Mask reduces a secret to a recognizable stub. Enough to confirm which key is
+// configured, not enough to use.
+func Mask(s string) string {
+	if len(s) <= 8 {
+		return "********"
+	}
+	return s[:4] + strings.Repeat("*", 8) + s[len(s)-2:]
+}
