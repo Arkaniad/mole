@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="banner.png" alt="Mole — a deep research agent in Go, exposed over MCP" width="820">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="banner-dark.png">
+    <img src="banner.png" alt="Mole — a deep research agent in Go, exposed over MCP" width="820">
+  </picture>
 </p>
 
 # Mole
