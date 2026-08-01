@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="banner.png" alt="Mole — a deep research agent in Go, exposed over MCP" width="820">
+</p>
+
 # Mole
 
 A Planner–Executor–Verifier deep research agent with budget as a first-class
