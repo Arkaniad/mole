@@ -382,3 +382,80 @@ func TestInvalidEnumIsRejectedBySchema(t *testing.T) {
 		t.Fatal("invalid role was accepted")
 	}
 }
+
+// TestFetchOutcomeStats covers the query §17.1's gate reads: the rate per
+// cause, and the domains each cause concentrates in.
+func TestFetchOutcomeStats(t *testing.T) {
+	ctx := context.Background()
+	db, _ := open(t)
+
+	rows := []struct {
+		domain, outcome string
+	}{
+		{"spa.example", "js_required"},
+		{"spa.example", "js_required"},
+		{"other.example", "js_required"},
+		{"news.example", "paywall"},
+		{"good.example", "ok"},
+		{"good.example", "ok"},
+		{"good.example", "ok"},
+		{"blocked.example", "robots_denied"},
+	}
+
+	if err := db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		for _, r := range rows {
+			if err := tx.RecordFetchOutcome(ctx, &store.FetchOutcome{
+				URL:     "https://" + r.domain + "/x",
+				Domain:  r.domain,
+				Outcome: r.outcome,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	var stats []store.FetchStat
+	if err := db.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		stats, err = q.FetchOutcomeStats(ctx, time.Now().Add(-time.Hour), 5)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	counts := map[string]int64{}
+	domains := map[string][]store.DomainCount{}
+	for _, s := range stats {
+		counts[s.Outcome] = s.Count
+		domains[s.Outcome] = s.Domains
+	}
+
+	if counts["ok"] != 3 || counts["js_required"] != 3 || counts["paywall"] != 1 {
+		t.Errorf("counts = %v", counts)
+	}
+
+	// The ranked domain list is as useful as the rate: a failure concentrated
+	// in one site is a denylist entry, not an architecture change.
+	js := domains["js_required"]
+	if len(js) == 0 || js[0].Domain != "spa.example" || js[0].Count != 2 {
+		t.Errorf("js_required top domain = %+v, want spa.example x2", js)
+	}
+}
+
+// TestFetchOutcomeSurvivesWithoutSession: a probe made outside any session is
+// still evidence about a domain and must not be dropped for lack of a parent.
+func TestFetchOutcomeSurvivesWithoutSession(t *testing.T) {
+	ctx := context.Background()
+	db, _ := open(t)
+
+	if err := db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.RecordFetchOutcome(ctx, &store.FetchOutcome{
+			URL: "https://a.example/", Domain: "a.example", Outcome: "ok",
+		})
+	}); err != nil {
+		t.Fatalf("record without session: %v", err)
+	}
+}

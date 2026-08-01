@@ -49,6 +49,35 @@ type BudgetDelta struct {
 	LeadCount     int64
 }
 
+// FetchOutcome is one recorded fetch attempt (§10.4). It lives in this package
+// rather than in tools/fetch so the store does not depend on the fetcher.
+type FetchOutcome struct {
+	ID         string
+	SessionID  *string
+	LeadID     *string
+	URL        string
+	Domain     string
+	Outcome    string
+	StatusCode int
+	Bytes      int64
+	Duration   time.Duration
+	Err        string
+	CreatedAt  time.Time
+}
+
+// FetchStat is one row of the outcome mix: how often a cause occurred and
+// which domains it concentrated in.
+type FetchStat struct {
+	Outcome string
+	Count   int64
+	Domains []DomainCount
+}
+
+type DomainCount struct {
+	Domain string
+	Count  int64
+}
+
 // Queries is the read surface.
 type Queries interface {
 	GetSession(ctx context.Context, id string) (*core.Session, error)
@@ -63,6 +92,10 @@ type Queries interface {
 	ListToolCalls(ctx context.Context, sessionID string, limit int) ([]*core.ToolCall, error)
 
 	ListSpans(ctx context.Context, sessionID string) ([]*core.Span, error)
+
+	// FetchOutcomeStats returns the outcome mix, most frequent first, with the
+	// top domains per cause. topDomains <= 0 omits the domain breakdown.
+	FetchOutcomeStats(ctx context.Context, since time.Time, topDomains int) ([]FetchStat, error)
 }
 
 // Tx is the write surface. It embeds Queries so a transaction can read its own
@@ -79,6 +112,8 @@ type Tx interface {
 	ExpireStaleReservations(ctx context.Context, now time.Time) (int, error)
 
 	InsertToolCall(ctx context.Context, tc *core.ToolCall) error
+
+	RecordFetchOutcome(ctx context.Context, o *FetchOutcome) error
 
 	StartSpan(ctx context.Context, s *core.Span) error
 	EndSpan(ctx context.Context, id string, endedAt time.Time, status string) error

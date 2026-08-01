@@ -456,6 +456,89 @@ func (t *queries) ListToolCalls(ctx context.Context, sessionID string, limit int
 }
 
 // ---------------------------------------------------------------------------
+// Fetch outcomes (§10.4)
+// ---------------------------------------------------------------------------
+
+func (t *queries) RecordFetchOutcome(ctx context.Context, o *store.FetchOutcome) error {
+	if o.Outcome == "" {
+		return fmt.Errorf("sqlite: fetch outcome is empty")
+	}
+	if o.ID == "" {
+		o.ID = core.NewSpanID()
+	}
+	if o.CreatedAt.IsZero() {
+		o.CreatedAt = time.Now().UTC()
+	}
+	_, err := t.q.ExecContext(ctx, `
+		INSERT INTO fetch_outcomes
+			(id, session_id, lead_id, url, domain, outcome, status_code, bytes, duration_ms, err, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		o.ID, nullStr(o.SessionID), nullStr(o.LeadID), o.URL, o.Domain, o.Outcome,
+		o.StatusCode, o.Bytes, o.Duration.Milliseconds(), o.Err, toMicros(o.CreatedAt))
+	if err != nil {
+		return fmt.Errorf("sqlite: record fetch outcome: %w", err)
+	}
+	return nil
+}
+
+// FetchOutcomeStats produces the outcome mix plus the ranked domains per cause.
+//
+// Both halves matter to §17.1: the rate says whether a capability gap is worth
+// closing, and the domain list often says it is really three sites rather than
+// an architecture problem.
+func (t *queries) FetchOutcomeStats(ctx context.Context, since time.Time, topDomains int) ([]store.FetchStat, error) {
+	rows, err := t.q.QueryContext(ctx, `
+		SELECT outcome, COUNT(*) FROM fetch_outcomes
+		WHERE created_at >= ?
+		GROUP BY outcome ORDER BY COUNT(*) DESC`, toMicros(since))
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: fetch outcome stats: %w", err)
+	}
+
+	var stats []store.FetchStat
+	for rows.Next() {
+		var s store.FetchStat
+		if err := rows.Scan(&s.Outcome, &s.Count); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		stats = append(stats, s)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if topDomains <= 0 {
+		return stats, nil
+	}
+
+	for i := range stats {
+		dRows, err := t.q.QueryContext(ctx, `
+			SELECT domain, COUNT(*) FROM fetch_outcomes
+			WHERE outcome = ? AND created_at >= ? AND domain != ''
+			GROUP BY domain ORDER BY COUNT(*) DESC LIMIT ?`,
+			stats[i].Outcome, toMicros(since), topDomains)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: fetch outcome domains: %w", err)
+		}
+		for dRows.Next() {
+			var dc store.DomainCount
+			if err := dRows.Scan(&dc.Domain, &dc.Count); err != nil {
+				dRows.Close()
+				return nil, err
+			}
+			stats[i].Domains = append(stats[i].Domains, dc)
+		}
+		dRows.Close()
+		if err := dRows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return stats, nil
+}
+
+// ---------------------------------------------------------------------------
 // Spans
 // ---------------------------------------------------------------------------
 
