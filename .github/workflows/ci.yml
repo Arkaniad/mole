@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: vet
+        run: go vet ./...
+
+      # -race is not optional here. The budget ledger's whole job is to hold
+      # under concurrent workers, and a data race in it is a silent
+      # budget-overshoot bug rather than a crash.
+      - name: test
+        run: go test -race -count=2 ./...
+
+      - name: build
+        run: CGO_ENABLED=0 go build ./...
+
+      # The record/replay layer means tests never touch the network. If that
+      # stops being true, a cassette miss should fail the build rather than
+      # quietly making a billable call.
+      - name: verify no network dependency
+        run: go test -count=1 ./internal/record/

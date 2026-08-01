@@ -1,0 +1,7 @@
+/bin/
+/dist/
+*.db
+*.db-wal
+*.db-shm
+/testdata/tmp/
+.env

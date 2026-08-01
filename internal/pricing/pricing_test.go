@@ -1,0 +1,167 @@
+package pricing_test
+
+import (
+	"errors"
+	"testing"
+
+	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/pricing"
+)
+
+func TestOpus5RatesAreExact(t *testing.T) {
+	tbl := pricing.NewTable()
+
+	// Claude Opus 5: $5 / MTok input, $25 / MTok output.
+	// 1M input tokens must be exactly $5.000000, with no float drift.
+	c, err := tbl.Cost("claude-opus-5", pricing.Usage{InputTokens: 1_000_000})
+	if err != nil {
+		t.Fatalf("cost: %v", err)
+	}
+	if want := int64(5 * core.MicrosPerUSD); c.USDMicros != want {
+		t.Errorf("1M input = %d micros, want %d", c.USDMicros, want)
+	}
+
+	c, err = tbl.Cost("claude-opus-5", pricing.Usage{OutputTokens: 1_000_000})
+	if err != nil {
+		t.Fatalf("cost: %v", err)
+	}
+	if want := int64(25 * core.MicrosPerUSD); c.USDMicros != want {
+		t.Errorf("1M output = %d micros, want %d", c.USDMicros, want)
+	}
+}
+
+// TestCacheTokensPriceDifferently is why Cost carries a breakdown rather than
+// one flat token count: reads bill at 0.1x input and writes at 1.25x, so the
+// same token volume can differ in price by more than an order of magnitude.
+func TestCacheTokensPriceDifferently(t *testing.T) {
+	tbl := pricing.NewTable()
+	const n = 1_000_000
+
+	plain, err := tbl.Cost("claude-opus-5", pricing.Usage{InputTokens: n})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := tbl.Cost("claude-opus-5", pricing.Usage{CacheReadTokens: n})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write, err := tbl.Cost("claude-opus-5", pricing.Usage{CacheWriteTokens: n})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write1h, err := tbl.Cost("claude-opus-5", pricing.Usage{CacheWriteTokens: n, CacheWriteTTL1h: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if want := plain.USDMicros / 10; read.USDMicros != want {
+		t.Errorf("cache read = %d, want %d (0.1x input)", read.USDMicros, want)
+	}
+	if want := plain.USDMicros * 125 / 100; write.USDMicros != want {
+		t.Errorf("cache write 5m = %d, want %d (1.25x input)", write.USDMicros, want)
+	}
+	if want := plain.USDMicros * 2; write1h.USDMicros != want {
+		t.Errorf("cache write 1h = %d, want %d (2x input)", write1h.USDMicros, want)
+	}
+
+	// All four record the same token volume even though they cost differently.
+	for name, c := range map[string]core.Cost{"plain": plain, "read": read, "write": write} {
+		if c.TotalTokens() != n {
+			t.Errorf("%s: total tokens = %d, want %d", name, c.TotalTokens(), n)
+		}
+	}
+}
+
+func TestUnknownModelIsAnErrorNotFree(t *testing.T) {
+	tbl := pricing.NewTable()
+
+	// A silent $0 for an unregistered model would make the budget ceiling
+	// unenforceable for exactly the model someone forgot to register.
+	_, err := tbl.Cost("gpt-definitely-not-a-claude-model", pricing.Usage{InputTokens: 1000})
+	var unknown *pricing.ErrUnknownModel
+	if !errors.As(err, &unknown) {
+		t.Fatalf("error = %v, want ErrUnknownModel", err)
+	}
+
+	tbl.SetStrict(false)
+	c, err := tbl.Cost("gpt-definitely-not-a-claude-model", pricing.Usage{InputTokens: 1000})
+	if err != nil {
+		t.Fatalf("non-strict cost: %v", err)
+	}
+	if c.USDMicros != 0 {
+		t.Errorf("non-strict unknown model cost = %d, want 0", c.USDMicros)
+	}
+	if c.InputTokens != 1000 {
+		t.Errorf("token count lost for unknown model: %d", c.InputTokens)
+	}
+}
+
+// TestSelfHostedModelCostsNothingButCountsTokens is the case that justifies
+// token-mode budgeting: no dollars change hands, but the tokens are still real
+// and still need bounding.
+func TestSelfHostedModelCostsNothingButCountsTokens(t *testing.T) {
+	tbl := pricing.NewEmptyTable()
+	tbl.RegisterFree("local/llama-70b")
+
+	c, err := tbl.Cost("local/llama-70b", pricing.Usage{InputTokens: 9000, OutputTokens: 1200})
+	if err != nil {
+		t.Fatalf("cost: %v", err)
+	}
+	if c.USDMicros != 0 {
+		t.Errorf("self-hosted cost = %d, want 0", c.USDMicros)
+	}
+	if got := c.BudgetAmount(core.BudgetTokens); got != 10_200 {
+		t.Errorf("token budget amount = %d, want 10200", got)
+	}
+}
+
+func TestContextSuffixIsNormalized(t *testing.T) {
+	tbl := pricing.NewTable()
+	plain, err := tbl.Cost("claude-opus-5", pricing.Usage{InputTokens: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tagged, err := tbl.Cost("claude-opus-5[1m]", pricing.Usage{InputTokens: 1000})
+	if err != nil {
+		t.Fatalf("tagged model: %v", err)
+	}
+	if plain.USDMicros != tagged.USDMicros {
+		t.Errorf("tagged model priced differently: %d vs %d", tagged.USDMicros, plain.USDMicros)
+	}
+}
+
+func TestRoundingDoesNotUnderBill(t *testing.T) {
+	tbl := pricing.NewTable()
+
+	// One Haiku input token is 1000 nano-dollars = exactly 1 micro-dollar.
+	c, err := tbl.Cost("claude-haiku-4-5", pricing.Usage{InputTokens: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.USDMicros != 1 {
+		t.Errorf("1 haiku input token = %d micros, want 1", c.USDMicros)
+	}
+
+	// A single Opus cache-read token is 500 nano = 0.5 micro. Truncation would
+	// bill 0 and, repeated across a session, understate spend.
+	c, err = tbl.Cost("claude-opus-5", pricing.Usage{CacheReadTokens: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.USDMicros != 1 {
+		t.Errorf("1 opus cache-read token = %d micros, want 1 (rounded up, not truncated)", c.USDMicros)
+	}
+}
+
+func TestRegisterOverridesDefault(t *testing.T) {
+	tbl := pricing.NewTable()
+	tbl.Register("claude-opus-5", pricing.Rates{Input: 1, Output: 1})
+
+	c, err := tbl.Cost("claude-opus-5", pricing.Usage{InputTokens: 1_000_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := int64(1000); c.USDMicros != want {
+		t.Errorf("overridden rate produced %d micros, want %d", c.USDMicros, want)
+	}
+}
