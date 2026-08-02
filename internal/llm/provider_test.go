@@ -189,6 +189,10 @@ func TestErrorsAreClassifiedForRetryPolicy(t *testing.T) {
 		srv := serve(t, c.status, `{"error":{"message":"nope"}}`, nil)
 		p, _ := llm.New(llm.Config{
 			Kind: llm.KindOpenAICompatible, APIKey: "k", BaseURL: srv.URL, StrongModel: "m",
+			// This asserts the status -> sentinel mapping, not the retry
+			// policy. Leaving retries on made it back off through every
+			// transient case and cost the suite 21 seconds.
+			MaxRetries: -1,
 		}, srv.Client())
 
 		_, err := p.Complete(context.Background(), llm.Request{Messages: []llm.Message{llm.User("x")}})

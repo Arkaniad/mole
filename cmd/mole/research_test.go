@@ -13,6 +13,7 @@ import (
 	"github.com/lajosdeme/mole/internal/budget"
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/llm"
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/store/sqlite"
 )
@@ -505,5 +506,84 @@ func TestReportWithNoClaimsSaysSo(t *testing.T) {
 	}
 	if !strings.Contains(got, "claims 0") {
 		t.Errorf("the zero-claim result is not stated:\n%s", got)
+	}
+}
+
+// stubProvider reports fixed model names so the pricing gate can be exercised
+// without a network.
+type stubProvider struct{ strong, cheap string }
+
+func (s stubProvider) Name() string { return "stub" }
+func (s stubProvider) ModelFor(t llm.Tier) string {
+	if t == llm.TierCheap {
+		return s.cheap
+	}
+	return s.strong
+}
+func (s stubProvider) Complete(ctx context.Context, r llm.Request) (*llm.Response, error) {
+	return nil, nil
+}
+
+// TestUSDIsRefusedForAnUnpricedModel. Budget is this project's first-class
+// primitive (§8). An unpriced model records zero dollars per call, so --usd
+// names a ceiling nothing counts against: the run spends what it spends and
+// prints a few cents of search cost at the end, looking like the limit held.
+//
+// This is what the first live run did — $0.0080 of $0.5000 reported, with every
+// model call ledgered at zero.
+func TestUSDIsRefusedForAnUnpricedModel(t *testing.T) {
+	err := checkUSDIsEnforceable(stubProvider{
+		strong: "llama-3.3-70b-versatile", cheap: "llama-3.1-8b-instant",
+	})
+	if err == nil {
+		t.Fatal("--usd was accepted for a model with no registered price")
+	}
+	for _, want := range []string{"llama-3.1-8b-instant", "--tokens", "$0.00"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q:\n%s", want, err)
+		}
+	}
+}
+
+// TestUSDIsAllowedForAPricedModel — the gate must not block the normal case.
+func TestUSDIsAllowedForAPricedModel(t *testing.T) {
+	if err := checkUSDIsEnforceable(stubProvider{
+		strong: "claude-opus-5", cheap: "claude-haiku-4-5",
+	}); err != nil {
+		t.Errorf("a priced model was refused: %v", err)
+	}
+}
+
+// TestDegradedRunIsMarkedAsSuch. A run where most model calls failed produced a
+// few claims by accident. Printing it identically to a clean run tells a reader
+// to trust a result that barely happened.
+func TestDegradedRunIsMarkedAsSuch(t *testing.T) {
+	out := &researchOutput{
+		SessionID: "s_d",
+		Summary:   "Summarization failed; 3 verified claim(s) are listed below.",
+		Claims:    []core.Claim{{Text: "a claim", Source: "https://x.example", Quote: "q"}},
+		Stats:     actors.RunStats{Chunks: 11, ChunksFailed: 10, ClaimsProposed: 8, ClaimsRejected: 5},
+	}
+	got := captureStdout(t, func() { printReport(out, core.BudgetUSD, core.MicrosPerUSD, true) })
+
+	if !strings.Contains(got, "DEGRADED") {
+		t.Errorf("a run with 10 of 11 model calls failed was not flagged:\n%s", got)
+	}
+	if !strings.Contains(got, "10 of 11") {
+		t.Errorf("the failure count is not shown:\n%s", got)
+	}
+}
+
+// TestCleanRunIsNotFlagged so DEGRADED keeps meaning something.
+func TestCleanRunIsNotFlagged(t *testing.T) {
+	out := &researchOutput{
+		SessionID: "s_c",
+		Summary:   "A summary.",
+		Claims:    []core.Claim{{Text: "a claim", Source: "https://x.example", Quote: "q"}},
+		Stats:     actors.RunStats{Chunks: 4, ChunksFailed: 0},
+	}
+	got := captureStdout(t, func() { printReport(out, core.BudgetUSD, core.MicrosPerUSD, true) })
+	if strings.Contains(got, "DEGRADED") {
+		t.Errorf("a clean run was flagged as degraded:\n%s", got)
 	}
 }

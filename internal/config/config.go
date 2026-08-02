@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -74,6 +75,15 @@ type LLMConfig struct {
 	// CheapModel handles chunk mining and extraction, where the strong model
 	// is not worth its price (§10.1).
 	CheapModel string `json:"cheap_model,omitempty"`
+
+	// MaxInputTokens caps a SINGLE request's input.
+	//
+	// Not the same limit as a context window, and often much smaller. A
+	// provider's per-minute token allowance rejects an oversized request with
+	// 413 no matter how much budget is left — a Groq free tier is 6000 TPM
+	// against a default chunk of roughly 8000. Left unset, chunking targets a
+	// context window and every chunk fails.
+	MaxInputTokens int64 `json:"max_input_tokens,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +282,29 @@ func Fields() []Field {
 			Name: "llm.cheap-model", Help: "model for chunk mining and extraction",
 			get: func(c *Config) string { return c.LLM.CheapModel },
 			set: func(c *Config, v string) error { c.LLM.CheapModel = strings.TrimSpace(v); return nil },
+		},
+		{
+			Name: "llm.max-input-tokens",
+			Help: "per-REQUEST input cap; set to your provider's TPM limit if it is small (e.g. 6000 on a Groq free tier)",
+			get: func(c *Config) string {
+				if c.LLM.MaxInputTokens == 0 {
+					return ""
+				}
+				return strconv.FormatInt(c.LLM.MaxInputTokens, 10)
+			},
+			set: func(c *Config, v string) error {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					c.LLM.MaxInputTokens = 0
+					return nil
+				}
+				n, err := strconv.ParseInt(v, 10, 64)
+				if err != nil || n < 0 {
+					return fmt.Errorf("llm.max-input-tokens must be a non-negative integer, got %q", v)
+				}
+				c.LLM.MaxInputTokens = n
+				return nil
+			},
 		},
 		{
 			Name: "contact-email", Help: "contact address sent to academic providers (required by Unpaywall and NCBI)",

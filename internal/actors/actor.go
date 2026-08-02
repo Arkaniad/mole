@@ -11,6 +11,7 @@ import (
 	"context"
 
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/llm"
 )
 
 // Result is what one lead produced.
@@ -47,6 +48,11 @@ type RunStats struct {
 	Chunks        int
 	ChunksSkipped int
 
+	// ChunksFailed counts chunks whose model call errored. A run where every
+	// chunk failed still returns whatever it scraped together, so without this
+	// the result looks thin rather than broken.
+	ChunksFailed int
+
 	ClaimsProposed int
 	// ClaimsRejected counts claims discarded because their quote did not
 	// appear in the source. A rising rate here is the signal that a model or
@@ -73,6 +79,40 @@ type Budget struct {
 	// MaxClaimsPerSource bounds a single page's contribution, so one verbose
 	// document cannot dominate the graph.
 	MaxClaimsPerSource int
+
+	// MaxChunkTokens caps a SINGLE request, which is a different limit from
+	// MaxInputTokens and binds first.
+	//
+	// The default chunk targets ~8k tokens, which fits any current context
+	// window — but a context window is not the only ceiling. A provider's
+	// per-minute token allowance can be far smaller (Groq's free tier is 6k
+	// TPM), and a request over it fails with 413 no matter how much budget is
+	// left. Sized wrong, every chunk of every source fails and the run reports
+	// success having read nothing.
+	MaxChunkTokens int64
+}
+
+// ChunkOptions derives the split from the per-request cap.
+func (b Budget) ChunkOptions() llm.ChunkOptions {
+	o := llm.DefaultChunkOptions()
+	if b.MaxChunkTokens <= 0 {
+		return o
+	}
+	// Leave room for the prompt itself and for the estimator running short:
+	// EstimateTokens is deliberately rough, and overshooting here is a hard
+	// failure rather than a slightly larger bill.
+	usable := b.MaxChunkTokens * 2 / 3
+	chars := int(usable * 3)
+	if chars < o.MinChars*2 {
+		chars = o.MinChars * 2
+	}
+	if chars < o.MaxChars {
+		o.MaxChars = chars
+		if o.OverlapChars >= o.MaxChars {
+			o.OverlapChars = o.MaxChars / 8
+		}
+	}
+	return o
 }
 
 func (b Budget) withDefaults() Budget {

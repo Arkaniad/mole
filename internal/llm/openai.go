@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -103,6 +105,137 @@ type openAIResponse struct {
 	} `json:"usage"`
 }
 
+// do issues the request, retrying transient failures.
+//
+// The Anthropic backend gets retries from its SDK; this one is hand-rolled
+// HTTP and had none, so cfg.MaxRetries — a documented field defaulting to 3 —
+// was silently ignored for every OpenAI-compatible provider. A single 429 from
+// a free tier failed the whole call.
+//
+// Retry-After is honoured when the server sends it. Guessing an interval is how
+// a client that "retries" still fails: a provider asking for 36 seconds will
+// refuse three exponential backoffs totalling four.
+func (p *openAIProvider) do(ctx context.Context, payload []byte) ([]byte, error) {
+	attempts := p.cfg.MaxRetries + 1
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			t := time.NewTimer(retryDelay(attempt, lastErr))
+			select {
+			case <-ctx.Done():
+				t.Stop()
+				// Report why we gave up: "context deadline exceeded" alone
+				// hides that a provider asked for a wait we could not afford.
+				return nil, fmt.Errorf("llm: %w (last: %v)", ctx.Err(), lastErr)
+			case <-t.C:
+			}
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			p.cfg.BaseURL+"/chat/completions", bytes.NewReader(payload))
+		if err != nil {
+			return nil, fmt.Errorf("llm: request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if p.cfg.APIKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+		}
+
+		resp, err := p.client.Do(httpReq)
+		if err != nil {
+			lastErr = fmt.Errorf("llm: %s: %w", p.cfg.BaseURL, err)
+			if ctx.Err() != nil {
+				return nil, lastErr
+			}
+			continue
+		}
+
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+		retryAfter, hasRetryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = fmt.Errorf("llm: read: %w", readErr)
+			continue
+		}
+
+		statusErr := classifyStatus(string(KindOpenAICompatible), resp.StatusCode, string(body))
+		if statusErr == nil {
+			return body, nil
+		}
+		if !Retryable(statusErr) {
+			// 413 and 401 fail identically however many times they are sent.
+			// Returning now keeps a doomed request from burning wall clock the
+			// budget is also counting.
+			return nil, statusErr
+		}
+		lastErr = &retryableErr{err: statusErr, after: retryAfter, hasAfter: hasRetryAfter}
+	}
+
+	var re *retryableErr
+	if errors.As(lastErr, &re) {
+		return nil, re.err
+	}
+	return nil, lastErr
+}
+
+// retryableErr carries a server-supplied wait alongside the error.
+//
+// hasAfter distinguishes "the server said zero" from "the server said nothing".
+// They are different instructions: the first means retry now, and treating it
+// as absent turns an immediate retry into a second of backoff for no reason.
+type retryableErr struct {
+	err      error
+	after    time.Duration
+	hasAfter bool
+}
+
+func (e *retryableErr) Error() string { return e.err.Error() }
+func (e *retryableErr) Unwrap() error { return e.err }
+
+// retryDelay is the server's requested wait when it gave one, else exponential
+// backoff.
+func retryDelay(attempt int, lastErr error) time.Duration {
+	var re *retryableErr
+	if errors.As(lastErr, &re) && re.hasAfter {
+		if re.after > 60*time.Second {
+			// A wait longer than this is the provider saying "not today".
+			// Honour the cap and let the attempt fail rather than parking a
+			// worker; the lead's wall clock is a ceiling too.
+			return 60 * time.Second
+		}
+		return re.after
+	}
+	d := time.Duration(1<<uint(attempt-1)) * time.Second
+	if d > 30*time.Second {
+		d = 30 * time.Second
+	}
+	return d
+}
+
+// parseRetryAfter reads the header in both permitted forms: seconds, or an HTTP
+// date. Providers also send fractional seconds ("36.48"), which the spec does
+// not allow but which is plainly a wait in seconds.
+func parseRetryAfter(v string) (time.Duration, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, false
+	}
+	if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+		return time.Duration(f * float64(time.Second)), true
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d, true
+		}
+		return 0, true // a date in the past means retry now
+	}
+	return 0, false
+}
+
 func (p *openAIProvider) Complete(ctx context.Context, req Request) (*Response, error) {
 	start := time.Now()
 
@@ -137,27 +270,8 @@ func (p *openAIProvider) Complete(ctx context.Context, req Request) (*Response, 
 	ctx, cancel := context.WithTimeout(ctx, p.cfg.Timeout)
 	defer cancel()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		p.cfg.BaseURL+"/chat/completions", bytes.NewReader(payload))
+	body, err := p.do(ctx, payload)
 	if err != nil {
-		return nil, fmt.Errorf("llm: request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if p.cfg.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
-	}
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("llm: %s: %w", p.cfg.BaseURL, err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
-	if err != nil {
-		return nil, fmt.Errorf("llm: read: %w", err)
-	}
-	if err := classifyStatus(string(KindOpenAICompatible), resp.StatusCode, string(body)); err != nil {
 		return nil, err
 	}
 

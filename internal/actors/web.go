@@ -97,7 +97,7 @@ func (a *WebActor) Run(ctx context.Context, lead core.Lead) (*Result, error) {
 		doc := src.doc
 
 		// Chunk under what is left of the sub-budget.
-		plan := llm.Plan(doc.Text, budget.MaxInputTokens-inputTokensUsed, llm.DefaultChunkOptions())
+		plan := llm.Plan(doc.Text, budget.MaxInputTokens-inputTokensUsed, budget.ChunkOptions())
 		if plan.Truncated {
 			res.Truncated = true
 		}
@@ -129,7 +129,10 @@ func (a *WebActor) Run(ctx context.Context, lead core.Lead) (*Result, error) {
 			inputTokensUsed += usage.InputTokens + usage.CacheReadTokens
 			if err != nil {
 				// One bad chunk does not fail the lead; the others may still
-				// carry the answer. §9.5 classifies this as degraded.
+				// carry the answer. §9.5 classifies this as degraded — but only
+				// if it is counted, so the caller can tell "this source was
+				// thin" from "nothing worked".
+				res.Stats.ChunksFailed++
 				a.logger().WarnContext(ctx, "chunk mining failed",
 					"url", src.url, "chunk", chunk.Index, "err", err)
 				continue
@@ -154,7 +157,22 @@ func (a *WebActor) Run(ctx context.Context, lead core.Lead) (*Result, error) {
 		}
 	}
 	if res.Summary == "" {
-		res.Summary = fmt.Sprintf("No usable sources found for %q.", lead.Query)
+		// Say what actually happened. Claiming no sources were found while
+		// printing claims from those sources directly underneath is worse than
+		// no summary: it tells a reader the run was empty when it was
+		// degraded, and those call for different responses.
+		switch {
+		case len(res.Claims) > 0:
+			res.Summary = fmt.Sprintf(
+				"Summarization failed; %d verified claim(s) from %d source(s) are listed below, unsynthesized.",
+				len(res.Claims), len(perSource))
+		case res.Stats.ChunksFailed > 0:
+			res.Summary = fmt.Sprintf(
+				"No claims extracted: all %d model call(s) over %d source(s) failed.",
+				res.Stats.ChunksFailed, res.Stats.Fetched+res.Stats.SkippedFetch)
+		default:
+			res.Summary = fmt.Sprintf("No usable sources found for %q.", lead.Query)
+		}
 	}
 
 	// 7. Persist claims. All or nothing (§ store.InsertClaims).

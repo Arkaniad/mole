@@ -15,6 +15,7 @@ import (
 	"github.com/lajosdeme/mole/internal/budget"
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/llm"
 	"github.com/lajosdeme/mole/internal/pricing"
 	"github.com/lajosdeme/mole/internal/record"
 	"github.com/lajosdeme/mole/internal/store"
@@ -113,6 +114,11 @@ func cmdResearch(ctx context.Context, args []string) error {
 	actor, err := buildWebActor(cfg, rec, *maxSources, *quiet)
 	if err != nil {
 		return err
+	}
+	if unit == core.BudgetUSD {
+		if err := checkUSDIsEnforceable(actor.LLM); err != nil {
+			return err
+		}
 	}
 	if rec.Enabled() && !*quiet && !*asJSON {
 		fmt.Printf("cassette %s (%s)\n", rec.Path, rec.Mode)
@@ -327,8 +333,40 @@ func buildWebActor(cfg *config.Config, rec *record.Recorder, maxSources int, qui
 		Budget: actors.Budget{
 			MaxSources:         maxSources,
 			MaxClaimsPerSource: 8,
+			MaxChunkTokens:     cfg.LLM.MaxInputTokens,
 		},
 	}, nil
+}
+
+// checkUSDIsEnforceable refuses a dollar budget the ledger cannot enforce.
+//
+// An unpriced model records zero dollars per call, so --usd names a ceiling
+// nothing counts against: the run spends whatever it spends and reports a few
+// cents of search cost. Budget is this project's first-class primitive (§8),
+// and a ceiling that silently does not bind is worse than no ceiling, because
+// the number printed at the end looks like it held.
+//
+// doctor already warns about this. Warning is not enough at the point where
+// money is about to be spent under a limit that does not exist.
+func checkUSDIsEnforceable(p llm.Provider) error {
+	if warn := unpricedModels(p); warn == "" {
+		return nil
+	}
+	table := pricing.NewTable()
+	var missing []string
+	for _, m := range []string{p.ModelFor(llm.TierStrong), p.ModelFor(llm.TierCheap)} {
+		if m == "" {
+			continue
+		}
+		if _, ok := table.Lookup(m); !ok && !contains(missing, m) {
+			missing = append(missing, m)
+		}
+	}
+	return fmt.Errorf(
+		"--usd cannot bound this run: no price is registered for %s, so every model call "+
+			"would be ledgered at $0.00 and the ceiling would never bind.\n"+
+			"Use --tokens N instead, which counts what the provider reports.",
+		strings.Join(missing, ", "))
 }
 
 func userAgent() string {
@@ -402,9 +440,15 @@ type researchOutput struct {
 }
 
 func printLeadLine(question string, res *actors.Result, s budget.SettleResult, unit core.BudgetUnit, took time.Duration) {
+	// A tick here means the lead worked. A run where most model calls failed
+	// produced a handful of claims by accident and must not look the same as
+	// one that succeeded (§9.5 degraded).
 	mark := "✓"
-	if len(res.Claims) == 0 {
+	switch {
+	case len(res.Claims) == 0:
 		mark = "⚠"
+	case res.Stats.ChunksFailed > res.Stats.Chunks-res.Stats.ChunksFailed:
+		mark = "~"
 	}
 	q := question
 	if len(q) > 44 {
@@ -448,6 +492,13 @@ func printReport(out *researchOutput, unit core.BudgetUnit, budgetAmt int64, qui
 		fmtAmount(unit, out.Spent), fmtAmount(unit, budgetAmt),
 		len(out.Claims), out.Stats.Fetched+out.Stats.SkippedFetch, out.Stats.SkippedFetch, out.Stats.Chunks)
 
+	// Failed model calls are the difference between "the sources were thin"
+	// and "the run barely worked". Buried in WARN lines they scroll past; the
+	// summary is where a reader decides whether to trust the result.
+	if out.Stats.ChunksFailed > 0 {
+		fmt.Printf(" DEGRADED: %d of %d model call(s) failed — see the warnings above (§9.5)\n",
+			out.Stats.ChunksFailed, out.Stats.Chunks)
+	}
 	if out.Stats.ClaimsRejected > 0 {
 		fmt.Printf(" %d of %d proposed claims rejected: quote not found in the source (§11.5)\n",
 			out.Stats.ClaimsRejected, out.Stats.ClaimsProposed)
