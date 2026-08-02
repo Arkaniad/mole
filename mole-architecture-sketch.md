@@ -220,6 +220,104 @@ answer for it. Each actor runs a bounded map-reduce inside its own run:
 Claims always carry the quote span from the *chunk* they came from (§7), so grounding
 checks work even for a document that was never held in one context.
 
+### 4.2 Where the model runs
+
+Every actor needs a model. There are three places it can come from, and they are not
+equivalent — the third gives up two of the properties this whole design exists for, so it
+is second-class by construction rather than by accident.
+
+**Own key (default).** Mole holds a credential and calls the provider directly. Resolution
+order is env var, then config file, then the SDK's own credential chain — so a machine with
+`ANTHROPIC_API_KEY` exported, or an `ant auth login` profile, needs no configuration at
+all. Everything in §8 works because every call is Mole's call: it sees `usage`, prices it,
+and settles it against a reservation.
+
+**Local model.** An OpenAI-compatible endpoint on localhost (Ollama, llama.cpp, vLLM).
+Registered at zero rates, so it costs nothing while still counting tokens — which is what
+makes token-mode budgeting meaningful for someone not paying per token. Quality is lower,
+and `doctor` says so. This path also closes the last gap in §12's privacy story: with a
+local model, aggregates from `LocalComputeActor` never leave the machine at all.
+
+**Delegated (second-class).** Mole hands chunks back to the calling coding agent over MCP,
+the agent's own model summarizes, and the results return. No credential of any kind. It
+exists because a Claude Code user on a Pro/Max subscription has no API access, and
+obtaining some is the one setup step Mole cannot remove for them.
+
+#### Why delegated is second-class
+
+It removes a setup step by giving up the two properties the daemon exists for:
+
+- **Bounded context.** Raw chunk text lands in the caller's context window. §2's argument
+  — that raw content must live inside one executor run and die there — inverts. Cost
+  compounds in the caller instead of being contained.
+- **Async.** The session cannot proceed while the caller is not listening, so it cannot
+  outlive a compacted context or a closed terminal. `research.ask` over a finished session
+  goes with it.
+
+Quote verification survives: Mole still holds the source text, so a returned claim's quote
+is still checked verbatim (§11.5). That is the one headline property delegation does not
+cost.
+
+The CLI (§18.3) has no calling agent at all, so this mode is never available there.
+
+#### Budgeting under delegation
+
+Mole can count exactly what it *contributes* — the text it sends and the text it receives.
+It cannot count what the call *consumed*: the agent processes those chunks inside its
+existing conversation, plus cache state, plus any thinking or retries Mole never sees.
+Those differ by the caller's entire context window, in a direction Mole cannot observe.
+
+So a token budget in this mode would be systematically wrong and quietly so. The fix is to
+budget a different, honestly-named quantity — **delegated volume**, counted in characters
+because Mole does not know the agent's tokenizer and an estimate presented as a ceiling is
+precisely the claim §16 makes it must not be. Tokens are shown alongside as an
+approximation; enforcement is on the exact number.
+
+| | Own key / local | Delegated |
+|---|---|---|
+| `--usd` for model calls | ✅ enforced | ❌ rejected at session creation |
+| `--usd` for search | ✅ | ✅ — still Mole's own metered spend |
+| `--tokens` (billed) | ✅ exact, from `usage` | ❌ unknowable |
+| `--delegated-chars` | n/a | ✅ exact |
+| `MaxToolCalls` / `MaxLeads` / `MaxWallClock` | ✅ backstop | ✅ **primary control** |
+| Quote verification (§11.5) | ✅ | ✅ |
+| Bounded caller context | ✅ | ❌ |
+| Async, outlives the caller | ✅ | ❌ |
+
+Two consequences worth stating explicitly:
+
+1. **`--usd` is rejected, not silently reinterpreted.** A budget flag that quietly means
+   something else is worse than one that is not offered.
+2. **USD spend is not zero under delegation.** Search runs on the user's Brave or Tavily
+   key through Mole, so it is metered normally. Reporting must separate the two, and must
+   carry the caveat rather than bury it:
+
+   ```
+   mole spend:   $0.062   (14 searches — Mole's own metered calls)
+   delegated:    340k chars ≈ 85k tokens, billed to your agent's context
+                 ⚠ excludes your agent's existing context, which Mole cannot see
+   ```
+
+#### Not MCP sampling
+
+The obvious protocol answer, `sampling/createMessage`, does not work for the main loop —
+checked against the spec rather than assumed:
+
+- The response carries `role`, `content`, `model`, and `stopReason`. **No usage field**, so
+  the ledger cannot charge and §8's ceiling becomes unenforceable.
+- The spec says there **SHOULD** always be a human able to deny each request, with review
+  of both request and response. A 50-lead session is 200+ calls.
+- It is an optional client capability, and Claude Code's MCP documentation covers
+  elicitation in detail while never mentioning sampling.
+
+It remains a good fit for `ask` (§13): one bounded call, caller present, nothing to meter.
+Worth revisiting when the MCP server lands.
+
+#### Sequencing
+
+Delegated mode needs the MCP server to exist before the round-trip is possible, so it is
+built alongside M7 rather than with the provider layer.
+
 ---
 
 ## 5. MCP integration
@@ -1078,7 +1176,9 @@ surface is easy; per-provider rate limiting and required contact identification 
 real work.
 
 **M7 — MCP daemon + shim (2 weeks).** Unix socket 0600, daemon-side secrets, cancel and
-sessions.list, token-mode budget, async status/result.
+sessions.list, token-mode budget, async status/result. Also delegated model mode (§4.2) —
+it needs the MCP round-trip to exist, and it is explicitly second-class: it trades bounded
+context and async for needing no credential.
 
 **M8 — LocalComputeActor (3 weeks).** Sandbox technology chosen and built *first*. Then
 `sqlguard`, then the aggregation gate, then the actor. Statistical-validity verifier checks.

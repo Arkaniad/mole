@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/lajosdeme/mole/internal/budget"
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/llm"
 	"github.com/lajosdeme/mole/internal/obs"
 	"github.com/lajosdeme/mole/internal/pricing"
 	"github.com/lajosdeme/mole/internal/store"
@@ -319,15 +321,7 @@ func reportConfig(report func(bool, string, string)) {
 			fmt.Sprintf("%s, key %s%s", cfg.Search.Provider, config.Mask(cfg.Search.ActiveKey()), note))
 	}
 
-	if cfg.LLM.APIKey == "" {
-		report(false, "llm provider", "no key (run: mole config set llm.api-key ...)")
-	} else {
-		model := cfg.LLM.Model
-		if model == "" {
-			model = "(no default model set)"
-		}
-		report(true, "llm provider", fmt.Sprintf("%s, key %s", model, config.Mask(cfg.LLM.APIKey)))
-	}
+	reportLLM(report, cfg)
 
 	if cfg.ContactEmail == "" {
 		report(false, "contact email", "not set — required by Unpaywall and NCBI before academic providers (M6)")
@@ -637,6 +631,7 @@ Usage:
   mole config get <key>         Print one value
   mole config set <key> <value> Assign a value
   mole config path              Print the config file location
+  mole config test-llm          Make one cheap call and report model + cost
 
 Keys:
 `
@@ -662,6 +657,8 @@ func cmdConfig(ctx context.Context, args []string) error {
 	case "path":
 		fmt.Println(config.Path())
 		return nil
+	case "test-llm":
+		return cmdConfigTestLLM(ctx)
 	case "help", "-h", "--help":
 		printConfigUsage()
 		return nil
@@ -754,4 +751,216 @@ func lookupConfigField(name string) (config.Field, bool) {
 		}
 	}
 	return config.Field{}, false
+}
+
+// reportLLM says which model backend is in force and, critically, WHERE its
+// credential came from.
+//
+// Three sources can supply it — config, environment, or the SDK's own chain
+// resolving an `ant auth login` profile — and "which one is this actually
+// using" otherwise becomes a debugging session. Auto-detection means the answer
+// is frequently one the user never typed.
+func reportLLM(report func(bool, string, string), cfg *config.Config) {
+	built, reason, err := buildLLM(cfg)
+	if err != nil {
+		report(false, "llm provider", err.Error())
+		return
+	}
+	if built == nil {
+		report(false, "llm provider",
+			"none found — set one with `mole config set llm.api-key ...`, "+
+				"run `ant auth login`, or start a local model (ollama serve)")
+		return
+	}
+
+	detail := fmt.Sprintf("%s via %s", built.ModelFor(llm.TierStrong), llm.SourceOf(built))
+	if cheap := built.ModelFor(llm.TierCheap); cheap != built.ModelFor(llm.TierStrong) {
+		detail += fmt.Sprintf(" (cheap tier: %s)", cheap)
+	}
+	if reason != "" {
+		detail += " — " + reason
+	}
+
+	// A local endpoint can be verified for free, so a green tick here is
+	// earned rather than assumed. A hosted one cannot be checked without
+	// spending money; say so instead of implying it works.
+	if base := cfg.LLM.BaseURL; base != "" && llm.IsLoopback(base) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if !llm.Reachable(ctx, base, nil) {
+			report(false, "llm provider", detail+" — NOT REACHABLE (is the runtime started?)")
+			return
+		}
+		report(true, "llm provider", detail+", reachable")
+		return
+	}
+	// An unpriced model is not fatal, but USD budgeting cannot work for it —
+	// and a model name left over from a different provider shows up here
+	// rather than at the first call, twenty leads into a session.
+	if warn := unpricedModels(built); warn != "" {
+		report(false, "llm provider", detail+" — "+warn)
+		return
+	}
+	report(true, "llm provider", detail+" (unverified — run: mole config test-llm)")
+}
+
+// unpricedModels reports models the pricing table does not know.
+//
+// Returns "" when everything is priced, or when the provider is a local one
+// where zero cost is the correct answer rather than a missing entry.
+func unpricedModels(p llm.Provider) string {
+	if llm.SourceOf(p) == llm.CredentialNotNeeded {
+		return "" // local model, genuinely free
+	}
+	table := pricing.NewTable()
+	var missing []string
+	for _, m := range []string{p.ModelFor(llm.TierStrong), p.ModelFor(llm.TierCheap)} {
+		if m == "" {
+			continue
+		}
+		if _, ok := table.Lookup(m); !ok && !contains(missing, m) {
+			missing = append(missing, m)
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("no price registered for %s; USD budgets will not work (use --tokens, or check llm.model matches the provider)",
+		strings.Join(missing, ", "))
+}
+
+func contains(hay []string, needle string) bool {
+	for _, h := range hay {
+		if h == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// buildLLM resolves a provider from config, falling back to auto-detection.
+//
+// Precedence: an explicit setting always wins over an ambient one. A user who
+// configured a key meant to use it, and silently preferring a detected local
+// model would spend their session on the wrong thing.
+func buildLLM(cfg *config.Config) (provider llm.Provider, reason string, err error) {
+	if cfg.LLM.APIKey != "" || cfg.LLM.BaseURL != "" || cfg.LLM.Provider != "" {
+		kind := llm.Kind(cfg.LLM.Provider)
+		if kind == "" {
+			kind = llm.KindAnthropic
+		}
+		p, err := llm.New(llm.Config{
+			Kind:        kind,
+			APIKey:      cfg.LLM.APIKey,
+			BaseURL:     cfg.LLM.BaseURL,
+			StrongModel: cfg.LLM.Model,
+			CheapModel:  cfg.LLM.CheapModel,
+		}, nil)
+		if err != nil {
+			return nil, "", err
+		}
+		return p, "", nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	detected, ok := llm.Detect(ctx, nil)
+	if !ok {
+		return nil, "", nil
+	}
+	// A detected local runtime reports no model until one is chosen, and
+	// naming it wrongly is worse than saying so.
+	if detected.Config.StrongModel == "" && detected.Config.Kind == llm.KindOpenAICompatible {
+		return nil, "", fmt.Errorf(
+			"found %s but no model selected (run: mole config set llm.model <name>)", detected.Reason)
+	}
+	p, err := llm.New(detected.Config, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	suffix := "auto-detected: " + detected.Reason
+	if detected.Free {
+		suffix += ", no cost"
+	}
+	return p, suffix, nil
+}
+
+// cmdConfigTestLLM makes the smallest possible real call.
+//
+// Auth, model name, and endpoint are all things that fail at the first call
+// rather than at configuration time. Discovering that twenty leads into a
+// session wastes the search spend already incurred, so this exists to fail
+// early and cheaply.
+func cmdConfigTestLLM(ctx context.Context) error {
+	cfg, err := loadConfigForEdit()
+	if err != nil {
+		return err
+	}
+
+	provider, reason, err := buildLLM(cfg)
+	if err != nil {
+		return err
+	}
+	if provider == nil {
+		return errors.New("no model provider configured or detected (run: mole doctor)")
+	}
+
+	model := provider.ModelFor(llm.TierCheap)
+	src := llm.SourceOf(provider)
+	if reason != "" {
+		fmt.Printf("using %s via %s (%s)\n", model, src, reason)
+	} else {
+		fmt.Printf("using %s via %s\n", model, src)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	resp, err := provider.Complete(ctx, llm.Request{
+		Tier:      llm.TierCheap,
+		MaxTokens: 16,
+		Messages:  []llm.Message{llm.User("Reply with the single word: ok")},
+	})
+	if err != nil {
+		// Distinguish "your credential is wrong" from "the service hiccuped",
+		// because the fix is completely different.
+		switch {
+		case errors.Is(err, llm.ErrUnauthorized):
+			return fmt.Errorf("credential rejected by the provider: %w", err)
+		case errors.Is(err, llm.ErrQuotaExceeded):
+			return fmt.Errorf("account has no remaining quota: %w", err)
+		case llm.Retryable(err):
+			return fmt.Errorf("provider temporarily unavailable, credential may still be fine: %w", err)
+		}
+		return err
+	}
+	if resp.Refused {
+		return fmt.Errorf("provider refused the request (category %q)", resp.RefusalCategory)
+	}
+
+	cost, perr := pricing.NewTable().Cost(resp.Model, pricing.Usage{
+		InputTokens:      resp.Usage.InputTokens,
+		OutputTokens:     resp.Usage.OutputTokens,
+		CacheReadTokens:  resp.Usage.CacheReadTokens,
+		CacheWriteTokens: resp.Usage.CacheWriteTokens,
+	})
+
+	fmt.Printf("✓ reply: %q\n", strings.TrimSpace(resp.Text))
+	fmt.Printf("  model: %s · %d in / %d out tokens · %v\n",
+		resp.Model, resp.Usage.InputTokens, resp.Usage.OutputTokens,
+		resp.Elapsed.Round(time.Millisecond))
+
+	switch {
+	case perr != nil:
+		// An unpriced model is not a failure, but it does mean USD budgeting
+		// cannot work for it — better said now than discovered mid-session.
+		fmt.Printf("  cost:  unpriced — %v\n", perr)
+		fmt.Printf("         USD budgets will not work with this model; use --tokens\n")
+	case cost.USDMicros == 0:
+		fmt.Printf("  cost:  free (local model)\n")
+	default:
+		fmt.Printf("  cost:  %s\n", core.FormatUSD(cost.USDMicros))
+	}
+	return nil
 }
