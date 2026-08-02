@@ -1,0 +1,376 @@
+// Package planner decides what to research next.
+//
+// §9.1's problem: rev 1 passed every summary to the planner on every replan.
+// Summaries accumulate, so planner input grew with lead count and total planner
+// cost was quadratic in leads — worst precisely when research goes deep, which
+// is the case the whole design exists to serve.
+//
+// The fix is the Digest: a fixed-size structured state that is updated
+// incrementally and compacted when it exceeds its budget, so planner input is
+// O(1) in lead count no matter how long a session runs.
+//
+// Two properties of this implementation are worth stating up front.
+//
+// The digest is maintained and compacted MECHANICALLY — no model call. Paying a
+// model to compact the structure that exists to control model cost is
+// self-defeating, and compaction is a policy question ("what does the planner
+// stop needing?") that has a defensible answer in code: answered questions
+// first, then old dead ends.
+//
+// It also carries no page-derived text. Sub-question wording is the planner's
+// own prior output, dead-end causes are a fixed enum, and everything else is a
+// count. So untrusted content never reaches the planner at all, which is
+// stronger than fencing it (§3.2) — there is nothing to fence. The cost is
+// real and stated in Replan: the planner reasons about coverage, not findings.
+package planner
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/lajosdeme/mole/internal/core"
+)
+
+// DefaultDigestChars bounds the serialized digest.
+//
+// Characters rather than tokens for the same reason as chunking (§4.1): the
+// tokenizer differs per provider, and an estimate that runs long produces a
+// rejected request rather than a slightly larger bill. Roughly 1k tokens.
+const DefaultDigestChars = 4000
+
+// SubQuestion is one thread of the research.
+type SubQuestion struct {
+	// ID is short and stable so the planner can refer to a question across
+	// replans without the full text being echoed back each time.
+	ID   string
+	Text string
+
+	// Leads counts dispatches against this question; Claims counts what came
+	// back. The pair is the coverage signal: leads without claims is a
+	// question being asked badly, not a question with no answer.
+	Leads  int
+	Claims int
+
+	// Answered is set by the planner, not inferred from a claim count. A
+	// question can accumulate claims that do not answer it.
+	Answered bool
+}
+
+// DeadEnd records a lead that produced nothing, collapsed by cause.
+//
+// Collapsed rather than listed: twenty bot_block failures are one fact for the
+// planner ("this route is blocked"), and listing each would spend the digest's
+// whole budget on the least informative part of it.
+type DeadEnd struct {
+	Cause string
+	Count int
+	// Example is one query that hit this cause, so the planner can tell a
+	// blocked domain from a badly phrased search.
+	Example string
+}
+
+// Digest is the planner's entire view of a session.
+type Digest struct {
+	// Question is the original prompt. Never dropped by compaction: without it
+	// the planner does not know what it is researching.
+	Question string
+
+	Questions []SubQuestion
+	DeadEnds  []DeadEnd
+
+	// LeadsRun and ClaimsFound are session totals, kept even when the
+	// per-question detail is compacted away.
+	LeadsRun    int
+	ClaimsFound int
+
+	// MaxChars bounds the serialized form. Zero uses DefaultDigestChars.
+	MaxChars int
+
+	// answeredDropped counts questions compaction removed, so the summary line
+	// can still report them. A compaction artefact, not state worth restoring
+	// exactly on resume.
+	answeredDropped int
+
+	// openElided counts OPEN questions compaction had to drop. Surfaced in the
+	// serialized form: the planner must know its view is partial, or it will
+	// read a truncated list as the complete set of remaining work.
+	openElided int
+}
+
+// NewDigest starts a digest for a session.
+func NewDigest(question string, maxChars int) *Digest {
+	if maxChars <= 0 {
+		maxChars = DefaultDigestChars
+	}
+	return &Digest{Question: question, MaxChars: maxChars}
+}
+
+// AddQuestions registers sub-questions the planner proposed.
+func (d *Digest) AddQuestions(qs []SubQuestion) {
+	for _, q := range qs {
+		if q.Text == "" {
+			continue
+		}
+		if d.find(q.ID) != nil {
+			continue
+		}
+		if q.ID == "" {
+			q.ID = fmt.Sprintf("q%d", len(d.Questions)+1)
+		}
+		d.Questions = append(d.Questions, q)
+	}
+	d.compact()
+}
+
+// RecordLead notes a dispatch against a sub-question.
+func (d *Digest) RecordLead(questionID string) {
+	d.LeadsRun++
+	if q := d.find(questionID); q != nil {
+		q.Leads++
+	}
+}
+
+// RecordClaims notes evidence found for a sub-question.
+func (d *Digest) RecordClaims(questionID string, n int) {
+	if n <= 0 {
+		return
+	}
+	d.ClaimsFound += n
+	if q := d.find(questionID); q != nil {
+		q.Claims += n
+	}
+	d.compact()
+}
+
+// RecordDeadEnd notes a lead that produced no evidence (§9.5 degraded).
+func (d *Digest) RecordDeadEnd(cause, exampleQuery string) {
+	if cause == "" {
+		cause = "no_evidence"
+	}
+	for i := range d.DeadEnds {
+		if d.DeadEnds[i].Cause == cause {
+			d.DeadEnds[i].Count++
+			return
+		}
+	}
+	d.DeadEnds = append(d.DeadEnds, DeadEnd{Cause: cause, Count: 1, Example: exampleQuery})
+	d.compact()
+}
+
+// MarkAnswered closes a sub-question.
+func (d *Digest) MarkAnswered(questionID string) {
+	if q := d.find(questionID); q != nil {
+		q.Answered = true
+	}
+	d.compact()
+}
+
+// Open returns the sub-questions still without an answer.
+func (d *Digest) Open() []SubQuestion {
+	var out []SubQuestion
+	for _, q := range d.Questions {
+		if !q.Answered {
+			out = append(out, q)
+		}
+	}
+	return out
+}
+
+// Complete reports whether every sub-question has been answered. A digest with
+// no questions at all is not complete — nothing has been planned yet.
+func (d *Digest) Complete() bool {
+	return len(d.Questions) > 0 && len(d.Open()) == 0
+}
+
+func (d *Digest) find(id string) *SubQuestion {
+	for i := range d.Questions {
+		if d.Questions[i].ID == id {
+			return &d.Questions[i]
+		}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Compaction
+// ---------------------------------------------------------------------------
+
+// compact shrinks the digest until it serializes within MaxChars.
+//
+// The order is what the planner stops needing first:
+//
+//  1. Dead ends beyond the worst few. They are already collapsed by cause, so
+//     what is left is a long tail of one-offs.
+//  2. Answered questions, oldest first. The count survives in a summary line —
+//     the planner needs to know six questions were answered, not which.
+//  3. Sub-question text, truncated. Losing the tail of a question is worse
+//     than losing the question, so this comes before losing any.
+//  4. Open questions, most-attempted first, with a count of what was elided.
+//
+// Step 4 is a genuine loss and is last for that reason: a planner that cannot
+// see an open question may re-plan it, paying twice. It exists because the
+// alternative is worse. Without it a session where nothing gets answered grows
+// the digest without limit — measured at 43k characters over 500 open
+// questions, ten times the budget — which is exactly the quadratic planner cost
+// §9.1 forbids, arriving by a route the first version of this function missed.
+//
+// Most-attempted-first is the least bad order. A question with leads and no
+// claims is closest to being a dead end, and its failure is already recorded in
+// aggregate; a question never attempted is the actionable one.
+func (d *Digest) compact() {
+	limit := d.MaxChars
+	if limit <= 0 {
+		limit = DefaultDigestChars
+	}
+	if len(d.String()) <= limit {
+		return
+	}
+
+	// 1. Keep only the highest-count dead ends.
+	if len(d.DeadEnds) > 4 {
+		sort.SliceStable(d.DeadEnds, func(i, j int) bool { return d.DeadEnds[i].Count > d.DeadEnds[j].Count })
+		d.DeadEnds = d.DeadEnds[:4]
+		if len(d.String()) <= limit {
+			return
+		}
+	}
+
+	// 2. Drop answered questions, oldest first, keeping a tally.
+	for len(d.String()) > limit {
+		idx := -1
+		for i, q := range d.Questions {
+			if q.Answered {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			break
+		}
+		d.answeredDropped++
+		d.Questions = append(d.Questions[:idx], d.Questions[idx+1:]...)
+	}
+	if len(d.String()) <= limit {
+		return
+	}
+
+	// 3. Truncate question text. Bounded by a floor: a question shortened past
+	// recognition is worse than a slightly oversized digest, because the
+	// planner would re-plan it as new.
+	for width := 160; width >= 40; width -= 40 {
+		for i := range d.Questions {
+			d.Questions[i].Text = truncate(d.Questions[i].Text, width)
+		}
+		if len(d.String()) <= limit {
+			return
+		}
+	}
+
+	// 4. Elide open questions, most-attempted first. Genuinely lossy; see the
+	// doc comment for why it still beats an unbounded digest.
+	for len(d.String()) > limit {
+		idx, worst := -1, -1
+		for i, q := range d.Questions {
+			if !q.Answered && q.Leads > worst {
+				idx, worst = i, q.Leads
+			}
+		}
+		// Never elide the last open question: a digest with none reads as a
+		// finished session and would stop the loop early.
+		if idx < 0 || len(d.Open()) <= 1 {
+			return
+		}
+		d.openElided++
+		d.Questions = append(d.Questions[:idx], d.Questions[idx+1:]...)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Serialization
+// ---------------------------------------------------------------------------
+
+// String renders the digest for a prompt.
+//
+// Stable ordering: two identical states must produce identical text, or the
+// cassette key changes between runs and every replay misses.
+func (d *Digest) String() string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "Research question: %s\n\n", d.Question)
+	fmt.Fprintf(&b, "Progress: %d lead(s) run, %d claim(s) found.\n", d.LeadsRun, d.ClaimsFound)
+
+	answered := 0
+	for _, q := range d.Questions {
+		if q.Answered {
+			answered++
+		}
+	}
+	if total := answered + d.answeredDropped; total > 0 {
+		fmt.Fprintf(&b, "%d sub-question(s) answered.\n", total)
+	}
+
+	open := d.Open()
+	if len(open) == 0 {
+		b.WriteString("\nNo open sub-questions.\n")
+	} else {
+		b.WriteString("\nOpen sub-questions:\n")
+		for _, q := range open {
+			fmt.Fprintf(&b, "  [%s] %s\n", q.ID, q.Text)
+			// Leads-without-claims is the signal that separates "no answer
+			// exists" from "we are asking badly", and the planner needs it to
+			// decide between rephrasing and giving up.
+			fmt.Fprintf(&b, "        %d lead(s) run, %d claim(s) found\n", q.Leads, q.Claims)
+		}
+		if d.openElided > 0 {
+			// Say so. A planner reading a truncated list as the complete set
+			// of remaining work would call the session finished.
+			fmt.Fprintf(&b, "  (%d further open sub-question(s) elided to fit; "+
+				"the list above is partial)\n", d.openElided)
+		}
+	}
+
+	if len(d.DeadEnds) > 0 {
+		b.WriteString("\nDead ends so far:\n")
+		for _, de := range d.DeadEnds {
+			fmt.Fprintf(&b, "  %s ×%d", de.Cause, de.Count)
+			if de.Example != "" {
+				fmt.Fprintf(&b, " (e.g. %q)", truncate(de.Example, 60))
+			}
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+func truncate(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) <= max {
+		return s
+	}
+	cut := s[:max]
+	// Back off to a rune boundary so a truncated digest stays valid UTF-8.
+	for len(cut) > 0 && cut[len(cut)-1]&0xC0 == 0x80 {
+		cut = cut[:len(cut)-1]
+	}
+	if i := strings.LastIndexByte(cut, ' '); i > max/2 {
+		cut = cut[:i]
+	}
+	return cut + "…"
+}
+
+// LeadsFor turns open sub-questions into dispatchable leads.
+func LeadsFor(sessionID string, actor core.ActorType, qs []SubQuestion, depth int, parent *string) []core.Lead {
+	out := make([]core.Lead, 0, len(qs))
+	for _, q := range qs {
+		out = append(out, core.Lead{
+			SessionID: sessionID,
+			ActorType: actor,
+			Query:     q.Text,
+			Depth:     depth,
+			ParentID:  parent,
+			Status:    core.LeadQueued,
+		})
+	}
+	return out
+}
