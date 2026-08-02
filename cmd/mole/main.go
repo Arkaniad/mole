@@ -1,9 +1,9 @@
 // Command mole is the daemon and CLI.
 //
-// Through M1 the commands here operate on persisted state and on configuration
-// — migrate, doctor, sessions, trace, config — plus a dev seeder so the trace
-// view can be exercised by hand. The research loop itself arrives with the
-// planner in M2; until then WebActor is driven from tests.
+// Through M1: `research` runs a single web lead end to end inside a real
+// reservation, and the rest operate on persisted state or configuration —
+// migrate, doctor, sessions, trace, config — plus a dev seeder. The planner
+// that turns one question into many leads arrives in M3.
 package main
 
 import (
@@ -39,6 +39,7 @@ Usage:
   mole <command> [flags]
 
 Commands:
+  research     Run one research question end to end (see: mole research -h)
   migrate      Apply pending database migrations
   config       Get, set, and list settings (see: mole config)
   doctor       Check configuration and environment
@@ -84,6 +85,8 @@ func run(args []string) error {
 		return cmdConfig(ctx, rest)
 	case "doctor":
 		return cmdDoctor(ctx, rest)
+	case "research":
+		return cmdResearch(ctx, rest)
 	case "sessions":
 		return cmdSessions(ctx, rest)
 	case "trace":

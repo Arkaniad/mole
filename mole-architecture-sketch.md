@@ -1414,7 +1414,16 @@ mole research "What is the current consensus on tokenizer-free byte-level LLMs?"
 
 Budget flags are explicit and mutually exclusive — `--usd 3.00` or `--tokens 50000`. There
 is deliberately no bare `--budget N`: a bare number is ambiguous between the two units, and
-§8 makes the unit semantically load-bearing.
+§8 makes the unit semantically load-bearing. With neither flag, a configured default is
+used; with no configured default either, the command refuses. There is no built-in
+fallback amount, because a number nobody chose is still money being spent.
+
+**What M1 ships.** `mole research` exists from M1, but as a strict subset: no daemon, so
+it runs in-process and holds the write lock; no planner, so the question becomes one web
+lead verbatim and the output says "executing" rather than "planning"; no academic actor
+and no verifier. It reserves, runs, and settles through the real ledger — the same
+sequence M5's executor will run concurrently — so the budget assertions are meaningful
+rather than arithmetic on a struct. `--mode` accepts only `report` until M3.
 
 ```
 session  s_01JQ8F3K   mode=report  budget=$3.00 (escrow $0.45 held, §8.3)
