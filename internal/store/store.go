@@ -106,6 +106,10 @@ type Queries interface {
 	GetLead(ctx context.Context, id string) (*core.Lead, error)
 	ListLeads(ctx context.Context, sessionID string, limit int) ([]*core.Lead, error)
 
+	// CountLeadsByStatus is how the loop knows whether work remains. A read, so
+	// a progress display never contends with the writer (§7.1).
+	CountLeadsByStatus(ctx context.Context, sessionID string) (map[core.LeadStatus]int, error)
+
 	ListClaims(ctx context.Context, sessionID string, limit int) ([]*core.Claim, error)
 	CountClaims(ctx context.Context, sessionID string) (int64, error)
 }
@@ -129,6 +133,26 @@ type Tx interface {
 
 	InsertLead(ctx context.Context, l *core.Lead) error
 	SetLeadStatus(ctx context.Context, id string, status core.LeadStatus) error
+
+	// LeaseNextLead atomically claims the highest-priority queued lead.
+	//
+	// Dequeue and lease must be one statement. Two workers that SELECT then
+	// UPDATE will both see the same row and both run it — paying twice for one
+	// lead, which the budget cannot detect because both charges are real.
+	// Returns nil when the queue is empty.
+	LeaseNextLead(ctx context.Context, sessionID, owner string, expires time.Time) (*core.Lead, error)
+
+	// RenewLease extends a lease the worker still holds. Reports false when the
+	// lease was taken by the recovery sweep, which is how a worker learns it
+	// stalled long enough to be presumed dead.
+	RenewLease(ctx context.Context, leadID, owner string, expires time.Time) (bool, error)
+
+	// ReleaseLease returns a lead to the queue without completing it.
+	ReleaseLease(ctx context.Context, leadID, owner string) error
+
+	// SweepExpiredLeases requeues leads whose worker died. Without it a crash
+	// strands them as leased forever, with no way out (§9.4).
+	SweepExpiredLeases(ctx context.Context, now time.Time) (int, error)
 
 	// InsertClaims writes a batch in one transaction. Claims from one actor
 	// run land together or not at all: a partial batch would leave the graph

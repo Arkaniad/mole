@@ -780,6 +780,117 @@ func (t *queries) SetLeadStatus(ctx context.Context, id string, status core.Lead
 }
 
 // ---------------------------------------------------------------------------
+// Lead queue (§9.2, §9.4)
+// ---------------------------------------------------------------------------
+
+// LeaseNextLead atomically claims the highest-priority queued lead.
+//
+// The UPDATE ... WHERE id = (SELECT ...) is deliberately one statement, but be
+// clear about what that buys TODAY: nothing. §7.1's single-writer pool already
+// serializes the enclosing transaction, so a SELECT-then-UPDATE would be just
+// as safe — verified by writing the naive version and watching the concurrency
+// test still pass.
+//
+// It is written this way because the safety currently comes from the
+// deployment rather than the query, and that is a fragile place for it. M5
+// turns on a worker pool; a future backend may allow concurrent writers. When
+// either happens, two workers seeing the same row both run the lead and pay
+// for it twice — and the ledger cannot detect that, because both charges are
+// real and correctly recorded. The budget simply drains faster than the work
+// justifies, which reads as an expensive model.
+//
+// No test covers the difference. One cannot, against a store that serializes.
+//
+// Priority first, then insertion order, so a verifier follow-up (§11.1) jumps
+// the queue without starving the original leads.
+func (t *queries) LeaseNextLead(ctx context.Context, sessionID, owner string, expires time.Time) (*core.Lead, error) {
+	now := toMicros(time.Now())
+	row := t.q.QueryRowContext(ctx, `
+		UPDATE leads
+		   SET status = ?, lease_owner = ?, lease_expires = ?, updated_at = ?
+		 WHERE id = (
+		       SELECT id FROM leads
+		        WHERE session_id = ? AND status = ?
+		        ORDER BY priority DESC, created_at ASC
+		        LIMIT 1
+		 )
+		RETURNING `+leadCols,
+		string(core.LeadLeased), owner, toMicros(expires), now,
+		sessionID, string(core.LeadQueued))
+
+	l, err := scanLead(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil // queue drained; not an error
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: lease next lead: %w", err)
+	}
+	return l, nil
+}
+
+// RenewLease extends a lease the worker still holds.
+func (t *queries) RenewLease(ctx context.Context, leadID, owner string, expires time.Time) (bool, error) {
+	res, err := t.q.ExecContext(ctx, `
+		UPDATE leads SET lease_expires = ?, updated_at = ?
+		 WHERE id = ? AND lease_owner = ? AND status = ?`,
+		toMicros(expires), toMicros(time.Now()), leadID, owner, string(core.LeadLeased))
+	if err != nil {
+		return false, fmt.Errorf("sqlite: renew lease: %w", err)
+	}
+	n, err := res.RowsAffected()
+	// false rather than an error: losing a lease to the sweep is how a worker
+	// learns it stalled long enough to be presumed dead, which is a normal
+	// event it has to handle, not a failure of this call.
+	return n == 1, err
+}
+
+// ReleaseLease returns a lead to the queue without completing it.
+func (t *queries) ReleaseLease(ctx context.Context, leadID, owner string) error {
+	_, err := t.q.ExecContext(ctx, `
+		UPDATE leads SET status = ?, lease_owner = NULL, lease_expires = NULL, updated_at = ?
+		 WHERE id = ? AND lease_owner = ?`,
+		string(core.LeadQueued), toMicros(time.Now()), leadID, owner)
+	if err != nil {
+		return fmt.Errorf("sqlite: release lease: %w", err)
+	}
+	return nil
+}
+
+// SweepExpiredLeases requeues leads whose worker died (§9.4).
+func (t *queries) SweepExpiredLeases(ctx context.Context, now time.Time) (int, error) {
+	res, err := t.q.ExecContext(ctx, `
+		UPDATE leads SET status = ?, lease_owner = NULL, lease_expires = NULL, updated_at = ?
+		 WHERE status = ? AND lease_expires IS NOT NULL AND lease_expires < ?`,
+		string(core.LeadQueued), toMicros(now), string(core.LeadLeased), toMicros(now))
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: sweep expired leases: %w", err)
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
+
+// CountLeadsByStatus is how the loop knows whether work remains.
+func (t *queries) CountLeadsByStatus(ctx context.Context, sessionID string) (map[core.LeadStatus]int, error) {
+	rows, err := t.q.QueryContext(ctx,
+		`SELECT status, COUNT(*) FROM leads WHERE session_id = ? GROUP BY status`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: count leads: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[core.LeadStatus]int{}
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, err
+		}
+		out[core.LeadStatus(status)] = n
+	}
+	return out, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
 // Claims
 // ---------------------------------------------------------------------------
 
