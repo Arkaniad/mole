@@ -14,8 +14,12 @@ import (
 	"github.com/lajosdeme/mole/internal/budget"
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/executor"
 	"github.com/lajosdeme/mole/internal/llm"
+	"github.com/lajosdeme/mole/internal/output"
+	"github.com/lajosdeme/mole/internal/planner"
 	"github.com/lajosdeme/mole/internal/pricing"
+	"github.com/lajosdeme/mole/internal/queue"
 	"github.com/lajosdeme/mole/internal/record"
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/tools/extract"
@@ -48,8 +52,12 @@ deliberately no bare --budget: a number alone is ambiguous between the two, and
 §8 makes the unit load-bearing. Only USD mode can price a search call, and only
 token mode can bound a model the pricing table does not know.
 
-Through M1 this is one web lead run verbatim; the planner that turns a question
-into many leads arrives in M3, and --mode accepts only "report" until then.
+The question is decomposed into sub-questions, each researched as its own lead,
+and the planner replans against a rolling digest as evidence arrives. The report
+is paid from escrow held back at session start, so a run that spends everything
+it is allowed can still afford to write up what it found.
+
+--mode accepts only "report"; dataset and chain arrive with their milestones.
 `
 
 // researchOpts is what the flags resolve to.
@@ -62,6 +70,7 @@ type researchOpts struct {
 	asJSON      bool
 	quiet       bool
 	alwaysFetch bool
+	maxDepth    int
 	dbPath      string
 }
 
@@ -83,10 +92,12 @@ func newResearchCmd() *cobra.Command {
 	f.StringVar(&o.usd, "usd", "", "budget in dollars, e.g. --usd 3.00")
 	f.Int64Var(&o.tokens, "tokens", 0, "budget in tokens")
 	f.StringVar(&o.mode, "mode", string(core.ModeReport), "session mode")
-	f.IntVar(&o.maxSources, "max-sources", 5, "sources to read for this lead")
+	f.IntVar(&o.maxSources, "max-sources", 5, "sources to read per lead")
 	f.DurationVar(&o.timeout, "timeout", 5*time.Minute, "wall-clock ceiling for the whole session")
 	f.BoolVar(&o.asJSON, "json", false, "emit the result as JSON")
 	f.BoolVar(&o.quiet, "quiet", false, "suppress progress; print only the result")
+	f.IntVar(&o.maxDepth, "max-depth", 2,
+		"how many rounds of follow-up leads the planner may add")
 	f.BoolVar(&o.alwaysFetch, "always-fetch", false,
 		"fetch every page even when the search provider supplied its text (slower; required for citation accuracy and the §17.1 gate)")
 	return c
@@ -148,7 +159,12 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	}
 	defer db.Close()
 
-	ctx, cancel := context.WithTimeout(ctx, o.timeout)
+	// The context gets headroom over the wall-clock CEILING so the two do not
+	// fire together. When they do, the loop is killed mid-lead instead of
+	// stopping at its own check, and the run ends in a cascade of "context
+	// deadline exceeded" from whatever was in flight — a persist, a settle, a
+	// count — rather than a clean "stopped: max_wallclock".
+	ctx, cancel := context.WithTimeout(ctx, o.timeout+30*time.Second)
 	defer cancel()
 
 	led := budget.New(db, budget.DefaultConfig())
@@ -160,8 +176,12 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 		Budget:     amount,
 		// Unit-independent ceilings (§8.5). They bind even when the money
 		// estimate is wrong, which is the case they exist for.
-		MaxToolCalls: int64(o.maxSources)*4 + 8,
-		MaxLeads:     1,
+		// Sized from what the planner can actually produce: an initial fan-out
+		// plus one round of follow-ups per depth level, with headroom. A fixed
+		// 1 was left over from M1, when the CLI ran exactly one lead — the
+		// ceiling worked, which is how the stale value surfaced.
+		MaxToolCalls: int64(maxLeadsFor(o)) * int64(o.maxSources) * 4,
+		MaxLeads:     int64(maxLeadsFor(o)),
 		MaxWallClock: o.timeout,
 	})
 	if err != nil {
@@ -175,33 +195,69 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	if !o.quiet && !o.asJSON {
 		fmt.Printf("session  %s   mode=%s  budget=%s (escrow %s held, §8.3)\n\n",
 			sess.ID, sessionMode, fmtAmount(unit, sess.Budget), fmtAmount(unit, sess.Escrow))
+		if rec.Enabled() {
+			fmt.Printf("cassette %s (%s)\n\n", rec.Path, rec.Mode)
+		}
 		fmt.Println(" executing ─────────────────────────────────────────")
 	}
 
-	settled, runErr := runOneLead(ctx, db, led, actor, sess, question, out, o.quiet || o.asJSON)
+	// Recover anything a previous crash left leased before starting (§9.4).
+	q := queue.New(db, 0)
+	if n, err := q.Sweep(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: lease sweep failed: %v\n", err)
+	} else if n > 0 && !o.quiet {
+		fmt.Printf(" recovered %d lead(s) stranded by a previous run\n", n)
+	}
 
-	// Settle first, report second. The session's final status has to reflect
-	// what the ledger says, and the ledger is only correct once the reservation
-	// is resolved — including when the run failed.
+	exec := &executor.Executor{
+		Store:   db,
+		Ledger:  led,
+		Queue:   q,
+		Planner: &planner.Planner{LLM: actor.LLM, MaxDepth: o.maxDepth},
+		Actors:  map[core.ActorType]actors.Actor{core.ActorWeb: actor},
+		Log:     actor.Log,
+		Owner:   "cli",
+	}
+
+	runRes, runErr := exec.Run(ctx, sess.ID)
+	if runRes != nil {
+		out.Status = string(runRes.Status)
+		out.LeadsRun = runRes.LeadsRun
+		out.LeadsFailed = runRes.LeadsFailed
+		out.Replans = runRes.Replans
+		out.Claims = runRes.Claims
+		out.StoppedBecause = runRes.StoppedBecause
+		if runRes.Digest != nil {
+			out.OpenQuestions = len(runRes.Digest.Open())
+		}
+		if !o.quiet && !o.asJSON {
+			printProgress(runRes, unit)
+		}
+	}
+	if runErr != nil {
+		out.Error = runErr.Error()
+	}
+
+	// The report is paid from escrow (§8.3). Releasing it here is what makes
+	// the money set aside at session creation spendable — a run that produced
+	// good claims and could not afford to write them up would have wasted the
+	// whole budget, not just the last call.
+	report := generateReport(ctx, db, led, actor, sess, out, o)
+
 	status := core.StatusDone
-	switch {
-	case errors.Is(runErr, context.DeadlineExceeded):
-		status = core.StatusExhausted
-	case errors.Is(runErr, context.Canceled):
-		status = core.StatusCancelled
-	case runErr != nil:
+	if runRes != nil {
+		status = runRes.Status
+	}
+	if runErr != nil && status == core.StatusDone {
 		status = core.StatusFailed
 	}
 	if ferr := led.Finish(context.WithoutCancel(ctx), sess.ID, status); ferr != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not finalize session: %v\n", ferr)
 	}
 	out.Status = string(status)
-	if settled != nil {
-		out.Spent = settled.Charged
-		out.Cost = settled.Cost
-	}
-	if runErr != nil {
-		out.Error = runErr.Error()
+
+	if final, err := loadSession(context.WithoutCancel(ctx), db, sess.ID); err == nil {
+		out.Spent = final.Spent
 	}
 
 	if o.asJSON {
@@ -211,90 +267,117 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 			return err
 		}
 	} else {
-		printReport(out, unit, sess.Budget, o.quiet)
+		printReport(out, report, unit, sess.Budget, o.quiet)
 	}
 
-	// A run that hit a ceiling is not a crash, but it is not a success either;
-	// a caller scripting this needs to be able to tell.
 	if runErr != nil {
 		return runErr
 	}
-	if status != core.StatusDone {
-		return fmt.Errorf("session ended %s", status)
+	if status == core.StatusFailed {
+		return fmt.Errorf("session ended %s: %s", status, out.StoppedBecause)
 	}
 	return nil
 }
 
-// runOneLead reserves, runs, and settles. This is the executor's job in M5; the
-// shape is deliberately the same so turning on workers is configuration rather
-// than a rewrite.
-func runOneLead(
+// generateReport synthesizes the answer, charged against released escrow.
+//
+// Never fatal. A failed synthesis costs the prose, not the evidence: the
+// generator falls back to listing verified claims with their citations, which
+// is what the escrow already paid to collect.
+func generateReport(
 	ctx context.Context,
 	db store.Store,
 	led *budget.Ledger,
-	actor actors.Actor,
+	actor *actors.WebActor,
 	sess *core.Session,
-	question string,
 	out *researchOutput,
-	quiet bool,
-) (*budget.SettleResult, error) {
-	lead := core.Lead{
-		ID:        core.NewLeadID(),
-		SessionID: sess.ID,
-		ActorType: core.ActorWeb,
-		Query:     question,
-		Status:    core.LeadQueued,
-	}
-	if err := db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
-		return tx.InsertLead(ctx, &lead)
-	}); err != nil {
-		return nil, err
-	}
-
-	estimate := budget.NewEstimator(sess.BudgetUnit).For(core.ActorWeb, 0)
-	if avail := sess.Available(); estimate > avail {
-		// Reserve what is actually left rather than failing: a small budget
-		// should buy a small run, not an error.
-		estimate = avail
-	}
-	if estimate <= 0 {
-		return nil, fmt.Errorf("budget %s leaves nothing to spend after escrow",
-			fmtAmount(sess.BudgetUnit, sess.Budget))
-	}
-
-	res, err := led.ReserveFor(ctx, sess.ID, lead.ID, estimate)
+	o researchOpts,
+) *output.Report {
+	released, err := led.ReleaseEscrow(context.WithoutCancel(ctx), sess.ID)
 	if err != nil {
-		return nil, err
+		fmt.Fprintf(os.Stderr, "warning: could not release escrow: %v\n", err)
 	}
 
-	started := time.Now()
-	result, runErr := actor.Run(ctx, lead)
-
-	// Settle whatever was spent, even on failure. The tokens were billed either
-	// way, and a ledger of successes cannot enforce a ceiling.
-	var calls []core.ToolCall
-	if result != nil {
-		calls = result.Costs
-	}
-	settled, serr := led.Settle(context.WithoutCancel(ctx), res, calls)
-	if serr != nil {
-		return nil, errors.Join(runErr, fmt.Errorf("settle: %w", serr))
+	gen := &output.Generator{LLM: actor.LLM}
+	report, err := gen.Generate(context.WithoutCancel(ctx), db, sess.ID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: report generation failed: %v\n", err)
+		return nil
 	}
 
-	if result != nil {
-		out.Summary = result.Summary
-		out.Claims = result.Claims
-		out.Stats = result.Stats
-		out.Truncated = result.Truncated
-		if !quiet {
-			printLeadLine(question, result, settled, sess.BudgetUnit, time.Since(started))
+	// Charge it. The tokens were spent whether or not the prose was any good,
+	// and a ledger of successes cannot enforce a ceiling.
+	if !report.Cost.IsZero() {
+		amount := released
+		if amount <= 0 {
+			amount = 1
+		}
+		reservation, rerr := led.ReserveOutput(context.WithoutCancel(ctx), sess.ID, amount)
+		if rerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not reserve for the report; its cost is unrecorded: %v\n", rerr)
+			return report
+		}
+		if _, serr := led.Settle(context.WithoutCancel(ctx), reservation, []core.ToolCall{{
+			SessionID: sess.ID,
+			Role:      core.RoleOutput,
+			Type:      core.CallLLM,
+			Model:     report.Model,
+			Input:     "report",
+			Cost:      priceReport(actor, report),
+		}}); serr != nil {
+			fmt.Fprintf(os.Stderr, "warning: settling the report failed: %v\n", serr)
 		}
 	}
-	if settled.Flagged {
-		fmt.Fprintf(os.Stderr, "warning: lead cost %s against a %s reservation (§8.4)\n",
-			fmtAmount(sess.BudgetUnit, settled.Charged), fmtAmount(sess.BudgetUnit, settled.Reserved))
+
+	out.Report = report.Markdown()
+	out.Degraded = report.Degraded
+	return report
+}
+
+// priceReport turns the generator's token usage into a ledger cost.
+func priceReport(actor *actors.WebActor, r *output.Report) core.Cost {
+	table := actor.Pricing
+	if table == nil {
+		table = pricing.NewTable()
 	}
-	return &settled, runErr
+	cost, err := table.Cost(r.Model, pricing.Usage{
+		InputTokens:      r.Cost.InputTokens,
+		OutputTokens:     r.Cost.OutputTokens,
+		CacheReadTokens:  r.Cost.CacheReadTokens,
+		CacheWriteTokens: r.Cost.CacheWriteTokens,
+	})
+	if err != nil {
+		// An unpriced model still spent tokens. Recording zero dollars but real
+		// tokens keeps token-mode budgets correct and lets doctor surface the
+		// gap, rather than silently inflating or dropping the charge.
+		cost = core.Cost{
+			InputTokens:      r.Cost.InputTokens,
+			OutputTokens:     r.Cost.OutputTokens,
+			CacheReadTokens:  r.Cost.CacheReadTokens,
+			CacheWriteTokens: r.Cost.CacheWriteTokens,
+		}
+	}
+	return cost
+}
+
+// maxLeadsFor bounds the lead tree from the planner's own fan-out limits, so
+// the ceiling and the plan cannot disagree.
+func maxLeadsFor(o researchOpts) int {
+	depth := o.maxDepth
+	if depth < 0 {
+		depth = 0
+	}
+	return planner.DefaultMaxInitialLeads + depth*planner.DefaultMaxNewLeadsPerReplan + 2
+}
+
+func loadSession(ctx context.Context, db store.Store, id string) (*core.Session, error) {
+	var s *core.Session
+	err := db.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		s, err = q.GetSession(ctx, id)
+		return err
+	})
+	return s, err
 }
 
 // ---------------------------------------------------------------------------
@@ -444,106 +527,72 @@ func resolveBudget(usd string, tokens int64, cfg *config.Config) (core.BudgetUni
 // ---------------------------------------------------------------------------
 
 type researchOutput struct {
-	Question  string          `json:"question"`
-	SessionID string          `json:"session_id"`
-	Status    string          `json:"status"`
-	Unit      string          `json:"budget_unit"`
-	Budget    int64           `json:"budget"`
-	Spent     int64           `json:"spent"`
-	Cost      core.Cost       `json:"cost"`
-	Summary   string          `json:"summary"`
-	Claims    []core.Claim    `json:"claims"`
-	Stats     actors.RunStats `json:"stats"`
-	Truncated bool            `json:"truncated"`
-	Error     string          `json:"error,omitempty"`
+	Question  string `json:"question"`
+	SessionID string `json:"session_id"`
+	Status    string `json:"status"`
+	Unit      string `json:"budget_unit"`
+	Budget    int64  `json:"budget"`
+	Spent     int64  `json:"spent"`
+
+	LeadsRun      int `json:"leads_run"`
+	LeadsFailed   int `json:"leads_failed"`
+	Replans       int `json:"replans"`
+	OpenQuestions int `json:"open_questions"`
+
+	Report string       `json:"report"`
+	Claims []core.Claim `json:"claims"`
+
+	StoppedBecause string `json:"stopped_because,omitempty"`
+	Degraded       string `json:"degraded,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
-func printLeadLine(question string, res *actors.Result, s budget.SettleResult, unit core.BudgetUnit, took time.Duration) {
-	// A tick here means the lead worked. A run where most model calls failed
-	// produced a handful of claims by accident and must not look the same as
-	// one that succeeded (§9.5 degraded).
+// printProgress shows what the loop did, in the shape §18.3 sketches.
+func printProgress(res *executor.Result, unit core.BudgetUnit) {
 	mark := "✓"
 	switch {
-	case len(res.Claims) == 0:
+	case res.LeadsRun == 0:
 		mark = "⚠"
-	case res.Stats.ChunksFailed > res.Stats.Chunks-res.Stats.ChunksFailed:
+	case res.LeadsFailed*2 > res.LeadsRun:
+		// More than half the leads failed. The run produced something, but not
+		// the something it was asked for (§9.5 degraded).
 		mark = "~"
 	}
-	q := question
-	if len(q) > 44 {
-		q = q[:43] + "…"
+	fmt.Printf(" %s %d lead(s) run, %d failed  ·  %d replan(s)  ·  %d claim(s)\n",
+		mark, res.LeadsRun, res.LeadsFailed, res.Replans, len(res.Claims))
+	if res.StoppedBecause != "" {
+		fmt.Printf("   stopped: %s\n", res.StoppedBecause)
 	}
-	fmt.Printf(" %s web       %-45q %2d claims  %8s  %s\n",
-		mark, q, len(res.Claims), fmtAmount(unit, s.Charged), took.Round(time.Millisecond))
 }
 
-func printReport(out *researchOutput, unit core.BudgetUnit, budgetAmt int64, quiet bool) {
+func printReport(out *researchOutput, report *output.Report, unit core.BudgetUnit, budgetAmt int64, quiet bool) {
 	if !quiet {
 		fmt.Println()
 	}
-
-	if out.Summary != "" {
-		fmt.Println(out.Summary)
-		fmt.Println()
+	if report != nil {
+		fmt.Println(report.Markdown())
+	} else if out.Report != "" {
+		fmt.Println(out.Report)
 	}
 
-	if len(out.Claims) > 0 {
-		// Sources are numbered and listed once, so a claim cites [n] rather
-		// than repeating a URL that is often longer than the claim.
-		sources, index := numberSources(out.Claims)
-
-		fmt.Println("Claims")
-		for _, c := range out.Claims {
-			fmt.Printf("  [%d] %s\n", index[c.Source], c.Text)
-			fmt.Printf("      > %s\n", ellipsize(c.Quote, 100))
-		}
-		fmt.Println()
-		fmt.Println("Sources")
-		for i, src := range sources {
-			fmt.Printf("  [%d] %s\n", i+1, src)
-		}
-		fmt.Println()
-	}
-
-	// The counters that matter for M1: what the quote check rejected, and
-	// whether the sub-budget cut the document short.
-	fmt.Printf(" spent %s / %s  ·  claims %d  ·  sources %d read (%d from provider)  ·  chunks %d\n",
+	fmt.Printf(" spent %s / %s  ·  %d lead(s), %d failed  ·  %d replan(s)  ·  %d claim(s)\n",
 		fmtAmount(unit, out.Spent), fmtAmount(unit, budgetAmt),
-		len(out.Claims), out.Stats.Fetched+out.Stats.SkippedFetch, out.Stats.SkippedFetch, out.Stats.Chunks)
+		out.LeadsRun, out.LeadsFailed, out.Replans, len(out.Claims))
 
-	// Failed model calls are the difference between "the sources were thin"
-	// and "the run barely worked". Buried in WARN lines they scroll past; the
-	// summary is where a reader decides whether to trust the result.
-	if out.Stats.ChunksFailed > 0 {
-		fmt.Printf(" DEGRADED: %d of %d model call(s) failed — see the warnings above (§9.5)\n",
-			out.Stats.ChunksFailed, out.Stats.Chunks)
+	if out.OpenQuestions > 0 {
+		// The planner stopped with questions still open. Saying so is the
+		// difference between "this is the answer" and "this is what fit the
+		// budget", which a reader has to be able to tell apart.
+		fmt.Printf(" %d sub-question(s) still open when the run stopped\n", out.OpenQuestions)
 	}
-	if out.Stats.ClaimsRejected > 0 {
-		fmt.Printf(" %d of %d proposed claims rejected: quote not found in the source (§11.5)\n",
-			out.Stats.ClaimsRejected, out.Stats.ClaimsProposed)
-	}
-	if out.Truncated {
-		fmt.Println(" truncated: the sub-budget did not cover every chunk (§4.1)")
+	if out.StoppedBecause != "" {
+		fmt.Printf(" stopped: %s\n", out.StoppedBecause)
 	}
 	if out.Error != "" {
-		fmt.Printf(" ended %s: %s\n", out.Status, out.Error)
+		fmt.Printf(" error: %s\n", out.Error)
 	}
-	fmt.Printf("\n mole trace %s   for the per-call cost breakdown\n", out.SessionID)
-}
-
-// numberSources assigns each distinct source a stable number in first-seen
-// order, which is the order a reader meets them.
-func numberSources(claims []core.Claim) ([]string, map[string]int) {
-	index := map[string]int{}
-	var ordered []string
-	for _, c := range claims {
-		if _, seen := index[c.Source]; seen {
-			continue
-		}
-		ordered = append(ordered, c.Source)
-		index[c.Source] = len(ordered)
-	}
-	return ordered, index
+	fmt.Printf("\n mole eval %s        for the scorecard\n", out.SessionID)
+	fmt.Printf(" mole trace %s       for the per-call cost breakdown\n", out.SessionID)
 }
 
 func fmtAmount(unit core.BudgetUnit, amount int64) string {

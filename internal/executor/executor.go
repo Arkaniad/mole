@@ -260,7 +260,10 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 		}
 	}
 
-	final, err := e.session(ctx, sessionID)
+	// Without a live context this read fails on a timed-out or cancelled run —
+	// exactly the runs whose spend most needs reporting — and the result says
+	// 0 spent while the ledger holds the real figure.
+	final, err := e.session(context.WithoutCancel(ctx), sessionID)
 	if err == nil {
 		res.Spent = final.Spent
 	}

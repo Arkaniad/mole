@@ -218,7 +218,7 @@ The suites that carry weight:
 | M0 | Foundations — store, ledger, cassettes, tracing | **done** |
 | M1 | WebActor end to end + fetch failure classification | **done** |
 | M2 | Eval harness + `mole stats --fetch` | in progress |
-| M3 | Planner loop, rolling digest, error policy | |
+| M3 | Planner loop, rolling digest, error policy | in progress |
 | M4 | Claim graph + Verifier | |
 | M5 | Executor pool | |
 | M6 | AcademicActor | |
@@ -232,9 +232,9 @@ The suites that carry weight:
 
 Stated plainly rather than left to be discovered:
 
-- **The happy path has not run against a live provider yet.** Everything above
-  the actor boundary is tested with stubs and fakes. The first real run may
-  surface response shapes the fakes do not reproduce.
+- **M3 is partly done.** Queue, planner, executor loop and report output are
+  in; the artifact cache (§9.3) is not, so two leads converging on one URL still
+  pay for two fetches.
 - **M2 is partly done.** `mole stats --fetch`, the cassette wiring, and the
   mechanical scorer (`mole eval`) are in; the question corpus (§14.2) is not. Two of its metrics —
   contradiction recall and staleness detection — will read zero until the

@@ -508,3 +508,88 @@ func TestCeilingsAreUnitIndependent(t *testing.T) {
 		t.Fatalf("reserve past MaxToolCalls error = %v, want ErrInsufficientBudget", err)
 	}
 }
+
+// TestReserveOutputIgnoresCeilings. The unit-independent ceilings exist to stop
+// research running away (§8.5), and by the time output runs the research has
+// already stopped — usually BECAUSE a ceiling fired. Enforcing them here means
+// the more effective a ceiling is, the less likely the session can afford to
+// write up what it found, which inverts what escrow is for (§8.3).
+func TestReserveOutputIgnoresCeilings(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	led := budget.New(db, budget.DefaultConfig())
+
+	sess, err := led.CreateSession(ctx, budget.SessionSpec{
+		Prompt: "q", Mode: core.ModeReport,
+		ActorTypes: []core.ActorType{core.ActorWeb},
+		BudgetUnit: core.BudgetUSD, Budget: 10 * core.MicrosPerUSD,
+		MaxLeads: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Drive the session into its lead ceiling.
+	if err := db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.ApplyBudgetDelta(ctx, sess.ID, store.BudgetDelta{LeadCount: 1})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := led.Reserve(ctx, sess.ID, 1000); err == nil {
+		t.Error("a normal reservation succeeded past the ceiling")
+	}
+
+	released, err := led.ReleaseEscrow(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released <= 0 {
+		t.Fatal("no escrow was held to fund the report")
+	}
+
+	r, err := led.ReserveOutput(ctx, sess.ID, released)
+	if err != nil {
+		t.Fatalf("the report could not be funded from escrow after a ceiling fired: %v", err)
+	}
+	if _, err := led.Settle(ctx, r, []core.ToolCall{{
+		SessionID: sess.ID, Role: core.RoleOutput, Type: core.CallLLM,
+		Cost: core.Cost{USDMicros: 5_000},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestReserveOutputStillRespectsAvailableBudget. Escrow is the bound, not an
+// exemption: a session with nothing left cannot conjure a report.
+func TestReserveOutputStillRespectsAvailableBudget(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	led := budget.New(db, budget.DefaultConfig())
+
+	sess, err := led.CreateSession(ctx, budget.SessionSpec{
+		Prompt: "q", Mode: core.ModeReport,
+		ActorTypes: []core.ActorType{core.ActorWeb},
+		BudgetUnit: core.BudgetUSD, Budget: 100_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Spend everything that is not escrow.
+	avail := sess.Available()
+	r, err := led.Reserve(ctx, sess.ID, avail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := led.Settle(ctx, r, []core.ToolCall{{
+		SessionID: sess.ID, Role: core.RoleExecutor, Type: core.CallLLM,
+		Cost: core.Cost{USDMicros: avail},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := led.ReserveOutput(ctx, sess.ID, 1_000_000); err == nil {
+		t.Error("ReserveOutput handed out budget the session does not have")
+	}
+}

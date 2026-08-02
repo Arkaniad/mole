@@ -526,3 +526,99 @@ func TestNoActorRegisteredIsFatal(t *testing.T) {
 		t.Errorf("status = %s, want failed", res.Status)
 	}
 }
+
+// TestTokenModeChargesTokensNotDollars. The two units are not interchangeable:
+// in token mode a search call priced only in dollars contributes nothing, which
+// is a real property of the mode (§8.5) and not a bug — but the model tokens
+// must land, or the ceiling is enforced against zero.
+//
+// Ported from the single-lead CLI test the executor replaced.
+func TestTokenModeChargesTokensNotDollars(t *testing.T) {
+	ctx := context.Background()
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "t.db"), sqlite.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	led := budget.New(db, budget.DefaultConfig())
+	sess, err := led.CreateSession(ctx, budget.SessionSpec{
+		Prompt: "q", Mode: core.ModeReport,
+		ActorTypes: []core.ActorType{core.ActorWeb},
+		BudgetUnit: core.BudgetTokens, Budget: 200_000,
+		MaxLeads: 50, MaxToolCalls: 200,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fl := &scriptedLLM{replies: []string{planJSON("a"), `{"done":true}`}}
+	act := &scriptedActor{outcome: func(int, core.Lead) (*actors.Result, error) {
+		return &actors.Result{
+			Costs: []core.ToolCall{
+				// Priced in dollars only: contributes nothing in token mode.
+				{Role: core.RoleExecutor, Type: core.CallSearch, Cost: core.Cost{USDMicros: 5_000}},
+				{Role: core.RoleExecutor, Type: core.CallLLM,
+					Cost: core.Cost{USDMicros: 41_000, InputTokens: 12_000, OutputTokens: 900}},
+			},
+		}, nil
+	}}
+
+	e := &executor.Executor{
+		Store: db, Ledger: led, Queue: queue.New(db, time.Minute),
+		Planner: &planner.Planner{LLM: fl, MaxInitialLeads: 1, MaxDepth: 1},
+		Actors:  map[core.ActorType]actors.Actor{core.ActorWeb: act},
+		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Sleep:   func(context.Context, time.Duration) error { return nil },
+	}
+	if _, err := e.Run(ctx, sess.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var after *core.Session
+	if err := db.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		after, err = q.GetSession(ctx, sess.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 12900 from the actor's model call, plus the planner's own tokens. The
+	// dollar-only search call must contribute none of it.
+	if after.Spent < 12_900 {
+		t.Errorf("spent %d tokens, want at least the 12900 the model reported", after.Spent)
+	}
+	if after.Spent > 100_000 {
+		t.Errorf("spent %d tokens — dollar amounts leaked into a token budget", after.Spent)
+	}
+}
+
+// TestReservationIsClampedToWhatRemains. A budget smaller than the estimator's
+// seed should buy a small run, not an error. Escrow is already held back, so
+// the clamp has to respect Available rather than Budget.
+//
+// Ported from the single-lead CLI test the executor replaced.
+func TestReservationIsClampedToWhatRemains(t *testing.T) {
+	// Far below the estimator seed for a web lead.
+	r := newRig(t, 30_000, []string{planJSON("a"), `{"done":true}`},
+		func(int, core.Lead) (*actors.Result, error) { return okResult(1, 1_000), nil })
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatalf("a small budget failed instead of buying a small run: %v", err)
+	}
+	if res.LeadsRun == 0 {
+		t.Error("no lead ran at all on a small budget")
+	}
+	after := r.reload(t)
+	if after.Spent > after.Budget {
+		t.Errorf("spent %d against a %d budget", after.Spent, after.Budget)
+	}
+	if after.Held != 0 {
+		t.Errorf("%d held after a clamped run", after.Held)
+	}
+}

@@ -156,6 +156,26 @@ func (l *Ledger) escrowFor(budget int64) int64 {
 // also a TOCTOU bug — the peeked lead is not necessarily the popped one. Here
 // the amount reserved is always for the lead actually dequeued.
 func (l *Ledger) Reserve(ctx context.Context, sessionID string, amount int64) (*core.Reservation, error) {
+	return l.reserve(ctx, sessionID, amount, true)
+}
+
+// ReserveOutput reserves for the report, ignoring the unit-independent
+// ceilings.
+//
+// Those ceilings exist to stop research running away (§8.5), and by the time
+// output runs the research has already stopped — usually BECAUSE a ceiling
+// fired. Enforcing them here means the more effective a ceiling is, the less
+// likely the session can afford to write up what it found, which inverts what
+// escrow is for (§8.3).
+//
+// The escrow itself is the bound: the caller releases it, and this can only
+// spend what Available() then reports. A session that has genuinely run out of
+// money still cannot reserve.
+func (l *Ledger) ReserveOutput(ctx context.Context, sessionID string, amount int64) (*core.Reservation, error) {
+	return l.reserve(ctx, sessionID, amount, false)
+}
+
+func (l *Ledger) reserve(ctx context.Context, sessionID string, amount int64, enforceCeilings bool) (*core.Reservation, error) {
 	if amount <= 0 {
 		return nil, fmt.Errorf("budget: reserve amount must be positive, got %d", amount)
 	}
@@ -178,8 +198,10 @@ func (l *Ledger) Reserve(ctx context.Context, sessionID string, amount int64) (*
 		if s.Status.Terminal() {
 			return fmt.Errorf("budget: session %s is %s", sessionID, s.Status)
 		}
-		if hit, which := s.HitCeiling(now); hit {
-			return fmt.Errorf("%w: session %s hit %s", ErrInsufficientBudget, sessionID, which)
+		if enforceCeilings {
+			if hit, which := s.HitCeiling(now); hit {
+				return fmt.Errorf("%w: session %s hit %s", ErrInsufficientBudget, sessionID, which)
+			}
 		}
 		if avail := s.Available(); amount > avail {
 			return fmt.Errorf("%w: need %s, have %s",
