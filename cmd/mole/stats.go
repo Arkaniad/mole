@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
+	"errors"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/tools/fetch"
+	"github.com/spf13/cobra"
 )
 
 // mole stats
@@ -24,63 +25,73 @@ import (
 // rather than a browser would fix. Printing counts and letting a reader divide
 // is how the wrong number gets quoted in a decision.
 
-const statsUsage = `mole stats — cross-session measurement
-
-Usage:
-  mole stats --fetch [flags]
-
-Flags:
-  --fetch          Fetch outcome mix and the §17.1 headless-browser gate
-  --since D        Look back this far (default 720h, i.e. 30 days)
-  --domains N      Show the top N domains per cause (default 5, 0 to omit)
-  --json           Emit the aggregation as JSON
-  --db PATH        Database path
+// statsUsage is the prose cobra cannot generate; the flag list comes from the
+// definitions themselves.
+const statsUsage = `Cross-session measurement.
 
 The gate reads js_required as a fraction of ELIGIBLE fetches: requests actually
 made, minus the ones Mole itself refused. Refusals are the system working, and
 leaving them in the denominator understates a capability gap that is real.
+Fetches the search provider supplied content for are excluded too — they were
+never attempted, and counting them moves the rate whenever you switch provider.
 `
 
-func cmdStats(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("stats", flag.ContinueOnError)
-	fs.Usage = func() { fmt.Print(statsUsage) }
-	dbPath := addDBFlag(fs)
-	wantFetch := fs.Bool("fetch", false, "fetch outcome mix")
-	since := fs.Duration("since", 720*time.Hour, "look-back window")
-	domains := fs.Int("domains", 5, "top domains per cause")
-	asJSON := fs.Bool("json", false, "emit JSON")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if !*wantFetch {
-		fmt.Print(statsUsage)
-		return fmt.Errorf("nothing selected: pass --fetch")
+func newStatsCmd() *cobra.Command {
+	var (
+		wantFetch bool
+		since     time.Duration
+		domains   int
+		asJSON    bool
+	)
+
+	c := &cobra.Command{
+		Use:   "stats",
+		Short: "Cross-session measurement",
+		Long:  statsUsage,
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if !wantFetch {
+				_ = cmd.Help()
+				return errors.New("nothing selected: pass --fetch")
+			}
+			return cmdStats(cmd.Context(), dbPath(cmd), since, domains, asJSON)
+		},
 	}
 
-	db, err := openDBRead(ctx, *dbPath)
+	f := c.Flags()
+	f.BoolVar(&wantFetch, "fetch", false, "fetch outcome mix and the §17.1 headless-browser gate")
+	f.DurationVar(&since, "since", 720*time.Hour, "look-back window")
+	f.IntVar(&domains, "domains", 5, "top domains per cause (0 to omit)")
+	f.BoolVar(&asJSON, "json", false, "emit the aggregation as JSON")
+	return c
+}
+
+func cmdStats(ctx context.Context, path string, since time.Duration, domains int, asJSON bool) error {
+	cutoff := time.Now().Add(-since)
+
+	db, err := openDBRead(ctx, path)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
-	cutoff := time.Now().Add(-*since)
 	var stats []store.FetchStat
 	if err := db.Read(ctx, func(ctx context.Context, q store.Queries) error {
 		var err error
-		stats, err = q.FetchOutcomeStats(ctx, cutoff, *domains)
+		stats, err = q.FetchOutcomeStats(ctx, cutoff, domains)
 		return err
 	}); err != nil {
 		return err
 	}
 
-	mix := summarize(stats, *since)
+	mix := summarize(stats, since)
 
-	if *asJSON {
+	if asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(mix)
 	}
-	printFetchMix(mix, stats, *domains)
+	printFetchMix(mix, stats, domains)
 	return nil
 }
 

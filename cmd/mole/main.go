@@ -9,15 +9,12 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -29,78 +26,11 @@ import (
 	"github.com/lajosdeme/mole/internal/pricing"
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/store/sqlite"
+	"github.com/spf13/cobra"
 )
 
 // version is overridden at build time via -ldflags.
 var version = "dev"
-
-const usage = `mole — deep research agent
-
-Usage:
-  mole <command> [flags]
-
-Commands:
-  research     Run one research question end to end (see: mole research -h)
-  migrate      Apply pending database migrations
-  config       Get, set, and list settings (see: mole config)
-  doctor       Check configuration and environment
-  sessions     List recent sessions
-  stats        Cross-session measurement (see: mole stats -h)
-  trace        Show the cost and span breakdown for one session
-  dev          Development helpers (see: mole dev -h)
-  version      Print version
-
-Global flags:
-  --db PATH    Database path (default $MOLE_DB, else the XDG data dir)
-`
-
-func main() {
-	if err := run(os.Args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			os.Exit(2)
-		}
-		fmt.Fprintln(os.Stderr, "mole: "+err.Error())
-		os.Exit(1)
-	}
-}
-
-func run(args []string) error {
-	if len(args) == 0 {
-		fmt.Print(usage)
-		return nil
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	cmd, rest := args[0], args[1:]
-	switch cmd {
-	case "version", "--version", "-v":
-		fmt.Println("mole " + version)
-		return nil
-	case "help", "--help", "-h":
-		fmt.Print(usage)
-		return nil
-	case "migrate":
-		return cmdMigrate(ctx, rest)
-	case "config":
-		return cmdConfig(ctx, rest)
-	case "doctor":
-		return cmdDoctor(ctx, rest)
-	case "research":
-		return cmdResearch(ctx, rest)
-	case "sessions":
-		return cmdSessions(ctx, rest)
-	case "stats":
-		return cmdStats(ctx, rest)
-	case "trace":
-		return cmdTrace(ctx, rest)
-	case "dev":
-		return cmdDev(ctx, rest)
-	default:
-		return fmt.Errorf("unknown command %q (try: mole help)", cmd)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Shared plumbing
@@ -121,10 +51,6 @@ func defaultDBPath() string {
 		base = filepath.Join(home, ".local", "share")
 	}
 	return filepath.Join(base, "mole", "mole.db")
-}
-
-func addDBFlag(fs *flag.FlagSet) *string {
-	return fs.String("db", defaultDBPath(), "database path")
 }
 
 // openDBWrite opens and migrates. Only commands that actually write should use
@@ -183,59 +109,6 @@ func openDBRead(ctx context.Context, path string) (*sqlite.DB, error) {
 	return db, nil
 }
 
-// parseArgs is flag.FlagSet.Parse that tolerates flags after positionals.
-//
-// Go's flag package stops at the first non-flag argument, so
-//
-//	mole research "a question" --usd 0.50
-//
-// silently leaves --usd unparsed and folds it into the question. Every usage
-// string in this binary shows the positional first, because that is how people
-// write it — so the parser has to accept it rather than the docs being wrong.
-//
-// Flags are hoisted ahead of positionals and the result handed to Parse, which
-// still owns validation. A bare "--" ends flag parsing, as usual.
-func parseArgs(fs *flag.FlagSet, args []string) error {
-	var flags, positional []string
-
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--":
-			positional = append(positional, args[i+1:]...)
-			i = len(args)
-			continue
-		case a == "-" || !strings.HasPrefix(a, "-"):
-			positional = append(positional, a)
-			continue
-		}
-
-		flags = append(flags, a)
-		name := strings.TrimLeft(a, "-")
-		if strings.Contains(name, "=") {
-			continue // --flag=value carries its own value
-		}
-		f := fs.Lookup(name)
-		if f == nil {
-			continue // unknown: let Parse produce the error
-		}
-		// A boolean flag takes no following value; consuming one would eat a
-		// positional argument.
-		if b, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && b.IsBoolFlag() {
-			continue
-		}
-		if i+1 < len(args) {
-			i++
-			flags = append(flags, args[i])
-		}
-	}
-
-	// Always re-emit the "--" separator. Every real flag has been hoisted
-	// above, so anything left is positional by construction — and this is also
-	// what lets a question that happens to start with a dash survive.
-	return fs.Parse(append(append(flags, "--"), positional...))
-}
-
 func newTabWriter() *tabwriter.Writer {
 	return tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 }
@@ -244,14 +117,19 @@ func newTabWriter() *tabwriter.Writer {
 // migrate
 // ---------------------------------------------------------------------------
 
-func cmdMigrate(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
-	dbPath := addDBFlag(fs)
-	if err := fs.Parse(args); err != nil {
-		return err
+func newMigrateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "migrate",
+		Short: "Apply pending database migrations",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmdMigrate(cmd.Context(), dbPath(cmd))
+		},
 	}
+}
 
-	db, err := openDBWrite(ctx, *dbPath)
+func cmdMigrate(ctx context.Context, path string) error {
+	db, err := openDBWrite(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -272,17 +150,22 @@ func cmdMigrate(ctx context.Context, args []string) error {
 //
 // It exits non-zero when something is actually broken, so a setup script can
 // branch on it.
-func cmdDoctor(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	dbPath := addDBFlag(fs)
-	if err := fs.Parse(args); err != nil {
-		return err
+func newDoctorCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "doctor",
+		Short: "Check configuration and environment",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmdDoctor(cmd.Context(), dbPath(cmd))
+		},
 	}
+}
 
+func cmdDoctor(ctx context.Context, path string) error {
 	r := &checks{}
 	report := r.require
 
-	db, err := openDBRead(ctx, *dbPath)
+	db, err := openDBRead(ctx, path)
 	if err != nil {
 		report(false, "state db", err.Error())
 		return errors.New("doctor found problems")
@@ -430,15 +313,22 @@ func reportConfig(r *checks) {
 // sessions
 // ---------------------------------------------------------------------------
 
-func cmdSessions(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("sessions", flag.ContinueOnError)
-	dbPath := addDBFlag(fs)
-	limit := fs.Int("limit", 20, "maximum sessions to list")
-	if err := fs.Parse(args); err != nil {
-		return err
+func newSessionsCmd() *cobra.Command {
+	var limit int
+	c := &cobra.Command{
+		Use:   "sessions",
+		Short: "List recent sessions",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmdSessions(cmd.Context(), dbPath(cmd), limit)
+		},
 	}
+	c.Flags().IntVar(&limit, "limit", 20, "maximum sessions to list")
+	return c
+}
 
-	db, err := openDBRead(ctx, *dbPath)
+func cmdSessions(ctx context.Context, path string, limit int) error {
+	db, err := openDBRead(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -447,7 +337,7 @@ func cmdSessions(ctx context.Context, args []string) error {
 	var list []*core.Session
 	if err := db.Read(ctx, func(ctx context.Context, q store.Queries) error {
 		var err error
-		list, err = q.ListSessions(ctx, *limit)
+		list, err = q.ListSessions(ctx, limit)
 		return err
 	}); err != nil {
 		return err
@@ -475,18 +365,19 @@ func cmdSessions(ctx context.Context, args []string) error {
 // trace
 // ---------------------------------------------------------------------------
 
-func cmdTrace(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("trace", flag.ContinueOnError)
-	dbPath := addDBFlag(fs)
-	if err := parseArgs(fs, args); err != nil {
-		return err
+func newTraceCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "trace <session-id>",
+		Short: "Show the cost and span breakdown for one session",
+		Args:  exactArgs(1, "mole trace <session-id>"),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdTrace(cmd.Context(), dbPath(cmd), args[0])
+		},
 	}
-	if fs.NArg() != 1 {
-		return errors.New("usage: mole trace <session-id>")
-	}
-	sessionID := fs.Arg(0)
+}
 
-	db, err := openDBRead(ctx, *dbPath)
+func cmdTrace(ctx context.Context, path, sessionID string) error {
+	db, err := openDBRead(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -595,30 +486,28 @@ func cmdTrace(ctx context.Context, args []string) error {
 // dev
 // ---------------------------------------------------------------------------
 
-func cmdDev(ctx context.Context, args []string) error {
-	if len(args) == 0 {
-		fmt.Println("Usage: mole dev seed [--db PATH]")
-		return nil
+func newDevCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "dev",
+		Short: "Development helpers",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
 	}
-	switch args[0] {
-	case "seed":
-		return cmdDevSeed(ctx, args[1:])
-	default:
-		return fmt.Errorf("unknown dev subcommand %q", args[0])
-	}
+	c.AddCommand(&cobra.Command{
+		Use:   "seed",
+		Short: "Write a synthetic session through the real ledger",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmdDevSeed(cmd.Context(), dbPath(cmd))
+		},
+	})
+	return c
 }
 
-// cmdDevSeed writes one synthetic session through the real ledger — reserve,
-// settle, escrow release — so `mole trace` and `mole doctor` have something to
-// operate on before M1 exists. It uses no network and no LLM.
-func cmdDevSeed(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("dev seed", flag.ContinueOnError)
-	dbPath := addDBFlag(fs)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	db, err := openDBWrite(ctx, *dbPath)
+func cmdDevSeed(ctx context.Context, path string) error {
+	db, err := openDBWrite(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -732,40 +621,52 @@ Usage:
 Keys:
 `
 
-func cmdConfig(ctx context.Context, args []string) error {
-	if len(args) == 0 {
-		printConfigUsage()
-		return nil
+func newConfigCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "config",
+		Short: "Get, set, and list settings",
+		Long:  configUsage + configKeyHelp(),
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			printConfigUsage()
+			return nil
+		},
 	}
-	switch args[0] {
-	case "list":
-		return cmdConfigList()
-	case "get":
-		if len(args) != 2 {
-			return errors.New("usage: mole config get <key>")
-		}
-		return cmdConfigGet(args[1])
-	case "set":
-		if len(args) != 3 {
-			return errors.New("usage: mole config set <key> <value>")
-		}
-		return cmdConfigSet(args[1], args[2])
-	case "path":
-		fmt.Println(config.Path())
-		return nil
-	case "test-llm":
-		return cmdConfigTestLLM(ctx)
-	case "help", "-h", "--help":
-		printConfigUsage()
-		return nil
-	default:
-		return fmt.Errorf("unknown config subcommand %q", args[0])
-	}
+	c.AddCommand(
+		&cobra.Command{
+			Use: "list", Short: "Show all settings (secrets masked)", Args: cobra.NoArgs,
+			RunE: func(*cobra.Command, []string) error { return cmdConfigList() },
+		},
+		&cobra.Command{
+			Use: "get <key>", Short: "Print one value", Args: exactArgs(1, "mole config get <key>"),
+			RunE: func(_ *cobra.Command, a []string) error { return cmdConfigGet(a[0]) },
+		},
+		&cobra.Command{
+			Use: "set <key> <value>", Short: "Assign a value", Args: exactArgs(2, "mole config set <key> <value>"),
+			RunE: func(_ *cobra.Command, a []string) error { return cmdConfigSet(a[0], a[1]) },
+		},
+		&cobra.Command{
+			Use: "path", Short: "Print the config file location", Args: cobra.NoArgs,
+			RunE: func(*cobra.Command, []string) error { fmt.Println(config.Path()); return nil },
+		},
+		&cobra.Command{
+			Use: "test-llm", Short: "Make one cheap call and report model + cost", Args: cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, _ []string) error { return cmdConfigTestLLM(cmd.Context()) },
+		},
+	)
+	return c
 }
 
 func printConfigUsage() {
 	fmt.Print(configUsage)
-	w := newTabWriter()
+	fmt.Print(configKeyHelp())
+}
+
+// configKeyHelp lists the settable keys. Generated from config.Fields() rather
+// than written out, so a new setting cannot be added without appearing here.
+func configKeyHelp() string {
+	var b strings.Builder
+	w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 	for _, f := range config.Fields() {
 		secret := ""
 		if f.Secret {
@@ -774,6 +675,7 @@ func printConfigUsage() {
 		fmt.Fprintf(w, "  %s\t%s%s\n", f.Name, f.Help, secret)
 	}
 	_ = w.Flush()
+	return b.String()
 }
 
 // loadConfigForEdit tolerates a missing file: `mole config set` on a fresh

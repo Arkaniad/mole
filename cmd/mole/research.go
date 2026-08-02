@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -22,6 +21,7 @@ import (
 	"github.com/lajosdeme/mole/internal/tools/extract"
 	"github.com/lajosdeme/mole/internal/tools/fetch"
 	"github.com/lajosdeme/mole/internal/tools/search"
+	"github.com/spf13/cobra"
 )
 
 // mole research
@@ -37,46 +37,61 @@ import (
 // nothing to attach to, so Ctrl-C settles what was spent and stops rather than
 // detaching.
 
-const researchUsage = `mole research — run one research question end to end
+// researchUsage is the prose cobra cannot generate. The flag list is
+// deliberately absent: it is derived from the definitions below, so it cannot
+// drift out of step with them the way the hand-written one did.
+const researchUsage = `Run one research question end to end.
 
-Usage:
-  mole research "<question>" (--usd N | --tokens N) [flags]
+Budget is required and the two units are mutually exclusive — pass --usd N or
+--tokens N, or set a default with ` + "`mole config set default.usd`" + `. There is
+deliberately no bare --budget: a number alone is ambiguous between the two, and
+§8 makes the unit load-bearing. Only USD mode can price a search call, and only
+token mode can bound a model the pricing table does not know.
 
-Budget (exactly one, or a configured default):
-  --usd N          Spend at most N dollars, e.g. --usd 3.00
-  --tokens N       Spend at most N tokens
-
-Flags:
-  --mode MODE      report (default). dataset/chain/ask arrive with their milestones
-  --max-sources N  Sources to read for this lead (default 5)
-  --timeout D      Wall-clock ceiling for the whole session (default 5m)
-  --json           Emit the result as JSON instead of a report
-  --quiet          Suppress progress; print only the result
-  --db PATH        Database path
-
-Budget flags are mutually exclusive on purpose. A bare number is ambiguous
-between dollars and tokens, and §8 makes the unit load-bearing: only USD mode
-can price a search call, and only token mode works with an unpriced model.
+Through M1 this is one web lead run verbatim; the planner that turns a question
+into many leads arrives in M3, and --mode accepts only "report" until then.
 `
 
-func cmdResearch(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("research", flag.ContinueOnError)
-	fs.Usage = func() { fmt.Print(researchUsage) }
-	dbPath := addDBFlag(fs)
-	usd := fs.String("usd", "", "budget in dollars")
-	tokens := fs.Int64("tokens", 0, "budget in tokens")
-	mode := fs.String("mode", string(core.ModeReport), "session mode")
-	maxSources := fs.Int("max-sources", 5, "sources to read")
-	timeout := fs.Duration("timeout", 5*time.Minute, "wall-clock ceiling")
-	asJSON := fs.Bool("json", false, "emit JSON")
-	quiet := fs.Bool("quiet", false, "suppress progress")
-	if err := parseArgs(fs, args); err != nil {
-		return err
+// researchOpts is what the flags resolve to.
+type researchOpts struct {
+	usd        string
+	tokens     int64
+	mode       string
+	maxSources int
+	timeout    time.Duration
+	asJSON     bool
+	quiet      bool
+	dbPath     string
+}
+
+func newResearchCmd() *cobra.Command {
+	var o researchOpts
+
+	c := &cobra.Command{
+		Use:   "research <question>",
+		Short: "Run one research question end to end",
+		Long:  researchUsage,
+		Args:  minArgs(1, `mole research "<question>" (--usd N | --tokens N)`),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			o.dbPath = dbPath(cmd)
+			return cmdResearch(cmd.Context(), strings.Join(args, " "), o)
+		},
 	}
 
-	question := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	f := c.Flags()
+	f.StringVar(&o.usd, "usd", "", "budget in dollars, e.g. --usd 3.00")
+	f.Int64Var(&o.tokens, "tokens", 0, "budget in tokens")
+	f.StringVar(&o.mode, "mode", string(core.ModeReport), "session mode")
+	f.IntVar(&o.maxSources, "max-sources", 5, "sources to read for this lead")
+	f.DurationVar(&o.timeout, "timeout", 5*time.Minute, "wall-clock ceiling for the whole session")
+	f.BoolVar(&o.asJSON, "json", false, "emit the result as JSON")
+	f.BoolVar(&o.quiet, "quiet", false, "suppress progress; print only the result")
+	return c
+}
+
+func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error {
+	question := strings.TrimSpace(rawQuestion)
 	if question == "" {
-		fmt.Print(researchUsage)
 		return errors.New("no question given")
 	}
 
@@ -85,16 +100,16 @@ func cmdResearch(ctx context.Context, args []string) error {
 		return err
 	}
 
-	unit, amount, err := resolveBudget(*usd, *tokens, cfg)
+	unit, amount, err := resolveBudget(o.usd, o.tokens, cfg)
 	if err != nil {
 		return err
 	}
-	sessionMode := core.Mode(*mode)
+	sessionMode := core.Mode(o.mode)
 	if !sessionMode.Valid() {
-		return fmt.Errorf("unknown mode %q", *mode)
+		return fmt.Errorf("unknown mode %q", o.mode)
 	}
 	if sessionMode != core.ModeReport {
-		return fmt.Errorf("mode %q is not implemented yet (M3 for report+, M9 for dataset)", *mode)
+		return fmt.Errorf("mode %q is not implemented yet (M3 for report+, M9 for dataset)", o.mode)
 	}
 
 	// One cassette per question (§14.1). Off unless MOLE_RECORD says otherwise,
@@ -111,7 +126,7 @@ func cmdResearch(ctx context.Context, args []string) error {
 
 	// Build the actor before touching the database. A missing search key should
 	// fail in under a second, not after creating a session that can never run.
-	actor, err := buildWebActor(cfg, rec, *maxSources, *quiet)
+	actor, err := buildWebActor(cfg, rec, o.maxSources, o.quiet)
 	if err != nil {
 		return err
 	}
@@ -120,17 +135,17 @@ func cmdResearch(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	if rec.Enabled() && !*quiet && !*asJSON {
+	if rec.Enabled() && !o.quiet && !o.asJSON {
 		fmt.Printf("cassette %s (%s)\n", rec.Path, rec.Mode)
 	}
 
-	db, err := openDBWrite(ctx, *dbPath)
+	db, err := openDBWrite(ctx, o.dbPath)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
-	ctx, cancel := context.WithTimeout(ctx, *timeout)
+	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
 
 	led := budget.New(db, budget.DefaultConfig())
@@ -142,9 +157,9 @@ func cmdResearch(ctx context.Context, args []string) error {
 		Budget:     amount,
 		// Unit-independent ceilings (§8.5). They bind even when the money
 		// estimate is wrong, which is the case they exist for.
-		MaxToolCalls: int64(*maxSources)*4 + 8,
+		MaxToolCalls: int64(o.maxSources)*4 + 8,
 		MaxLeads:     1,
-		MaxWallClock: *timeout,
+		MaxWallClock: o.timeout,
 	})
 	if err != nil {
 		return err
@@ -154,13 +169,13 @@ func cmdResearch(ctx context.Context, args []string) error {
 
 	out := &researchOutput{Question: question, SessionID: sess.ID, Unit: string(unit), Budget: amount}
 
-	if !*quiet && !*asJSON {
+	if !o.quiet && !o.asJSON {
 		fmt.Printf("session  %s   mode=%s  budget=%s (escrow %s held, §8.3)\n\n",
 			sess.ID, sessionMode, fmtAmount(unit, sess.Budget), fmtAmount(unit, sess.Escrow))
 		fmt.Println(" executing ─────────────────────────────────────────")
 	}
 
-	settled, runErr := runOneLead(ctx, db, led, actor, sess, question, out, *quiet || *asJSON)
+	settled, runErr := runOneLead(ctx, db, led, actor, sess, question, out, o.quiet || o.asJSON)
 
 	// Settle first, report second. The session's final status has to reflect
 	// what the ledger says, and the ledger is only correct once the reservation
@@ -186,14 +201,14 @@ func cmdResearch(ctx context.Context, args []string) error {
 		out.Error = runErr.Error()
 	}
 
-	if *asJSON {
+	if o.asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(out); err != nil {
 			return err
 		}
 	} else {
-		printReport(out, unit, sess.Budget, *quiet)
+		printReport(out, unit, sess.Budget, o.quiet)
 	}
 
 	// A run that hit a ceiling is not a crash, but it is not a success either;

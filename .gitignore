@@ -5,3 +5,6 @@
 *.db-shm
 /testdata/tmp/
 .env
+
+# go build ./cmd/mole without -o drops the binary here
+/mole

@@ -50,6 +50,7 @@ committed, so a key written into one is a leaked key.
 
 ```bash
 make build           # CGO_ENABLED=0 — one static binary, no cgo, no sqlite dep
+./bin/mole --help    # commands and flags, generated from their definitions
 ./bin/mole migrate
 ./bin/mole dev seed  # writes a synthetic session through the real ledger
 ./bin/mole sessions
@@ -224,6 +225,10 @@ Stated plainly rather than left to be discovered:
   `(actor_type, depth)` needs a join to `leads`, which M3 populates. Guessing
   the actor type would poison the distribution — worse than the honestly
   conservative cold-start seeds.
+- **The binary is ~24MB.** Cobra renders help through `text/template`, which
+  defeats much of the linker's dead-code elimination: the CLI port cost 8.4MB
+  of the total. Worth knowing before adding anything else that reaches for
+  reflection.
 - **`mole doctor` only checks what M0 owns.** Provider keys, contact email,
   socket permissions, and sandbox availability are reported as unconfigured and
   wired up in their own milestones.
