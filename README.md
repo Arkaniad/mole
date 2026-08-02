@@ -225,10 +225,17 @@ Stated plainly rather than left to be discovered:
   `(actor_type, depth)` needs a join to `leads`, which M3 populates. Guessing
   the actor type would poison the distribution — worse than the honestly
   conservative cold-start seeds.
-- **The binary is ~24MB.** Cobra renders help through `text/template`, which
-  defeats much of the linker's dead-code elimination: the CLI port cost 8.4MB
-  of the total. Worth knowing before adding anything else that reaches for
-  reflection.
+- **The binary is ~24MB, up 8.3MB after the cobra port.** Cobra itself is only
+  ~0.3MB on top of this dependency set — measured, not assumed. The rest is
+  retained type metadata: cobra and `text/template` use reflection, which stops
+  the linker pruning type information across the whole graph, and the
+  reflection-heavy Anthropic SDK accounts for most of it. Symbol count nearly
+  doubled (22.9k → 40.7k) while symbol *bytes* grew only 3.5MB, which is the
+  signature of metadata rather than code.
+
+  Not a problem for how this ships. Every cobra-based CLI is in the same range
+  — `docker` 27.8MB, `gh` 38.6MB, `kubectl` 84.8MB. It would matter for a
+  per-invocation container image or an edge target, and neither is the plan.
 - **`mole doctor` only checks what M0 owns.** Provider keys, contact email,
   socket permissions, and sandbox availability are reported as unconfigured and
   wired up in their own milestones.
