@@ -67,6 +67,7 @@ Running an actual research question needs a search key and a model:
 
 ./bin/mole research "what is the consensus on byte-level LLMs?" --usd 0.50
 ./bin/mole stats --fetch                       # the §17.1 headless-browser gate
+./bin/mole eval --last --verbose               # score the run against §14.3
 ```
 
 No model key is needed if `ant auth login` has run or a local runtime is up —
@@ -188,6 +189,8 @@ The suites that carry weight:
 | `TestOffsetsSurviveExoticWhitespace` | Quote offsets drifting off the source |
 | `TestClaimCapIsPerSourceNotPerChunk` | One verbose page dominating the graph |
 | `TestProviderContentIsExcludedFromEveryRate` | The §17.1 gate reading a padded denominator |
+| `TestBudgetOvershootIsARegression` | A ceiling that stopped binding, scored as fine |
+| `TestBlockedMetricsAreNamedNotOmitted` | Partial scoring read as full coverage |
 | `TestRoundingDoesNotUnderBill` | Truncation quietly understating spend |
 
 ---
@@ -216,8 +219,8 @@ Stated plainly rather than left to be discovered:
 - **The happy path has not run against a live provider yet.** Everything above
   the actor boundary is tested with stubs and fakes. The first real run may
   surface response shapes the fakes do not reproduce.
-- **M2 is partly done.** `mole stats --fetch` and the cassette wiring are in;
-  the question corpus (§14.2) and scoring are not. Two of its metrics —
+- **M2 is partly done.** `mole stats --fetch`, the cassette wiring, and the
+  mechanical scorer (`mole eval`) are in; the question corpus (§14.2) is not. Two of its metrics —
   contradiction recall and staleness detection — will read zero until the
   Verifier lands in M4, and that is not a regression.
 

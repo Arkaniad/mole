@@ -153,3 +153,11 @@ func TestModeIsStillGated(t *testing.T) {
 		t.Errorf("err = %v, want the unimplemented-mode refusal", err)
 	}
 }
+
+// TestEvalRequiresASession rather than silently scoring an arbitrary one.
+func TestEvalRequiresASession(t *testing.T) {
+	_, err := exec(t, "eval")
+	if err == nil || !strings.Contains(err.Error(), "mole eval") {
+		t.Errorf("err = %v, want the usage line", err)
+	}
+}
