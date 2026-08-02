@@ -112,10 +112,13 @@ var (
 	}
 )
 
-// minUsableText is the extracted-character floor below which a page is treated
+// MinUsableText is the extracted-character floor below which a page is treated
 // as having produced nothing. Short legitimate pages exist, but below this a
 // summarizer has nothing to work with either way.
-const minUsableText = 250
+//
+// Exported because the extractor and the search providers apply the same floor;
+// three independent copies of this number would drift.
+const MinUsableText = 250
 
 // ClassifyBody decides the outcome for a 2xx response whose extraction has
 // already been attempted.
@@ -126,7 +129,7 @@ const minUsableText = 250
 // otherwise be miscounted as js_required — inflating the one number §17.1's
 // decision actually turns on.
 func ClassifyBody(html string, extractedLen int) Outcome {
-	if extractedLen >= minUsableText {
+	if extractedLen >= MinUsableText {
 		return OutcomeOK
 	}
 

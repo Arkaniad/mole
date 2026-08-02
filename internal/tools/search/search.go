@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/tools/fetch"
 	"github.com/lajosdeme/mole/internal/tools/limiter"
 )
 
@@ -56,7 +57,9 @@ type Result struct {
 
 // HasUsableContent reports whether the provider handed back enough text to work
 // with directly. The floor mirrors the fetcher's own minimum for usable text.
-func (r Result) HasUsableContent() bool { return len(strings.TrimSpace(r.Content)) >= 250 }
+func (r Result) HasUsableContent() bool {
+	return len(strings.TrimSpace(r.Content)) >= fetch.MinUsableText
+}
 
 // Response is one search call.
 type Response struct {
