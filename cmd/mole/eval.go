@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
 	"github.com/lajosdeme/mole/internal/eval"
+	"github.com/lajosdeme/mole/internal/record"
 	"github.com/lajosdeme/mole/internal/store"
+	"github.com/lajosdeme/mole/internal/tools/extract"
+	"github.com/lajosdeme/mole/internal/tools/fetch"
 	"github.com/spf13/cobra"
 )
 
@@ -37,9 +41,10 @@ regression here — only things that are objectively wrong.
 
 func newEvalCmd() *cobra.Command {
 	var (
-		asJSON  bool
-		last    bool
-		verbose bool
+		asJSON    bool
+		last      bool
+		verbose   bool
+		citations bool
 	)
 
 	c := &cobra.Command{
@@ -54,7 +59,9 @@ func newEvalCmd() *cobra.Command {
 			} else if !last {
 				return errors.New("usage: mole eval <session-id>   (or --last)")
 			}
-			return cmdEval(cmd.Context(), dbPath(cmd), id, asJSON, verbose)
+			return cmdEval(cmd.Context(), dbPath(cmd), id, evalOpts{
+				asJSON: asJSON, verbose: verbose, citations: citations,
+			})
 		},
 	}
 
@@ -62,18 +69,27 @@ func newEvalCmd() *cobra.Command {
 	f.BoolVar(&last, "last", false, "score the most recent session")
 	f.BoolVar(&asJSON, "json", false, "emit the scorecard as JSON")
 	f.BoolVar(&verbose, "verbose", false, "show blocked metrics and their reasons")
+	f.BoolVar(&citations, "citations", false,
+		"re-read every cited source and check the quote is in it (costs a fetch per source; free under MOLE_RECORD=replay)")
 	return c
 }
 
-func cmdEval(ctx context.Context, path, sessionID string, asJSON, verbose bool) error {
+type evalOpts struct {
+	asJSON    bool
+	verbose   bool
+	citations bool
+}
+
+func cmdEval(ctx context.Context, path, sessionID string, o evalOpts) error {
 	db, err := openDBRead(ctx, path)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
-	if sessionID == "" {
-		if err := db.Read(ctx, func(ctx context.Context, q store.Queries) error {
+	var prompt string
+	if err := db.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		if sessionID == "" {
 			list, err := q.ListSessions(ctx, 1)
 			if err != nil {
 				return err
@@ -82,25 +98,56 @@ func cmdEval(ctx context.Context, path, sessionID string, asJSON, verbose bool) 
 				return errors.New("no sessions to score")
 			}
 			sessionID = list[0].ID
+			prompt = list[0].Prompt
 			return nil
-		}); err != nil {
+		}
+		s, err := q.GetSession(ctx, sessionID)
+		if err != nil {
 			return err
 		}
+		prompt = s.Prompt
+		return nil
+	}); err != nil {
+		return err
 	}
 
-	card, err := eval.Score(ctx, db, sessionID)
+	var opts eval.Options
+	if o.citations {
+		// The same fetch and extract path the actor used. A different
+		// extractor would disagree on whitespace and report mismatches that
+		// are artefacts of the harness rather than faults in the claim.
+		//
+		// The cassette is named from the session's prompt, which is what
+		// `mole research` recorded under. Opening a separate eval-scoped one
+		// would miss every interaction and report the whole run unreachable.
+		rec, err := record.FromEnv(prompt)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rec.Close() }()
+
+		opts.Citations = eval.NewPipelineReader(
+			fetch.NewHTTP(fetch.Config{UserAgent: userAgent()}, fetch.Options{
+				Log:       slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+				Transport: rec.Wrap,
+			}),
+			extract.New(),
+		)
+	}
+
+	card, err := eval.Score(ctx, db, sessionID, opts)
 	if err != nil {
 		return err
 	}
 
-	if asJSON {
+	if o.asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(card); err != nil {
 			return err
 		}
 	} else {
-		printScorecard(card, verbose)
+		printScorecard(card, o.verbose)
 	}
 
 	if card.Failed() {

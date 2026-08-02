@@ -89,7 +89,7 @@ func (a *WebActor) Run(ctx context.Context, lead core.Lead) (*Result, error) {
 			break
 		}
 
-		src, ok := a.readSource(ctx, lead, hit, res)
+		src, ok := a.readSource(ctx, lead, hit, budget, res)
 		if !ok {
 			continue
 		}
@@ -207,13 +207,13 @@ type source struct {
 // content. That is the efficiency §10.4 identifies before any headless-browser
 // question: no HTTP request, no robots round-trip, no rate-limit pressure, and
 // no js_required outcome to explain.
-func (a *WebActor) readSource(ctx context.Context, lead core.Lead, hit search.Result, res *Result) (source, bool) {
+func (a *WebActor) readSource(ctx context.Context, lead core.Lead, hit search.Result, budget Budget, res *Result) (source, bool) {
 	pageURL, err := url.Parse(hit.URL)
 	if err != nil {
 		return source{}, false
 	}
 
-	if hit.HasUsableContent() {
+	if hit.HasUsableContent() && !budget.AlwaysFetch {
 		res.Stats.SkippedFetch++
 		a.recordOutcome(ctx, lead, hit.URL, fetch.OutcomeProviderContent, 0, 0, "")
 		return source{

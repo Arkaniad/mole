@@ -481,6 +481,46 @@ func (t *queries) RecordFetchOutcome(ctx context.Context, o *store.FetchOutcome)
 	return nil
 }
 
+// ListFetchOutcomes returns one session's fetch rows, oldest first.
+func (t *queries) ListFetchOutcomes(ctx context.Context, sessionID string, limit int) ([]*store.FetchOutcome, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	rows, err := t.q.QueryContext(ctx, `
+		SELECT id, session_id, lead_id, url, domain, outcome, status_code, bytes, duration_ms, err, created_at
+		FROM fetch_outcomes WHERE session_id = ? ORDER BY created_at ASC LIMIT ?`, sessionID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list fetch outcomes: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*store.FetchOutcome
+	for rows.Next() {
+		var (
+			o          store.FetchOutcome
+			sid, lid   sql.NullString
+			durationMS int64
+			createdAt  int64
+		)
+		if err := rows.Scan(&o.ID, &sid, &lid, &o.URL, &o.Domain, &o.Outcome,
+			&o.StatusCode, &o.Bytes, &durationMS, &o.Err, &createdAt); err != nil {
+			return nil, err
+		}
+		if sid.Valid {
+			v := sid.String
+			o.SessionID = &v
+		}
+		if lid.Valid {
+			v := lid.String
+			o.LeadID = &v
+		}
+		o.Duration = time.Duration(durationMS) * time.Millisecond
+		o.CreatedAt = fromMicros(createdAt)
+		out = append(out, &o)
+	}
+	return out, rows.Err()
+}
+
 // FetchOutcomeStats produces the outcome mix plus the ranked domains per cause.
 //
 // Both halves matter to §17.1: the rate says whether a capability gap is worth

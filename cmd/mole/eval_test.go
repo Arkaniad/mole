@@ -25,7 +25,7 @@ func TestEvalExitsNonZeroOnARegression(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		err := cmdEval(ctx, db.Path(), sess.ID, false, false)
+		err := cmdEval(ctx, db.Path(), sess.ID, evalOpts{})
 		if err == nil {
 			t.Error("a session with a stranded hold scored as passing")
 			return
@@ -62,7 +62,7 @@ func TestEvalExitsZeroOnACleanSession(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		if err := cmdEval(ctx, db.Path(), sess.ID, false, false); err != nil {
+		if err := cmdEval(ctx, db.Path(), sess.ID, evalOpts{}); err != nil {
 			t.Errorf("a clean session failed: %v", err)
 		}
 	})
@@ -80,7 +80,7 @@ func TestEvalNamesWhatIsNotMeasured(t *testing.T) {
 	sess := newTestSession(t, led, core.BudgetUSD, core.MicrosPerUSD)
 
 	out := captureStdout(t, func() {
-		_ = cmdEval(ctx, db.Path(), sess.ID, false, true)
+		_ = cmdEval(ctx, db.Path(), sess.ID, evalOpts{verbose: true})
 	})
 
 	for _, want := range []string{

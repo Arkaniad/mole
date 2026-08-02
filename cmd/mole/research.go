@@ -54,14 +54,15 @@ into many leads arrives in M3, and --mode accepts only "report" until then.
 
 // researchOpts is what the flags resolve to.
 type researchOpts struct {
-	usd        string
-	tokens     int64
-	mode       string
-	maxSources int
-	timeout    time.Duration
-	asJSON     bool
-	quiet      bool
-	dbPath     string
+	usd         string
+	tokens      int64
+	mode        string
+	maxSources  int
+	timeout     time.Duration
+	asJSON      bool
+	quiet       bool
+	alwaysFetch bool
+	dbPath      string
 }
 
 func newResearchCmd() *cobra.Command {
@@ -86,6 +87,8 @@ func newResearchCmd() *cobra.Command {
 	f.DurationVar(&o.timeout, "timeout", 5*time.Minute, "wall-clock ceiling for the whole session")
 	f.BoolVar(&o.asJSON, "json", false, "emit the result as JSON")
 	f.BoolVar(&o.quiet, "quiet", false, "suppress progress; print only the result")
+	f.BoolVar(&o.alwaysFetch, "always-fetch", false,
+		"fetch every page even when the search provider supplied its text (slower; required for citation accuracy and the §17.1 gate)")
 	return c
 }
 
@@ -126,7 +129,7 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 
 	// Build the actor before touching the database. A missing search key should
 	// fail in under a second, not after creating a session that can never run.
-	actor, err := buildWebActor(cfg, rec, o.maxSources, o.quiet)
+	actor, err := buildWebActor(cfg, rec, o.maxSources, o.alwaysFetch, o.quiet)
 	if err != nil {
 		return err
 	}
@@ -298,7 +301,7 @@ func runOneLead(
 // Wiring
 // ---------------------------------------------------------------------------
 
-func buildWebActor(cfg *config.Config, rec *record.Recorder, maxSources int, quiet bool) (*actors.WebActor, error) {
+func buildWebActor(cfg *config.Config, rec *record.Recorder, maxSources int, alwaysFetch, quiet bool) (*actors.WebActor, error) {
 	if cfg.Search.Provider == "" {
 		return nil, errors.New("no search provider selected (run: mole config set search.provider brave|tavily)")
 	}
@@ -349,6 +352,7 @@ func buildWebActor(cfg *config.Config, rec *record.Recorder, maxSources int, qui
 			MaxSources:         maxSources,
 			MaxClaimsPerSource: 8,
 			MaxChunkTokens:     cfg.LLM.MaxInputTokens,
+			AlwaysFetch:        alwaysFetch,
 		},
 	}, nil
 }

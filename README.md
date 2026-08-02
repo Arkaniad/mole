@@ -83,6 +83,22 @@ MOLE_RECORD=replay MOLE_CASSETTE_DIR=./testdata/cassettes ./bin/mole research ".
 ```
 
 Replay never opens a socket — a miss is an error, not a quiet billable call.
+That is what makes citation accuracy affordable: `mole eval --citations` re-reads
+every cited source to check the quote is really in it, which costs a fetch per
+source live and nothing at all replayed.
+
+```bash
+MOLE_RECORD=record MOLE_CASSETTE_DIR=./testdata/cassettes \
+  ./bin/mole research "..." --tokens 200000 --always-fetch
+MOLE_RECORD=replay MOLE_CASSETTE_DIR=./testdata/cassettes \
+  ./bin/mole eval --last --citations          # 32ms, no network
+```
+
+`--always-fetch` matters more than it looks. Tavily returns page text, so by
+default nothing is fetched — which means §10.4 has no denominator, §17.1's gate
+reads "no data", and citation accuracy cannot be checked at all, because
+re-reading the page runs a different extractor than the one that produced the
+text. An eval run on a content-supplying provider silently collects none of it.
 Mode is an environment variable rather than a config field on purpose: left on
 in a config file it would slowly write every API response to disk.
 

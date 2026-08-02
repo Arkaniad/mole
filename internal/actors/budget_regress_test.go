@@ -187,3 +187,66 @@ func TestClaimsCiteTheURLTheBytesCameFrom(t *testing.T) {
 		}
 	}
 }
+
+// TestAlwaysFetchOverridesProviderContent. Provider-supplied text is a
+// measurement blind spot: nothing is fetched, so §10.4 has no denominator,
+// §17.1's gate reads "no data", and citation accuracy cannot be checked because
+// re-reading the page runs a different extractor than the one that produced the
+// text. An eval corpus run on Tavily silently collects none of it.
+func TestAlwaysFetchOverridesProviderContent(t *testing.T) {
+	ctx := context.Background()
+	const url = "https://provider.example/a"
+
+	h := newHarness(t, []search.Result{
+		{URL: url, Content: articleBody, Rank: 1},
+	}, map[string]*fetch.Result{
+		url: {URL: url, Domain: "provider.example", Outcome: fetch.OutcomeOK,
+			StatusCode: 200, ContentType: "text/html", Content: []byte(articleHTML())},
+	}, nil)
+	h.actor.Budget = actors.Budget{MaxSources: 1, MaxInputTokens: 1_000_000, AlwaysFetch: true}
+
+	res, err := h.actor.Run(ctx, h.lead)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Stats.SkippedFetch != 0 {
+		t.Errorf("skipped %d fetches with --always-fetch set", res.Stats.SkippedFetch)
+	}
+	if res.Stats.Fetched != 1 {
+		t.Errorf("fetched %d, want 1", res.Stats.Fetched)
+	}
+
+	byOutcome := map[string]int64{}
+	if err := h.db.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		stats, err := q.FetchOutcomeStats(ctx, time.Now().Add(-time.Hour), 0)
+		for _, s := range stats {
+			byOutcome[s.Outcome] = s.Count
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if byOutcome[string(fetch.OutcomeProviderContent)] != 0 {
+		t.Error("a provider_content row was still recorded")
+	}
+	if byOutcome[string(fetch.OutcomeOK)] != 1 {
+		t.Errorf("outcome mix = %v, want one ok — the gate needs a denominator", byOutcome)
+	}
+}
+
+// TestDefaultStillSkipsTheFetch: the efficiency §10.4 identifies is the default
+// for a reason, and --always-fetch must be the opt-in.
+func TestDefaultStillSkipsTheFetch(t *testing.T) {
+	h := newHarness(t, []search.Result{
+		{URL: "https://provider.example/a", Content: articleBody, Rank: 1},
+	}, nil, nil)
+	h.actor.Budget = actors.Budget{MaxSources: 1, MaxInputTokens: 1_000_000}
+
+	res, err := h.actor.Run(context.Background(), h.lead)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Stats.SkippedFetch != 1 || res.Stats.Fetched != 0 {
+		t.Errorf("skipped=%d fetched=%d, want 1 and 0", res.Stats.SkippedFetch, res.Stats.Fetched)
+	}
+}

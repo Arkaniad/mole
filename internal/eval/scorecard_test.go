@@ -91,7 +91,7 @@ func (f *fixture) addClaims(t *testing.T, claims ...core.Claim) {
 
 func (f *fixture) score(t *testing.T) eval.Scorecard {
 	t.Helper()
-	card, err := eval.Score(context.Background(), f.db, f.sess.ID)
+	card, err := eval.Score(context.Background(), f.db, f.sess.ID, eval.Options{})
 	if err != nil {
 		t.Fatalf("score: %v", err)
 	}

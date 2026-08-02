@@ -8,3 +8,8 @@
 
 # go build ./cmd/mole without -o drops the binary here
 /mole
+
+# Ad-hoc cassettes. The eval corpus (§14.2) will commit its own under a
+# deliberate policy; a 1.8MB dump of third-party page HTML recorded during
+# development is not that, and git history is hard to undo.
+/testdata/cassettes/

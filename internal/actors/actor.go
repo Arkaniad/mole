@@ -80,6 +80,17 @@ type Budget struct {
 	// document cannot dominate the graph.
 	MaxClaimsPerSource int
 
+	// AlwaysFetch ignores content the search provider supplied and fetches the
+	// page itself.
+	//
+	// Slower and costlier, and off by default for exactly that reason. But
+	// provider-supplied text is a measurement blind spot: nothing was fetched,
+	// so §10.4 has no denominator and §17.1's gate reads "no data", and
+	// citation accuracy cannot be checked because re-reading the page runs a
+	// different extractor than the one that produced the text. An eval corpus
+	// run on a content-supplying provider silently collects none of it.
+	AlwaysFetch bool
+
 	// MaxChunkTokens caps a SINGLE request, which is a different limit from
 	// MaxInputTokens and binds first.
 	//

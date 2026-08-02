@@ -97,6 +97,12 @@ type Queries interface {
 	// top domains per cause. topDomains <= 0 omits the domain breakdown.
 	FetchOutcomeStats(ctx context.Context, since time.Time, topDomains int) ([]FetchStat, error)
 
+	// ListFetchOutcomes returns one session's rows. The aggregate above cannot
+	// answer per-URL questions, and citation verification needs to know which
+	// sources were never fetched — re-reading those compares against a
+	// different extraction and manufactures mismatches.
+	ListFetchOutcomes(ctx context.Context, sessionID string, limit int) ([]*FetchOutcome, error)
+
 	GetLead(ctx context.Context, id string) (*core.Lead, error)
 	ListLeads(ctx context.Context, sessionID string, limit int) ([]*core.Lead, error)
 

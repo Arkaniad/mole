@@ -61,6 +61,10 @@ type Metric struct {
 type Scorecard struct {
 	SessionID string   `json:"session_id"`
 	Metrics   []Metric `json:"metrics"`
+
+	// Citations is the per-claim detail behind the citation accuracy metric,
+	// present only when it was computed.
+	Citations *CitationReport `json:"citations,omitempty"`
 }
 
 // Failed reports whether any metric is a hard regression.
@@ -73,14 +77,25 @@ func (s Scorecard) Failed() bool {
 	return false
 }
 
+// Options tune what Score computes.
+type Options struct {
+	// Citations, when set, re-reads every cited source and checks the quote is
+	// actually in it (§14.3 citation accuracy).
+	//
+	// Off by default because it costs a fetch per source. Under cassette
+	// replay it is free and deterministic, which is what §14.1 was built for.
+	Citations SourceReader
+}
+
 // Score evaluates one session.
-func Score(ctx context.Context, st store.Store, sessionID string) (Scorecard, error) {
+func Score(ctx context.Context, st store.Store, sessionID string, opts Options) (Scorecard, error) {
 	card := Scorecard{SessionID: sessionID}
 
 	var (
-		sess   *core.Session
-		claims []*core.Claim
-		calls  []*core.ToolCall
+		sess     *core.Session
+		claims   []*core.Claim
+		calls    []*core.ToolCall
+		outcomes []*store.FetchOutcome
 	)
 	if err := st.Read(ctx, func(ctx context.Context, q store.Queries) error {
 		var err error
@@ -90,7 +105,10 @@ func Score(ctx context.Context, st store.Store, sessionID string) (Scorecard, er
 		if claims, err = q.ListClaims(ctx, sessionID, 10_000); err != nil {
 			return err
 		}
-		calls, err = q.ListToolCalls(ctx, sessionID, 10_000)
+		if calls, err = q.ListToolCalls(ctx, sessionID, 10_000); err != nil {
+			return err
+		}
+		outcomes, err = q.ListFetchOutcomes(ctx, sessionID, 10_000)
 		return err
 	}); err != nil {
 		return card, err
@@ -111,7 +129,13 @@ func Score(ctx context.Context, st store.Store, sessionID string) (Scorecard, er
 		costPerClaim(sess, claims),
 		toolCallCount(calls),
 	)
-	card.Metrics = append(card.Metrics, blockedMetrics()...)
+	if opts.Citations != nil {
+		rep := VerifyCitations(ctx, claims, providerSupplied(outcomes), opts.Citations)
+		card.Citations = &rep
+		card.Metrics = append(card.Metrics, citationAccuracy(rep))
+	}
+
+	card.Metrics = append(card.Metrics, blockedMetrics(opts)...)
 	return card, nil
 }
 
@@ -321,8 +345,8 @@ func toolCallCount(calls []*core.ToolCall) Metric {
 // M8, and a scorecard that silently omitted them would let a reader conclude
 // the pipeline is fully scored — then read a genuine future regression as
 // normal.
-func blockedMetrics() []Metric {
-	return []Metric{
+func blockedMetrics(opts Options) []Metric {
+	metrics := []Metric{
 		{
 			Name: "claim precision", Status: Blocked,
 			Reason: "needs labelled answers; the question corpus (§14.2) is not built yet",
@@ -331,11 +355,6 @@ func blockedMetrics() []Metric {
 			Name: "grounding rate", Status: Blocked,
 			Reason: "needs a judge: whether a quote SUPPORTS its claim is not mechanical. " +
 				"Quote-was-found is already enforced at the actor boundary (§11.5)",
-		},
-		{
-			Name: "citation accuracy", Status: Blocked,
-			Reason: "needs the source text, which the actor discards by design (§2). " +
-				"Re-verifiable once corpus runs are replayed from cassettes",
 		},
 		{
 			Name: "contradiction recall", Status: Blocked,
@@ -350,4 +369,16 @@ func blockedMetrics() []Metric {
 			Reason: "needs the aggregation gate (§12.1) — M8",
 		},
 	}
+
+	if opts.Citations == nil {
+		// Reported as blocked rather than omitted: it IS computable now, and a
+		// reader should know a run declined to compute it rather than assume
+		// the metric does not exist yet.
+		metrics = append(metrics, Metric{
+			Name: "citation accuracy", Status: Blocked,
+			Reason: "not requested; re-reads every cited source, so pass --citations " +
+				"(free and deterministic under MOLE_RECORD=replay)",
+		})
+	}
+	return metrics
 }
