@@ -1134,6 +1134,21 @@ records request/response cassettes on first run and replays thereafter. Conseque
 orchestrator tests are deterministic, run in CI, and cost nothing. Build this before the
 first actor, not after — retrofitting means auditing every call site.
 
+Two details that only become obvious once it is wired:
+
+- **The fetcher is wrapped, not replaced.** Its transport carries the egress guard's
+  `DialContext`, so handing it a plain recording client would trade SSRF protection for
+  determinism. Wrapped, a recording still passes the guard and a replay never opens a
+  socket at all.
+- **Mode is an environment variable, not a config field.** `MOLE_RECORD` plus
+  `MOLE_CASSETTE_DIR`, with no default directory. A persisted `record.mode` left switched
+  on would silently accumulate every API response on disk, including page bodies the user
+  meant to read once — and a cassette is a file that gets committed. There is deliberately
+  no fallback location for the same reason.
+
+One cassette per question, named by a slug of it, so the same question re-records over its
+predecessor rather than accumulating beside it and so a diff is reviewable.
+
 ### 14.2 Question sets
 
 30–50 questions with known answers, spanning: settled facts, questions with a genuine

@@ -16,6 +16,7 @@ import (
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/pricing"
+	"github.com/lajosdeme/mole/internal/record"
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/tools/extract"
 	"github.com/lajosdeme/mole/internal/tools/fetch"
@@ -95,11 +96,26 @@ func cmdResearch(ctx context.Context, args []string) error {
 		return fmt.Errorf("mode %q is not implemented yet (M3 for report+, M9 for dataset)", *mode)
 	}
 
-	// Build the actor before touching the database. A missing search key should
-	// fail in under a second, not after creating a session that can never run.
-	actor, err := buildWebActor(cfg, *maxSources, *quiet)
+	// One cassette per question (§14.1). Off unless MOLE_RECORD says otherwise,
+	// so this costs nothing in normal use.
+	rec, err := record.FromEnv(question)
 	if err != nil {
 		return err
+	}
+	defer func() {
+		if err := rec.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not save cassette: %v\n", err)
+		}
+	}()
+
+	// Build the actor before touching the database. A missing search key should
+	// fail in under a second, not after creating a session that can never run.
+	actor, err := buildWebActor(cfg, rec, *maxSources, *quiet)
+	if err != nil {
+		return err
+	}
+	if rec.Enabled() && !*quiet && !*asJSON {
+		fmt.Printf("cassette %s (%s)\n", rec.Path, rec.Mode)
 	}
 
 	db, err := openDBWrite(ctx, *dbPath)
@@ -261,7 +277,7 @@ func runOneLead(
 // Wiring
 // ---------------------------------------------------------------------------
 
-func buildWebActor(cfg *config.Config, maxSources int, quiet bool) (*actors.WebActor, error) {
+func buildWebActor(cfg *config.Config, rec *record.Recorder, maxSources int, quiet bool) (*actors.WebActor, error) {
 	if cfg.Search.Provider == "" {
 		return nil, errors.New("no search provider selected (run: mole config set search.provider brave|tavily)")
 	}
@@ -273,12 +289,12 @@ func buildWebActor(cfg *config.Config, maxSources int, quiet bool) (*actors.WebA
 		Provider:           search.Kind(cfg.Search.Provider),
 		APIKey:             cfg.Search.ActiveKey(),
 		CostPerQueryMicros: cfg.Search.CostPerQueryMicros,
-	}, nil)
+	}, rec.Client())
 	if err != nil {
 		return nil, err
 	}
 
-	model, reason, err := buildLLM(cfg)
+	model, reason, err := buildLLMWithClient(cfg, rec.Client())
 	if err != nil {
 		return nil, err
 	}
@@ -295,8 +311,15 @@ func buildWebActor(cfg *config.Config, maxSources int, quiet bool) (*actors.WebA
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
 	return &actors.WebActor{
-		Search:  provider,
-		Fetch:   fetch.NewHTTP(fetch.Config{UserAgent: userAgent()}, fetch.Options{Log: log}),
+		Search: provider,
+		// Wrap rather than replace: the fetcher's transport carries the egress
+		// guard's DialContext, and handing it a plain client would bypass SSRF
+		// protection to get determinism. Wrapped, a recording still passes the
+		// guard and a replay never opens a socket.
+		Fetch: fetch.NewHTTP(fetch.Config{UserAgent: userAgent()}, fetch.Options{
+			Log:       log,
+			Transport: rec.Wrap,
+		}),
 		Extract: extract.New(),
 		LLM:     model,
 		Pricing: pricing.NewTable(),

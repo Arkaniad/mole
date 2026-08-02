@@ -57,6 +57,33 @@ make build           # CGO_ENABLED=0 — one static binary, no cgo, no sqlite de
 ./bin/mole doctor
 ```
 
+Running an actual research question needs a search key and a model:
+
+```bash
+./bin/mole config set search.provider tavily
+./bin/mole config set search.tavily-key tvly-...
+./bin/mole doctor                              # exits non-zero until this is green
+
+./bin/mole research "what is the consensus on byte-level LLMs?" --usd 0.50
+./bin/mole stats --fetch                       # the §17.1 headless-browser gate
+```
+
+No model key is needed if `ant auth login` has run or a local runtime is up —
+`doctor` says which one it found. `--usd` and `--tokens` are mutually exclusive
+and there is no built-in default: a number nobody chose is still money spent.
+
+Every outbound call can go through a cassette, which is what makes the eval
+harness deterministic and free:
+
+```bash
+MOLE_RECORD=record MOLE_CASSETTE_DIR=./testdata/cassettes ./bin/mole research "..." --usd 0.50
+MOLE_RECORD=replay MOLE_CASSETTE_DIR=./testdata/cassettes ./bin/mole research "..." --usd 0.50
+```
+
+Replay never opens a socket — a miss is an error, not a quiet billable call.
+Mode is an environment variable rather than a config field on purpose: left on
+in a config file it would slowly write every API response to disk.
+
 `mole trace` output:
 
 ```
@@ -151,6 +178,15 @@ The suites that carry weight:
 | `TestCeilingsAreUnitIndependent` | Token mode's free-fetch hole |
 | `TestSecretsNeverReachDisk` | Credentials committed inside a cassette |
 | `TestReplayMissIsAnError` | A cassette gap silently making a billable call |
+| `TestReplayMakesNoNetworkCalls` | Replay falling through to a live origin |
+| `TestProviderKeysNeverReachDisk` | A vendor auth header no redaction rule names |
+| `TestPageCannotCloseItsOwnFence` | Page content escaping into instruction position |
+| `TestEscapeHatchDoesNotReachMetadataByAnotherName` | Metadata reachable via NAT64/6to4 |
+| `TestBacklogQueuesRatherThanCollapsing` | A rate limiter that enforces no rate |
+| `TestSplitTerminatesOnInvalidUTF8` | A malformed page hanging the chunker |
+| `TestOffsetsSurviveExoticWhitespace` | Quote offsets drifting off the source |
+| `TestClaimCapIsPerSourceNotPerChunk` | One verbose page dominating the graph |
+| `TestProviderContentIsExcludedFromEveryRate` | The §17.1 gate reading a padded denominator |
 | `TestRoundingDoesNotUnderBill` | Truncation quietly understating spend |
 
 ---
@@ -160,8 +196,8 @@ The suites that carry weight:
 | | Milestone | Status |
 |---|---|---|
 | M0 | Foundations — store, ledger, cassettes, tracing | **done** |
-| M1 | WebActor end to end + fetch failure classification | next |
-| M2 | Eval harness + `mole stats --fetch` | |
+| M1 | WebActor end to end + fetch failure classification | **done** |
+| M2 | Eval harness + `mole stats --fetch` | in progress |
 | M3 | Planner loop, rolling digest, error policy | |
 | M4 | Claim graph + Verifier | |
 | M5 | Executor pool | |
@@ -172,9 +208,17 @@ The suites that carry weight:
 
 ---
 
-## Known gaps in M0
+## Known gaps
 
 Stated plainly rather than left to be discovered:
+
+- **The happy path has not run against a live provider yet.** Everything above
+  the actor boundary is tested with stubs and fakes. The first real run may
+  surface response shapes the fakes do not reproduce.
+- **M2 is partly done.** `mole stats --fetch` and the cassette wiring are in;
+  the question corpus (§14.2) and scoring are not. Two of its metrics —
+  contradiction recall and staleness detection — will read zero until the
+  Verifier lands in M4, and that is not a regression.
 
 - **The estimator does not warm from history.** Attributing a settled cost to
   `(actor_type, depth)` needs a join to `leads`, which M3 populates. Guessing

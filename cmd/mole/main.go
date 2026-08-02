@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -44,6 +45,7 @@ Commands:
   config       Get, set, and list settings (see: mole config)
   doctor       Check configuration and environment
   sessions     List recent sessions
+  stats        Cross-session measurement (see: mole stats -h)
   trace        Show the cost and span breakdown for one session
   dev          Development helpers (see: mole dev -h)
   version      Print version
@@ -89,6 +91,8 @@ func run(args []string) error {
 		return cmdResearch(ctx, rest)
 	case "sessions":
 		return cmdSessions(ctx, rest)
+	case "stats":
+		return cmdStats(ctx, rest)
 	case "trace":
 		return cmdTrace(ctx, rest)
 	case "dev":
@@ -882,7 +886,15 @@ func contains(hay []string, needle string) bool {
 // Precedence: an explicit setting always wins over an ambient one. A user who
 // configured a key meant to use it, and silently preferring a detected local
 // model would spend their session on the wrong thing.
-func buildLLM(cfg *config.Config) (provider llm.Provider, reason string, err error) {
+func buildLLM(cfg *config.Config) (llm.Provider, string, error) {
+	return buildLLMWithClient(cfg, nil)
+}
+
+// buildLLMWithClient is buildLLM with an explicit HTTP client, so the cassette
+// layer can sit under the model calls too (§14.1). A nil client means the SDK's
+// own default. Detection still probes with the real client: a cassette of
+// "is ollama listening on this machine" would be meaningless to replay.
+func buildLLMWithClient(cfg *config.Config, client *http.Client) (provider llm.Provider, reason string, err error) {
 	// Any explicit llm.* setting counts as a configured provider, including the
 	// model names. Omitting them meant `mole config set llm.model …` on its own
 	// was silently discarded in favour of whatever autodetection found — the
@@ -899,7 +911,7 @@ func buildLLM(cfg *config.Config) (provider llm.Provider, reason string, err err
 			BaseURL:     cfg.LLM.BaseURL,
 			StrongModel: cfg.LLM.Model,
 			CheapModel:  cfg.LLM.CheapModel,
-		}, nil)
+		}, client)
 		if err != nil {
 			return nil, "", err
 		}
@@ -919,7 +931,7 @@ func buildLLM(cfg *config.Config) (provider llm.Provider, reason string, err err
 		return nil, "", fmt.Errorf(
 			"found %s but no model selected (run: mole config set llm.model <name>)", detected.Reason)
 	}
-	p, err := llm.New(detected.Config, nil)
+	p, err := llm.New(detected.Config, client)
 	if err != nil {
 		return nil, "", err
 	}
