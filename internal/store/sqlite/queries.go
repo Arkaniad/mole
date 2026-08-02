@@ -635,3 +635,211 @@ func requireOneRow(res sql.Result, what string) error {
 func isUniqueViolation(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
+
+// ---------------------------------------------------------------------------
+// Leads
+// ---------------------------------------------------------------------------
+
+const leadCols = `id, session_id, actor_type, query, parent_id, depth, priority,
+	status, lease_owner, lease_expires, created_at, updated_at`
+
+func (t *queries) InsertLead(ctx context.Context, l *core.Lead) error {
+	if l.ID == "" {
+		l.ID = core.NewLeadID()
+	}
+	now := time.Now().UTC()
+	if l.CreatedAt.IsZero() {
+		l.CreatedAt = now
+	}
+	l.UpdatedAt = now
+	if l.Status == "" {
+		l.Status = core.LeadQueued
+	}
+
+	_, err := t.q.ExecContext(ctx, `
+		INSERT INTO leads (`+leadCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		l.ID, l.SessionID, string(l.ActorType), l.Query, nullStr(l.ParentID),
+		l.Depth, l.Priority, string(l.Status),
+		nullStr(l.LeaseOwner), nullMicros(l.LeaseExpires),
+		toMicros(l.CreatedAt), toMicros(l.UpdatedAt))
+	if err != nil {
+		return fmt.Errorf("sqlite: insert lead: %w", err)
+	}
+	return nil
+}
+
+func scanLead(sc interface{ Scan(...any) error }) (*core.Lead, error) {
+	var (
+		l         core.Lead
+		actorType string
+		parentID  sql.NullString
+		status    string
+		owner     sql.NullString
+		expires   sql.NullInt64
+		created   int64
+		updated   int64
+	)
+	err := sc.Scan(&l.ID, &l.SessionID, &actorType, &l.Query, &parentID,
+		&l.Depth, &l.Priority, &status, &owner, &expires, &created, &updated)
+	if err != nil {
+		return nil, err
+	}
+	l.ActorType = core.ActorType(actorType)
+	l.ParentID = strPtr(parentID)
+	l.Status = core.LeadStatus(status)
+	l.LeaseOwner = strPtr(owner)
+	l.LeaseExpires = micrasPtr(expires)
+	l.CreatedAt = fromMicros(created)
+	l.UpdatedAt = fromMicros(updated)
+	return &l, nil
+}
+
+func (t *queries) GetLead(ctx context.Context, id string) (*core.Lead, error) {
+	row := t.q.QueryRowContext(ctx, `SELECT `+leadCols+` FROM leads WHERE id = ?`, id)
+	l, err := scanLead(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, store.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: get lead: %w", err)
+	}
+	return l, nil
+}
+
+func (t *queries) ListLeads(ctx context.Context, sessionID string, limit int) ([]*core.Lead, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := t.q.QueryContext(ctx,
+		`SELECT `+leadCols+` FROM leads WHERE session_id = ? ORDER BY created_at LIMIT ?`,
+		sessionID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list leads: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*core.Lead
+	for rows.Next() {
+		l, err := scanLead(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+func (t *queries) SetLeadStatus(ctx context.Context, id string, status core.LeadStatus) error {
+	res, err := t.q.ExecContext(ctx,
+		`UPDATE leads SET status = ?, updated_at = ? WHERE id = ?`,
+		string(status), toMicros(time.Now()), id)
+	if err != nil {
+		return fmt.Errorf("sqlite: set lead status: %w", err)
+	}
+	return requireOneRow(res, "lead")
+}
+
+// ---------------------------------------------------------------------------
+// Claims
+// ---------------------------------------------------------------------------
+
+const claimCols = `id, session_id, lead_id, text, source, tool_call_id, quote,
+	quote_offset, published_at, retrieved_at, root_claim_id, verify_depth,
+	confidence, grounded, created_at`
+
+// InsertClaims writes a batch.
+//
+// All or nothing: a partial batch would leave the claim graph citing a lead
+// that went on to report failure, and §11's clustering would then be reasoning
+// over evidence that was never fully recorded.
+func (t *queries) InsertClaims(ctx context.Context, claims []core.Claim) error {
+	now := time.Now().UTC()
+	for i := range claims {
+		c := &claims[i]
+		if c.ID == "" {
+			c.ID = core.NewClaimID()
+		}
+		// A claim with no verification ancestry is its own root. Setting this
+		// here rather than at the call site is what keeps the lineage cap in
+		// §11.4 from silently starting over on every new claim.
+		if c.RootClaimID == "" {
+			c.RootClaimID = c.ID
+		}
+		if c.CreatedAt.IsZero() {
+			c.CreatedAt = now
+		}
+		if c.RetrievedAt.IsZero() {
+			c.RetrievedAt = now
+		}
+
+		var grounded sql.NullInt64
+		if c.Grounded != nil {
+			grounded = sql.NullInt64{Int64: b2i(*c.Grounded), Valid: true}
+		}
+
+		_, err := t.q.ExecContext(ctx, `
+			INSERT INTO claims (`+claimCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			c.ID, c.SessionID, c.LeadID, c.Text, c.Source, c.ToolCallID, c.Quote,
+			c.QuoteOffset, nullMicros(c.PublishedAt), toMicros(c.RetrievedAt),
+			c.RootClaimID, c.VerifyDepth, c.Confidence, grounded, toMicros(c.CreatedAt))
+		if err != nil {
+			return fmt.Errorf("sqlite: insert claim %d/%d: %w", i+1, len(claims), err)
+		}
+	}
+	return nil
+}
+
+func (t *queries) ListClaims(ctx context.Context, sessionID string, limit int) ([]*core.Claim, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := t.q.QueryContext(ctx,
+		`SELECT `+claimCols+` FROM claims WHERE session_id = ? ORDER BY created_at LIMIT ?`,
+		sessionID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list claims: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*core.Claim
+	for rows.Next() {
+		var (
+			c         core.Claim
+			published sql.NullInt64
+			retrieved int64
+			grounded  sql.NullInt64
+			created   int64
+		)
+		if err := rows.Scan(&c.ID, &c.SessionID, &c.LeadID, &c.Text, &c.Source,
+			&c.ToolCallID, &c.Quote, &c.QuoteOffset, &published, &retrieved,
+			&c.RootClaimID, &c.VerifyDepth, &c.Confidence, &grounded, &created); err != nil {
+			return nil, err
+		}
+		c.PublishedAt = micrasPtr(published)
+		c.RetrievedAt = fromMicros(retrieved)
+		c.CreatedAt = fromMicros(created)
+		if grounded.Valid {
+			v := grounded.Int64 != 0
+			c.Grounded = &v
+		}
+		out = append(out, &c)
+	}
+	return out, rows.Err()
+}
+
+func (t *queries) CountClaims(ctx context.Context, sessionID string) (int64, error) {
+	var n int64
+	err := t.q.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM claims WHERE session_id = ?`, sessionID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: count claims: %w", err)
+	}
+	return n, nil
+}
+
+func b2i(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
+}

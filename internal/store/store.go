@@ -96,6 +96,12 @@ type Queries interface {
 	// FetchOutcomeStats returns the outcome mix, most frequent first, with the
 	// top domains per cause. topDomains <= 0 omits the domain breakdown.
 	FetchOutcomeStats(ctx context.Context, since time.Time, topDomains int) ([]FetchStat, error)
+
+	GetLead(ctx context.Context, id string) (*core.Lead, error)
+	ListLeads(ctx context.Context, sessionID string, limit int) ([]*core.Lead, error)
+
+	ListClaims(ctx context.Context, sessionID string, limit int) ([]*core.Claim, error)
+	CountClaims(ctx context.Context, sessionID string) (int64, error)
 }
 
 // Tx is the write surface. It embeds Queries so a transaction can read its own
@@ -114,6 +120,14 @@ type Tx interface {
 	InsertToolCall(ctx context.Context, tc *core.ToolCall) error
 
 	RecordFetchOutcome(ctx context.Context, o *FetchOutcome) error
+
+	InsertLead(ctx context.Context, l *core.Lead) error
+	SetLeadStatus(ctx context.Context, id string, status core.LeadStatus) error
+
+	// InsertClaims writes a batch in one transaction. Claims from one actor
+	// run land together or not at all: a partial batch would leave the graph
+	// citing a lead that reported failure.
+	InsertClaims(ctx context.Context, claims []core.Claim) error
 
 	StartSpan(ctx context.Context, s *core.Span) error
 	EndSpan(ctx context.Context, id string, endedAt time.Time, status string) error
