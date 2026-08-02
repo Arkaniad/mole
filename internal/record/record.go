@@ -83,17 +83,48 @@ type RespSnapshot struct {
 // credential, so redaction happens at the write boundary rather than being left
 // to reviewer discipline.
 var redactedHeaders = map[string]bool{
-	"authorization":       true,
-	"x-api-key":           true,
-	"anthropic-api-key":   true,
-	"openai-api-key":      true,
-	"cookie":              true,
-	"set-cookie":          true,
-	"proxy-authorization": true,
-	"x-auth-token":        true,
+	"authorization":        true,
+	"x-api-key":            true,
+	"anthropic-api-key":    true,
+	"openai-api-key":       true,
+	"x-subscription-token": true, // Brave Search
+	"cookie":               true,
+	"set-cookie":           true,
+	"proxy-authorization":  true,
+	"x-auth-token":         true,
+}
+
+// redactedSubstrings catch credential headers the list above does not name.
+//
+// The list alone already failed once: Brave authenticates with
+// X-Subscription-Token, which nothing here matched, so the key went to disk
+// verbatim in a world-readable file. An allowlist of known vendors is the wrong
+// default for a function whose failure mode is a leaked credential — every new
+// provider is a chance to forget. Over-redacting a header costs a slightly less
+// informative cassette.
+var redactedSubstrings = []string{
+	"api-key", "apikey", "api_key",
+	"token", "secret", "auth", "password", "credential", "signature",
+}
+
+func isRedacted(name string) bool {
+	name = strings.ToLower(name)
+	if redactedHeaders[name] {
+		return true
+	}
+	for _, s := range redactedSubstrings {
+		if strings.Contains(name, s) {
+			return true
+		}
+	}
+	return false
 }
 
 const redactedValue = "REDACTED"
+
+// maxRecordedBody bounds what a single interaction writes to disk. Without it a
+// misbehaving or hostile endpoint decides how much memory the recorder uses.
+const maxRecordedBody = 32 << 20
 
 // redactedQueryParams are stripped from the stored URL. Several providers take
 // the key as a query parameter, which would otherwise land in the cassette and
@@ -112,7 +143,7 @@ func redactHeaders(h http.Header) map[string][]string {
 	}
 	out := make(map[string][]string, len(h))
 	for k, v := range h {
-		if redactedHeaders[strings.ToLower(k)] {
+		if isRedacted(k) {
 			out[k] = []string{redactedValue}
 			continue
 		}
@@ -129,6 +160,9 @@ func canonicalURL(u *url.URL) string {
 	c.Scheme = strings.ToLower(c.Scheme)
 	c.Host = strings.ToLower(c.Host)
 	c.Fragment = ""
+	// https://user:pass@host/… is a credential in the URL, and it would
+	// otherwise be written into both the stored request and the match key.
+	c.User = nil
 
 	q := c.Query()
 	for k := range q {
@@ -284,10 +318,10 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readCapped(resp.Body, "response")
 	closeErr := resp.Body.Close()
 	if err != nil {
-		return nil, fmt.Errorf("record: read response body: %w", err)
+		return nil, err
 	}
 	if closeErr != nil {
 		return nil, fmt.Errorf("record: close response body: %w", closeErr)
@@ -348,13 +382,27 @@ func canonicalJSON(body []byte) []byte {
 	return out
 }
 
+// readCapped reads at most maxRecordedBody bytes and fails rather than
+// truncating. A silently short cassette entry replays as a corrupt response,
+// which is a far worse failure than refusing to record an oversized one.
+func readCapped(r io.Reader, what string) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, maxRecordedBody+1))
+	if err != nil {
+		return nil, fmt.Errorf("record: read %s body: %w", what, err)
+	}
+	if len(b) > maxRecordedBody {
+		return nil, fmt.Errorf("record: %s body exceeds %d bytes", what, maxRecordedBody)
+	}
+	return b, nil
+}
+
 func drainBody(req *http.Request) ([]byte, error) {
 	if req.Body == nil || req.Body == http.NoBody {
 		return nil, nil
 	}
-	b, err := io.ReadAll(req.Body)
+	b, err := readCapped(req.Body, "request")
 	if err != nil {
-		return nil, fmt.Errorf("record: read request body: %w", err)
+		return nil, err
 	}
 	if err := req.Body.Close(); err != nil {
 		return nil, fmt.Errorf("record: close request body: %w", err)

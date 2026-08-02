@@ -77,15 +77,15 @@ func (b *bucket) reserve(now time.Time) time.Duration {
 	var wait time.Duration
 
 	if b.limit.Rate > 0 {
-		if b.tokens < 1 {
-			// Time until one token exists.
-			deficit := 1 - b.tokens
-			wait = time.Duration(deficit / b.limit.Rate * float64(time.Second))
-			b.tokens = 0
-			// Charge the token we are about to receive.
-			b.tokens--
-		} else {
-			b.tokens--
+		// Charge unconditionally and let the balance go negative. The debt is
+		// the queue: a caller arriving while the bucket is already owed three
+		// tokens waits for all three, not for the single token it needs.
+		// Clamping to zero first would give every backlogged caller the same
+		// one-token wait, which is no rate limit at all under concurrency —
+		// exactly the case this package exists for.
+		b.tokens--
+		if b.tokens < 0 {
+			wait = time.Duration(-b.tokens / b.limit.Rate * float64(time.Second))
 		}
 	}
 

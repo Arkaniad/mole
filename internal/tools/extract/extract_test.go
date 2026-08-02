@@ -43,7 +43,7 @@ func article(extra, content string) string {
 // out; article text in.
 func TestReadabilityStripsChromeKeepsBody(t *testing.T) {
 	e := extract.New()
-	doc, err := e.Extract([]byte(article("", body(20))), "text/html", mustURL(t, "https://example.com/a"))
+	doc, err := e.Extract(t.Context(), []byte(article("", body(20))), "text/html", mustURL(t, "https://example.com/a"))
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestReadabilityStripsChromeKeepsBody(t *testing.T) {
 func TestPlainTextPassesThrough(t *testing.T) {
 	e := extract.New()
 	raw := body(20)
-	doc, err := e.Extract([]byte(raw), "text/plain; charset=utf-8", mustURL(t, "https://example.com/t"))
+	doc, err := e.Extract(t.Context(), []byte(raw), "text/plain; charset=utf-8", mustURL(t, "https://example.com/t"))
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestJSONLDRescuesBodyWhenReadabilityFails(t *testing.T) {
 </head><body><div id="root"></div></body></html>`
 
 	e := extract.New()
-	doc, err := e.Extract([]byte(page), "text/html", mustURL(t, "https://example.com/spa"))
+	doc, err := e.Extract(t.Context(), []byte(page), "text/html", mustURL(t, "https://example.com/spa"))
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestReadabilityWinsWhenBothAvailable(t *testing.T) {
 </script>`, body(20))
 
 	e := extract.New()
-	doc, err := e.Extract([]byte(page), "text/html", mustURL(t, "https://example.com/both"))
+	doc, err := e.Extract(t.Context(), []byte(page), "text/html", mustURL(t, "https://example.com/both"))
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestOpenGraphIsMetadataOnly(t *testing.T) {
 </head><body><div id="app"></div></body></html>`
 
 	e := extract.New()
-	doc, err := e.Extract([]byte(page), "text/html", mustURL(t, "https://example.com/og"))
+	doc, err := e.Extract(t.Context(), []byte(page), "text/html", mustURL(t, "https://example.com/og"))
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestPaywallSignalFromStructuredData(t *testing.T) {
 </script></head><body><p>Teaser paragraph.</p></body></html>`
 
 	e := extract.New()
-	doc, err := e.Extract([]byte(page), "text/html", mustURL(t, "https://example.com/pw"))
+	doc, err := e.Extract(t.Context(), []byte(page), "text/html", mustURL(t, "https://example.com/pw"))
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestNormalizedTextSupportsVerbatimQuoteMatching(t *testing.T) {
 	page := article("", "MambaByte achieves   1.31\tbits per byte on PG-19.\n\n\n\n"+body(15))
 
 	e := extract.New()
-	doc, err := e.Extract([]byte(page), "text/html", mustURL(t, "https://example.com/q"))
+	doc, err := e.Extract(t.Context(), []byte(page), "text/html", mustURL(t, "https://example.com/q"))
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestMalformedInputDoesNotPanic(t *testing.T) {
 		[]byte(strings.Repeat("<div>", 500)),
 	}
 	for i, c := range cases {
-		doc, err := e.Extract(c, "text/html", mustURL(t, "https://example.com/x"))
+		doc, err := e.Extract(t.Context(), c, "text/html", mustURL(t, "https://example.com/x"))
 		if err != nil {
 			continue // a returned error is an acceptable outcome
 		}
@@ -275,7 +275,7 @@ func TestMalformedInputDoesNotPanic(t *testing.T) {
 
 func TestTextIsCapped(t *testing.T) {
 	e := &extract.HTML{MaxTextBytes: 1000}
-	doc, err := e.Extract([]byte(article("", body(500))), "text/html", mustURL(t, "https://example.com/big"))
+	doc, err := e.Extract(t.Context(), []byte(article("", body(500))), "text/html", mustURL(t, "https://example.com/big"))
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}

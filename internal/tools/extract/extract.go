@@ -20,6 +20,7 @@ package extract
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
@@ -76,8 +77,12 @@ type Document struct {
 func (d *Document) Usable() bool { return len(d.Text) >= fetch.MinUsableText }
 
 // Extractor converts bytes to a Document.
+//
+// It takes a context because extraction is not fast. The HTML parse is
+// superlinear on pathological markup, and without a cancellation point one page
+// can outlast every deadline the layers above it set.
 type Extractor interface {
-	Extract(content []byte, contentType string, pageURL *url.URL) (*Document, error)
+	Extract(ctx context.Context, content []byte, contentType string, pageURL *url.URL) (*Document, error)
 }
 
 // HTML is the default extractor.
@@ -91,7 +96,11 @@ type HTML struct {
 func New() *HTML { return &HTML{MaxTextBytes: 4 << 20} }
 
 // Extract parses content and returns the best text available.
-func (e *HTML) Extract(content []byte, contentType string, pageURL *url.URL) (*Document, error) {
+func (e *HTML) Extract(ctx context.Context, content []byte, contentType string, pageURL *url.URL) (*Document, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	maxText := e.MaxTextBytes
 	if maxText <= 0 {
 		maxText = 4 << 20
@@ -124,11 +133,14 @@ func (e *HTML) Extract(content []byte, contentType string, pageURL *url.URL) (*D
 		doc.HasStructuredData = fetch.HasStructuredData(raw)
 	}
 
-	// FromReader parses internally and runs charset detection, which matters
-	// for the non-UTF-8 pages a research agent will meet. A parse failure is
-	// not fatal when structured data already produced a body — that rescue is
-	// exactly what this package is for.
-	article, rerr := readability.FromReader(bytes.NewReader(content), pageURL)
+	// A parse failure is not fatal when structured data already produced a body
+	// — that rescue is exactly what this package is for. Cancellation is
+	// different: it means the caller has stopped waiting, so a half-built
+	// document is not a result worth returning.
+	article, rerr := e.parse(ctx, content, pageURL)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if rerr != nil && doc.Text == "" {
 		return nil, fmt.Errorf("extract: parse html: %w", rerr)
 	}
@@ -154,6 +166,36 @@ func (e *HTML) Extract(content []byte, contentType string, pageURL *url.URL) (*D
 
 	doc.Text = truncate(doc.Text, maxText)
 	return doc, nil
+}
+
+// parse runs readability under the context.
+//
+// FromReader parses internally and runs charset detection, which matters for
+// the non-UTF-8 pages a research agent will meet. It is also a single blocking
+// call with no cancellation of its own and superlinear cost on pathological
+// markup — a 330KB page measured at 53s. Left uninterruptible, one such page
+// outlasts the lead's deadline and every ceiling the budget layer enforces.
+//
+// The goroutine is abandoned, not killed; Go offers nothing else. That is the
+// trade: bounded wasted CPU that finishes on its own, against an actor that
+// cannot be stopped.
+func (e *HTML) parse(ctx context.Context, content []byte, pageURL *url.URL) (readability.Article, error) {
+	type parsed struct {
+		article readability.Article
+		err     error
+	}
+	ch := make(chan parsed, 1)
+	go func() {
+		a, err := readability.FromReader(bytes.NewReader(content), pageURL)
+		ch <- parsed{a, err}
+	}()
+
+	select {
+	case p := <-ch:
+		return p.article, p.err
+	case <-ctx.Done():
+		return readability.Article{}, ctx.Err()
+	}
 }
 
 func sourceFor(text string) Source {
@@ -259,12 +301,7 @@ func normalizeText(s string) string {
 
 	var blankRun int
 	for _, line := range strings.Split(s, "\n") {
-		line = strings.TrimRight(line, " \t")
-		// Collapse runs of spaces inside the line.
-		for strings.Contains(line, "  ") {
-			line = strings.ReplaceAll(line, "  ", " ")
-		}
-		line = strings.TrimSpace(line)
+		line = strings.TrimSpace(collapseSpaces(line))
 
 		if line == "" {
 			blankRun++
@@ -279,6 +316,31 @@ func normalizeText(s string) string {
 		out.WriteByte('\n')
 	}
 	return strings.TrimSpace(out.String())
+}
+
+// collapseSpaces reduces runs of spaces and tabs to one space, in a single
+// pass. The obvious ReplaceAll-until-stable loop rescans the whole line per
+// iteration, so a line of n spaces costs O(n²) — and whitespace-heavy markup is
+// the norm, not the exception.
+func collapseSpaces(line string) string {
+	if !strings.Contains(line, "  ") && !strings.Contains(line, "\t") {
+		return line
+	}
+	var b strings.Builder
+	b.Grow(len(line))
+	space := false
+	for i := 0; i < len(line); i++ {
+		if c := line[i]; c == ' ' || c == '\t' {
+			space = true
+			continue
+		}
+		if space && b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		space = false
+		b.WriteByte(line[i])
+	}
+	return b.String()
 }
 
 // truncate cuts at a rune boundary so the text stays valid UTF-8.

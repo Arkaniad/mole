@@ -89,11 +89,25 @@ func Split(text string, opts ChunkOptions) []Chunk {
 		} else {
 			end = boundaryBefore(text, pos, end)
 		}
+		if end <= pos {
+			// boundaryBefore must never fail to advance, but a chunker that can
+			// hang on malformed input is worse than one that splits it badly.
+			// This is the backstop, not the fix.
+			end = pos + opts.MaxChars
+			if end > len(text) {
+				end = len(text)
+			}
+		}
 
 		chunk := text[pos:end]
 		// Trailing whitespace would shift the recorded offsets relative to the
 		// text actually sent, so trim symmetrically and adjust both ends.
-		lead := len(chunk) - len(strings.TrimLeft(chunk, " \n\t"))
+		//
+		// Both trims must agree on what whitespace is. A three-character cutset
+		// against TrimSpace's unicode.IsSpace silently disagreed on \r, \v, \f
+		// and NBSP, and every byte of disagreement shifts Start — which is the
+		// offset a stored quote is later located by (§11.5).
+		lead := len(chunk) - len(strings.TrimLeftFunc(chunk, unicode.IsSpace))
 		trimmed := strings.TrimSpace(chunk)
 
 		if len(trimmed) >= opts.MinChars || end >= len(text) {
@@ -159,10 +173,18 @@ func boundaryBefore(text string, start, limit int) int {
 	// The test is on the byte AT limit, not before it: text[pos:limit] is valid
 	// only when the first EXCLUDED byte starts a rune. Checking limit-1 instead
 	// happily slices a three-byte character into pieces.
-	for limit > start && limit < len(text) && !isRuneStartByte(text[limit]) {
-		limit--
+	cut := limit
+	for cut > start && cut < len(text) && !isRuneStartByte(text[cut]) {
+		cut--
 	}
-	return limit
+	if cut <= start {
+		// Every byte in the window is a continuation byte, so the input is not
+		// valid UTF-8. Returning start would make Split emit an empty chunk and
+		// re-enter at the same position forever. Cut at the original limit
+		// instead: malformed input gets a malformed split, not a hang.
+		return limit
+	}
+	return cut
 }
 
 // lastSentenceEnd returns the index just past the final sentence terminator.

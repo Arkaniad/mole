@@ -3,6 +3,7 @@ package actors
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Quote verification.
@@ -49,7 +50,13 @@ const maxQuoteLen = 1200
 // never the model's rendering of it.
 func FindQuote(source, quote string) (QuoteMatch, bool) {
 	quote = strings.TrimSpace(quote)
-	if len(quote) < minQuoteLen || source == "" {
+	if source == "" {
+		return QuoteMatch{}, false
+	}
+	// Measure the quote with its whitespace collapsed. Padding is not evidence,
+	// and checking the raw length let "It          achieves" clear a bar that
+	// exists to require a substantial span.
+	if len(collapseSpace(quote)) < minQuoteLen {
 		return QuoteMatch{}, false
 	}
 
@@ -88,19 +95,25 @@ func findNormalized(source, quote string) (QuoteMatch, bool) {
 		startOff = make([]int, 0, len(source))
 		endOff   = make([]int, 0, len(source))
 	)
-	for i, r := range source {
-		size := runeLen(r)
-		if unicode.IsSpace(r) {
+	// Decode explicitly rather than ranging. On invalid UTF-8, range yields
+	// RuneError with a width of one byte, but the rune itself encodes to three
+	// — so deriving the width from the decoded value walked endOff past the end
+	// of the string and panicked on the final slice.
+	for i := 0; i < len(source); {
+		r, size := utf8.DecodeRuneInString(source[i:])
+		switch {
+		case unicode.IsSpace(r):
 			if len(sKey) > 0 && sKey[len(sKey)-1] != ' ' {
 				sKey = append(sKey, ' ')
 				startOff = append(startOff, i)
 				endOff = append(endOff, i+size)
 			}
-			continue
+		default:
+			sKey = append(sKey, unicode.ToLower(r))
+			startOff = append(startOff, i)
+			endOff = append(endOff, i+size)
 		}
-		sKey = append(sKey, unicode.ToLower(r))
-		startOff = append(startOff, i)
-		endOff = append(endOff, i+size)
+		i += size
 	}
 
 	idx := indexRunes(sKey, qKey)
@@ -142,17 +155,24 @@ func trimSpaceRunes(r []rune) []rune {
 	return r
 }
 
-func runeLen(r rune) int {
-	switch {
-	case r < 0x80:
-		return 1
-	case r < 0x800:
-		return 2
-	case r < 0x10000:
-		return 3
-	default:
-		return 4
+// collapseSpace reduces every run of whitespace to a single space, which is the
+// form both the length check and findNormalized compare against.
+func collapseSpace(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	space := false
+	for _, r := range s {
+		if unicode.IsSpace(r) {
+			space = true
+			continue
+		}
+		if space && b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		space = false
+		b.WriteRune(r)
 	}
+	return b.String()
 }
 
 // TruncateQuote bounds a quote to maxQuoteLen on a rune boundary.

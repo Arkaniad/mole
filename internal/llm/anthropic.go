@@ -137,24 +137,19 @@ func (p *anthropicProvider) Complete(ctx context.Context, req Request) (*Respons
 	var msg anthropic.Message
 	for stream.Next() {
 		if err := msg.Accumulate(stream.Current()); err != nil {
-			return nil, fmt.Errorf("llm: accumulate: %w", err)
+			// Return the partial response alongside the error. A stream that
+			// dies mid-flight was still billed for the tokens it delivered, and
+			// returning nil here dropped them: the ledger under-counted, and a
+			// ceiling enforced from an under-count is not a ceiling. Callers
+			// record cost before checking err precisely so this lands.
+			return partialResponse(msg, start), fmt.Errorf("llm: accumulate: %w", err)
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return nil, translateSDKError(err)
+		return partialResponse(msg, start), translateSDKError(err)
 	}
 
-	resp := &Response{
-		Model:      string(msg.Model),
-		StopReason: string(msg.StopReason),
-		Elapsed:    time.Since(start),
-		Usage: Usage{
-			InputTokens:      msg.Usage.InputTokens,
-			OutputTokens:     msg.Usage.OutputTokens,
-			CacheReadTokens:  msg.Usage.CacheReadInputTokens,
-			CacheWriteTokens: msg.Usage.CacheCreationInputTokens,
-		},
-	}
+	resp := partialResponse(msg, start)
 
 	// A refusal is a successful HTTP response with an empty content array.
 	// Code that reads Text without checking gets "" and no error, so the flag
@@ -179,6 +174,25 @@ func (p *anthropicProvider) Complete(ctx context.Context, req Request) (*Respons
 		return resp, ErrNoUsageReported
 	}
 	return resp, nil
+}
+
+// partialResponse projects whatever the accumulator holds into a Response.
+//
+// Called on both the success and the failure paths so a half-finished stream
+// still reports its usage. Text and refusal are filled in by the caller only
+// when the stream completed.
+func partialResponse(msg anthropic.Message, start time.Time) *Response {
+	return &Response{
+		Model:      string(msg.Model),
+		StopReason: string(msg.StopReason),
+		Elapsed:    time.Since(start),
+		Usage: Usage{
+			InputTokens:      msg.Usage.InputTokens,
+			OutputTokens:     msg.Usage.OutputTokens,
+			CacheReadTokens:  msg.Usage.CacheReadInputTokens,
+			CacheWriteTokens: msg.Usage.CacheCreationInputTokens,
+		},
+	}
 }
 
 func toSDKMessages(msgs []Message) []anthropic.MessageParam {

@@ -116,6 +116,13 @@ data** in every downstream prompt. Concretely:
 
 - Untrusted text is passed in a structurally delimited block with an explicit
   provenance label, never string-concatenated into an instruction.
+- **The delimiter carries a per-call random token** (`<document-a3f9…>`). A fixed fence is
+  not a boundary: a page whose text contains the closing tag ends the region that was
+  supposed to contain it, and everything after that line lands in instruction position.
+  Escaping the body instead is not available — the body is what §11.5 checks each claim's
+  quote against verbatim, so altering one byte of it turns grounded claims into rejected
+  ones. Randomising the tag keeps the content byte-identical and leaves the page nothing
+  to imitate. Titles and URLs, which are not quote-verified, are escaped as well.
 - The Planner is instructed that summaries describe *what a source said*, not *what to do*.
 - **Cross-actor constraint:** a `local_compute` lead may not be free-text authored from
   web- or academic-derived content. Local leads are constructed from a fixed set of
@@ -910,8 +917,22 @@ const (
     FetchJSRequired  FetchOutcome = "js_required"   // extractor yielded < N chars, but the
                                                     // document is script-heavy and has an
                                                     // app-root element — the SPA signature
-    FetchStructured  FetchOutcome = "structured_only" // readability failed BUT __NEXT_DATA__ /
-                                                    // JSON-LD / OpenGraph carried the content
+    FetchStructured  FetchOutcome = "structured_only" // readability failed BUT __NEXT_DATA__
+                                                    // or JSON-LD carried the content.
+                                                    // OpenGraph does NOT qualify: og:title
+                                                    // and og:description are a sentence of
+                                                    // metadata, and no parser turns them
+                                                    // into a usable document. Counting them
+                                                    // files every SPA here and holds
+                                                    // js_required at ~0 — the one number
+                                                    // §17.1's gate reads
+    FetchProviderTxt FetchOutcome = "provider_content" // no fetch was made: the search
+                                                    // provider already returned page text.
+                                                    // Separate from ok because every rate
+                                                    // below is a fraction of *attempted*
+                                                    // fetches, and padding that denominator
+                                                    // with requests never made drags every
+                                                    // failure rate toward zero
     FetchConsentWall FetchOutcome = "consent_wall"
     FetchBotBlock    FetchOutcome = "bot_block"     // 403/429 with a challenge signature
     FetchPaywall     FetchOutcome = "paywall"
@@ -929,6 +950,13 @@ Recorded per fetch with the domain, so the output is a per-cause rate *and* a ra
 domain list per cause. `FetchGuardDeny` and `FetchRobotsDeny` are deliberately separated —
 those are the system working, and folding them into a generic failure rate would inflate
 the apparent case for a browser.
+
+**Watch the denominator, not just the numerator.** Three of the entries above exist only
+to keep it honest, and each one was got wrong at least once during M1: `provider_content`
+is not an attempted fetch, `structured_only` must not absorb SPAs, and a 3xx that was
+never followed is not an `ok`. A rate computed over the wrong denominator is not a
+conservative estimate — it is a confident wrong answer, and §17.1 is a decision made from
+exactly this table.
 
 **Try the cheap paths before the expensive one.** In failure-rate terms these are three
 distinct mitigations, and the taxonomy tells you which one to reach for:

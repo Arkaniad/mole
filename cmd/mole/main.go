@@ -1,9 +1,9 @@
 // Command mole is the daemon and CLI.
 //
-// M0 ships the foundations only: schema, ledger, cassettes, tracing. There is
-// no research loop yet, so the commands here are the ones that operate on
-// persisted state — migrate, doctor, sessions, trace — plus a dev seeder so the
-// trace view can be exercised by hand before M1 produces real sessions.
+// Through M1 the commands here operate on persisted state and on configuration
+// — migrate, doctor, sessions, trace, config — plus a dev seeder so the trace
+// view can be exercised by hand. The research loop itself arrives with the
+// planner in M2; until then WebActor is driven from tests.
 package main
 
 import (
@@ -206,9 +206,12 @@ func cmdMigrate(ctx context.Context, args []string) error {
 // ---------------------------------------------------------------------------
 
 // cmdDoctor is where the "check this at startup, not in the README"
-// requirements live. M0 covers what M0 owns: the database, the schema, and the
-// pricing table. Provider keys, contact email, socket permissions, and sandbox
+// requirements live: the database, the schema, the ledger's own consistency,
+// and the credentials M1 needs to make a call. Socket permissions and sandbox
 // availability get added as their milestones land.
+//
+// It exits non-zero when something is actually broken, so a setup script can
+// branch on it.
 func cmdDoctor(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	dbPath := addDBFlag(fs)
@@ -216,15 +219,8 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		return err
 	}
 
-	ok := true
-	report := func(good bool, label, detail string) {
-		mark := "✓"
-		if !good {
-			mark = "!"
-			ok = false
-		}
-		fmt.Printf("%s %-18s %s\n", mark, label, detail)
-	}
+	r := &checks{}
+	report := r.require
 
 	db, err := openDBRead(ctx, *dbPath)
 	if err != nil {
@@ -278,19 +274,58 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		report(drifted == 0, "ledger", fmt.Sprintf("%d session(s) reconciled, %d drifted", sessionCount, drifted))
 	}
 
-	reportConfig(report)
+	reportConfig(r)
 
-	if !ok {
+	if r.pending > 0 {
 		fmt.Println("\nsome checks are informational until their milestone lands")
 	}
+	if r.blocked > 0 {
+		// Exit non-zero. doctor is what a setup script and a CI job run to find
+		// out whether this install works; printing "!" and returning success
+		// tells both of them it does.
+		return fmt.Errorf("doctor found %d problem(s)", r.blocked)
+	}
 	return nil
+}
+
+// checks accumulates doctor's findings.
+//
+// Two severities, because they mean different things to a caller: require is
+// "this install is broken", note is "a later milestone will need this". Folding
+// them together is what made the exit code useless.
+type checks struct {
+	blocked int
+	pending int
+}
+
+func (c *checks) require(good bool, label, detail string) {
+	if !good {
+		c.blocked++
+	}
+	c.print(good, label, detail)
+}
+
+func (c *checks) note(good bool, label, detail string) {
+	if !good {
+		c.pending++
+	}
+	c.print(good, label, detail)
+}
+
+func (c *checks) print(good bool, label, detail string) {
+	mark := "✓"
+	if !good {
+		mark = "!"
+	}
+	fmt.Printf("%s %-18s %s\n", mark, label, detail)
 }
 
 // reportConfig checks credentials and settings. These are the "verify at
 // startup, not in a README" requirements: a missing search key is a session
 // that fails on its first lead, and a missing contact address is a ban from an
 // academic provider that requires identification.
-func reportConfig(report func(bool, string, string)) {
+func reportConfig(r *checks) {
+	report := r.require
 	cfg, err := config.Load()
 	if err != nil && !errors.Is(err, config.ErrNotConfigured) {
 		report(false, "config", err.Error())
@@ -323,10 +358,11 @@ func reportConfig(report func(bool, string, string)) {
 
 	reportLLM(report, cfg)
 
+	// Not required until M6 lands the academic providers.
 	if cfg.ContactEmail == "" {
-		report(false, "contact email", "not set — required by Unpaywall and NCBI before academic providers (M6)")
+		r.note(false, "contact email", "not set — required by Unpaywall and NCBI before academic providers (M6)")
 	} else {
-		report(true, "contact email", cfg.ContactEmail)
+		r.note(true, "contact email", cfg.ContactEmail)
 	}
 }
 
@@ -844,7 +880,12 @@ func contains(hay []string, needle string) bool {
 // configured a key meant to use it, and silently preferring a detected local
 // model would spend their session on the wrong thing.
 func buildLLM(cfg *config.Config) (provider llm.Provider, reason string, err error) {
-	if cfg.LLM.APIKey != "" || cfg.LLM.BaseURL != "" || cfg.LLM.Provider != "" {
+	// Any explicit llm.* setting counts as a configured provider, including the
+	// model names. Omitting them meant `mole config set llm.model …` on its own
+	// was silently discarded in favour of whatever autodetection found — the
+	// exact surprise this precedence rule exists to prevent.
+	if cfg.LLM.APIKey != "" || cfg.LLM.BaseURL != "" || cfg.LLM.Provider != "" ||
+		cfg.LLM.Model != "" || cfg.LLM.CheapModel != "" {
 		kind := llm.Kind(cfg.LLM.Provider)
 		if kind == "" {
 			kind = llm.KindAnthropic

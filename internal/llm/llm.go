@@ -254,10 +254,14 @@ func (c Config) withDefaults() Config {
 		// fast request, and the SDK streams to avoid a transport timeout.
 		c.Timeout = 10 * time.Minute
 	}
-	if c.MaxRetries < 0 {
+	// Two sequential ifs here made the negative case unreachable: it clamped to
+	// zero and the next test promptly turned that back into three. A switch is
+	// the difference between "retries cannot be disabled" and "-1 disables
+	// them", which is the only way to say so given that 0 means unset.
+	switch {
+	case c.MaxRetries < 0:
 		c.MaxRetries = 0
-	}
-	if c.MaxRetries == 0 {
+	case c.MaxRetries == 0:
 		c.MaxRetries = 3
 	}
 	if c.Kind == KindAnthropic {

@@ -361,6 +361,17 @@ func classifyTransportError(err error) Outcome {
 // That is acceptable for ranking which domains cause which failures, and a
 // real PSL is a dependency this does not yet justify. Revisit if the M2 report
 // turns out to be misleading because of it.
+// DomainOf reduces a URL to the same grouping key Result.Domain carries, so
+// callers recording an outcome for a URL they never fetched bucket it
+// identically to one they did.
+func DomainOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return registrableish(u.Hostname())
+}
+
 func registrableish(host string) string {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	if host == "" {

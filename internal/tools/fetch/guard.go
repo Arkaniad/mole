@@ -41,8 +41,10 @@ type Guard struct {
 	// and so an operator can deliberately point Mole at an intranet. Never
 	// enable it for a session that fetches attacker-influenced URLs.
 	//
-	// It does NOT unblock link-local, multicast, or the unspecified address —
-	// see CheckAddr. Cloud metadata stays unreachable either way.
+	// It unblocks loopback and RFC1918 and nothing else. Link-local,
+	// multicast, the unspecified address, and every prefix in deniedPrefixes
+	// stay refused — see CheckAddr. Cloud metadata stays unreachable either
+	// way, including via its NAT64 and 6to4 encodings.
 	AllowPrivateNetworks bool
 
 	// Resolver defaults to net.DefaultResolver.
@@ -140,17 +142,23 @@ func (g *Guard) CheckAddr(addr netip.Addr) string {
 		return "link-local address"
 	}
 
+	// deniedPrefixes sit OUTSIDE the escape hatch. Several of them — NAT64,
+	// 6to4, CGNAT — are alternative encodings of exactly the addresses the
+	// unconditional checks above refuse, so leaving them inside the hatch would
+	// hand back 169.254.169.254 as 64:ff9b::a9fe:a9fe and make the promise
+	// above false. None of them is a plausible intranet target either.
+	for _, d := range deniedPrefixes {
+		if d.prefix.Contains(addr) {
+			return d.reason
+		}
+	}
+
 	if !g.AllowPrivateNetworks {
 		if addr.IsLoopback() {
 			return "loopback address"
 		}
 		if addr.IsPrivate() {
 			return "private address"
-		}
-		for _, d := range deniedPrefixes {
-			if d.prefix.Contains(addr) {
-				return d.reason
-			}
 		}
 	}
 

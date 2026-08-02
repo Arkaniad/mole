@@ -17,6 +17,9 @@ import (
 // that could reach the same sites. The posture only actually changes with
 // mechanism, so this is on by default and the override logs loudly.
 
+// MaxCrawlDelay bounds what a site's Crawl-delay can cost us.
+const MaxCrawlDelay = 30 * time.Second
+
 // Rules is a parsed robots.txt.
 type Rules struct {
 	groups    []group
@@ -106,7 +109,17 @@ func ParseRobots(r io.Reader) *Rules {
 			}
 			lastWasUA = false
 			if f, err := strconv.ParseFloat(value, 64); err == nil && f > 0 {
-				cur.crawlDelay = time.Duration(f * float64(time.Second))
+				d := time.Duration(f * float64(time.Second))
+				// Cap it. Crawl-delay is a number a stranger puts in a text
+				// file, and values of hours exist in the wild; honouring one
+				// literally parks a worker until the lead's wall-clock ceiling
+				// kills it, having read nothing. Past the cap the honest
+				// reading is "do not crawl this", and the fetch failing on
+				// deadline says that more usefully than a silent stall.
+				if d > MaxCrawlDelay {
+					d = MaxCrawlDelay
+				}
+				cur.crawlDelay = d
 			}
 		}
 	}
@@ -306,16 +319,32 @@ func (c *RobotsCache) Get(ctx context.Context, origin string) *Rules {
 	once, entry := e.once, e
 	c.mu.Unlock()
 
+	var transient bool
 	once.Do(func() {
-		rules := c.load(ctx, origin)
+		rules, ok := c.load(ctx, origin)
+		transient = !ok
 		c.mu.Lock()
 		entry.rules = rules
-		entry.expires = time.Now().Add(c.ttl)
+		if ok {
+			entry.expires = time.Now().Add(c.ttl)
+		}
+		// A transient failure leaves expires at the zero time, so the entry is
+		// already stale and the next caller refetches. Caching it for the full
+		// TTL meant one cancelled context locked a whole origin out for an hour
+		// — the deny is correct for the request that failed, not for the next
+		// sixty minutes of them.
 		c.mu.Unlock()
 	})
 
 	c.mu.Lock()
 	rules := entry.rules
+	if transient {
+		// Drop the entry so a caller arriving after this one does not join a
+		// resolved sync.Once holding a failure.
+		if cur, ok := c.entries[origin]; ok && cur == entry {
+			delete(c.entries, origin)
+		}
+	}
 	c.mu.Unlock()
 	if rules == nil {
 		return AllowAllRules()
@@ -323,22 +352,27 @@ func (c *RobotsCache) Get(ctx context.Context, origin string) *Rules {
 	return rules
 }
 
-func (c *RobotsCache) load(ctx context.Context, origin string) *Rules {
+// load fetches and parses robots.txt. The bool reports whether the answer is
+// durable enough to cache: a network failure or a cancelled context says
+// nothing about the site's policy, only about this attempt.
+func (c *RobotsCache) load(ctx context.Context, origin string) (*Rules, bool) {
 	if c.Fetch == nil {
-		return AllowAllRules()
+		return AllowAllRules(), true
 	}
 	status, body, err := c.Fetch(ctx, origin+"/robots.txt")
 	switch {
 	case err != nil:
 		// Unreachable robots.txt is treated as a server error, not as consent.
-		return DenyAllRules()
+		return DenyAllRules(), false
 	case status == http.StatusOK:
-		return ParseRobots(strings.NewReader(string(body)))
+		return ParseRobots(strings.NewReader(string(body))), true
 	case status >= 400 && status < 500:
 		// No robots.txt means no restrictions.
-		return AllowAllRules()
+		return AllowAllRules(), true
 	default:
-		return DenyAllRules()
+		// 5xx is a full disallow per the standard, but it is also the classic
+		// transient failure. Deny this request; do not hold the origin.
+		return DenyAllRules(), false
 	}
 }
 

@@ -72,11 +72,16 @@ func (a *WebActor) Run(ctx context.Context, lead core.Lead) (*Result, error) {
 	// 2-5. Read sources until the budget or the source cap is reached.
 	var (
 		inputTokensUsed int64
+		sourcesRead     int
 		perSource       []sourceSummary
 	)
 
 	for _, hit := range sr.Results {
-		if len(perSource) >= budget.MaxSources {
+		// Count sources READ, not sources that yielded something. Counting
+		// summaries meant a run where nothing extracted cleanly walked the
+		// entire result list — spending a fetch, an extract, and a model call
+		// per hit against a cap that never advanced.
+		if sourcesRead >= budget.MaxSources {
 			break
 		}
 		if remaining := budget.MaxInputTokens - inputTokensUsed; remaining <= 0 {
@@ -84,10 +89,12 @@ func (a *WebActor) Run(ctx context.Context, lead core.Lead) (*Result, error) {
 			break
 		}
 
-		doc, ok := a.readSource(ctx, lead, hit, res)
+		src, ok := a.readSource(ctx, lead, hit, res)
 		if !ok {
 			continue
 		}
+		sourcesRead++
+		doc := src.doc
 
 		// Chunk under what is left of the sub-budget.
 		plan := llm.Plan(doc.Text, budget.MaxInputTokens-inputTokensUsed, llm.DefaultChunkOptions())
@@ -97,16 +104,34 @@ func (a *WebActor) Run(ctx context.Context, lead core.Lead) (*Result, error) {
 		res.Stats.Chunks += len(plan.Chunks)
 		res.Stats.ChunksSkipped += plan.Skipped
 
-		summary := sourceSummary{Title: doc.Title, URL: hit.URL}
+		summary := sourceSummary{Title: doc.Title, URL: src.url}
 
 		for _, chunk := range plan.Chunks {
-			claims, usage, err := a.mineChunk(ctx, lead, hit, doc, chunk, budget, res)
+			// Plan sized the whole document against an ESTIMATE. Re-check
+			// between chunks so a document whose real token count runs over
+			// stops here rather than at the next source — the sub-budget is a
+			// ceiling, and checking it once per source overshot it by roughly
+			// the cost of a full document.
+			if inputTokensUsed >= budget.MaxInputTokens {
+				res.Truncated = true
+				res.Stats.ChunksSkipped++
+				continue
+			}
+			// The cap is per SOURCE, so one verbose page cannot dominate the
+			// graph (§ Budget.MaxClaimsPerSource). Applying it per chunk let a
+			// ten-chunk document contribute ten times the intended share.
+			remainingClaims := budget.MaxClaimsPerSource - len(summary.Claims)
+			if remainingClaims <= 0 {
+				break
+			}
+
+			claims, usage, err := a.mineChunk(ctx, lead, src, doc, chunk, remainingClaims, budget, res)
 			inputTokensUsed += usage.InputTokens + usage.CacheReadTokens
 			if err != nil {
 				// One bad chunk does not fail the lead; the others may still
 				// carry the answer. §9.5 classifies this as degraded.
 				a.logger().WarnContext(ctx, "chunk mining failed",
-					"url", hit.URL, "chunk", chunk.Index, "err", err)
+					"url", src.url, "chunk", chunk.Index, "err", err)
 				continue
 			}
 			res.Claims = append(res.Claims, claims...)
@@ -151,27 +176,38 @@ type sourceSummary struct {
 	Claims  []core.Claim
 }
 
+// source is a read source: its text, and the URL that text actually came from.
+type source struct {
+	doc    *extract.Document
+	url    string
+	domain string
+}
+
 // readSource turns one search hit into extracted text.
 //
 // The fetch is skipped when the search provider already returned usable
 // content. That is the efficiency §10.4 identifies before any headless-browser
 // question: no HTTP request, no robots round-trip, no rate-limit pressure, and
 // no js_required outcome to explain.
-func (a *WebActor) readSource(ctx context.Context, lead core.Lead, hit search.Result, res *Result) (*extract.Document, bool) {
+func (a *WebActor) readSource(ctx context.Context, lead core.Lead, hit search.Result, res *Result) (source, bool) {
 	pageURL, err := url.Parse(hit.URL)
 	if err != nil {
-		return nil, false
+		return source{}, false
 	}
 
 	if hit.HasUsableContent() {
 		res.Stats.SkippedFetch++
-		a.recordOutcome(ctx, lead, hit.URL, string(fetch.OutcomeOK), 0, 0, "")
-		return &extract.Document{
-			Text:        hit.Content,
-			Title:       hit.Title,
-			Excerpt:     hit.Snippet,
-			PublishedAt: hit.PublishedAt,
-			Source:      extract.SourcePlainText,
+		a.recordOutcome(ctx, lead, hit.URL, fetch.OutcomeProviderContent, 0, 0, "")
+		return source{
+			doc: &extract.Document{
+				Text:        hit.Content,
+				Title:       hit.Title,
+				Excerpt:     hit.Snippet,
+				PublishedAt: hit.PublishedAt,
+				Source:      extract.SourcePlainText,
+			},
+			url:    hit.URL,
+			domain: fetch.DomainOf(hit.URL),
 		}, true
 	}
 
@@ -187,44 +223,56 @@ func (a *WebActor) readSource(ctx context.Context, lead core.Lead, hit search.Re
 		Err:        fr.Err,
 	})
 
-	if ferr != nil || !fr.Outcome.Usable() {
-		a.recordOutcome(ctx, lead, hit.URL, string(fr.Outcome), fr.StatusCode, fr.Bytes, fr.Err)
-		return nil, false
+	// The fetcher already reduced the host; recomputing it here from the raw
+	// URL produced a second, subtly different answer for the same row.
+	domain := fr.Domain
+	if domain == "" {
+		domain = fetch.DomainOf(hit.URL)
+	}
+	// Attribute to where the bytes came from. A claim cited to a URL that 301s
+	// elsewhere sends a reader to the redirect, not to the evidence.
+	finalURL := fr.FinalURL
+	if finalURL == "" {
+		finalURL = hit.URL
 	}
 
-	doc, eerr := a.Extract.Extract(fr.Content, fr.ContentType, pageURL)
+	if ferr != nil || !fr.Outcome.Usable() {
+		a.recordOutcomeFor(ctx, lead, hit.URL, domain, fr.Outcome, fr.StatusCode, fr.Bytes, fr.Err)
+		return source{}, false
+	}
+
+	doc, eerr := a.Extract.Extract(ctx, fr.Content, fr.ContentType, pageURL)
 	if eerr != nil {
-		a.recordOutcome(ctx, lead, hit.URL, string(fetch.OutcomeExtractFailed), fr.StatusCode, fr.Bytes, eerr.Error())
-		return nil, false
+		a.recordOutcomeFor(ctx, lead, hit.URL, domain, fetch.OutcomeExtractFailed, fr.StatusCode, fr.Bytes, eerr.Error())
+		return source{}, false
 	}
 
 	// The transport said OK; whether the bytes held readable text is only
 	// knowable now. This is what keeps structured_only a distinct cause.
 	extract.Refine(fr, doc)
-	a.recordOutcome(ctx, lead, hit.URL, string(fr.Outcome), fr.StatusCode, fr.Bytes, fr.Err)
+	a.recordOutcomeFor(ctx, lead, hit.URL, domain, fr.Outcome, fr.StatusCode, fr.Bytes, fr.Err)
 
 	if !doc.Usable() {
-		return nil, false
+		return source{}, false
 	}
 	if doc.PublishedAt == nil {
 		doc.PublishedAt = hit.PublishedAt
 	}
-	return doc, true
+	return source{doc: doc, url: finalURL, domain: domain}, true
 }
 
 // mineChunk extracts claims from one chunk and verifies every quote.
 func (a *WebActor) mineChunk(
 	ctx context.Context,
 	lead core.Lead,
-	hit search.Result,
+	src source,
 	doc *extract.Document,
 	chunk llm.Chunk,
+	maxClaims int,
 	budget Budget,
 	res *Result,
 ) ([]core.Claim, llm.Usage, error) {
-	prompt := fmt.Sprintf(minePrompt, budget.MaxClaimsPerSource) +
-		"\n\nQuestion under research: " + lead.Query + "\n\n" +
-		wrapSource(doc.Title, hit.URL, chunk.Text)
+	prompt := mineUserPrompt(fenceToken(), lead.Query, maxClaims, doc.Title, src.url, chunk.Text)
 
 	resp, err := a.LLM.Complete(ctx, llm.Request{
 		Tier:      llm.TierCheap,
@@ -237,7 +285,7 @@ func (a *WebActor) mineChunk(
 	}
 
 	// Record the call even on failure — the tokens were spent.
-	res.Costs = append(res.Costs, a.toolCall(lead, resp, core.RoleExecutor, "mine:"+hit.URL, err))
+	res.Costs = append(res.Costs, a.toolCall(lead, resp, core.RoleExecutor, "mine:"+src.url, err))
 	if err != nil {
 		return nil, resp.Usage, err
 	}
@@ -266,7 +314,7 @@ func (a *WebActor) mineChunk(
 		if !ok {
 			res.Stats.ClaimsRejected++
 			a.logger().DebugContext(ctx, "claim rejected: quote not found in source",
-				"url", hit.URL, "quote", truncateForLog(m.Quote))
+				"url", src.url, "quote", truncateForLog(m.Quote))
 			continue
 		}
 
@@ -274,7 +322,7 @@ func (a *WebActor) mineChunk(
 			SessionID: a.SessionID,
 			LeadID:    lead.ID,
 			Text:      strings.TrimSpace(m.Text),
-			Source:    hit.URL,
+			Source:    src.url,
 			Quote:     TruncateQuote(match.Text),
 			// Offsets index the whole document, not the chunk — the chunk does
 			// not outlive this function, and a later re-verification needs to
@@ -285,7 +333,7 @@ func (a *WebActor) mineChunk(
 			Confidence:  clamp01(m.Confidence),
 		})
 
-		if len(claims) >= budget.MaxClaimsPerSource {
+		if len(claims) >= maxClaims {
 			break
 		}
 	}
@@ -297,23 +345,22 @@ func (a *WebActor) mineChunk(
 func (a *WebActor) reduce(ctx context.Context, lead core.Lead, sources []sourceSummary, res *Result) (string, error) {
 	var b strings.Builder
 	for _, s := range sources {
-		b.WriteString("\n<source>\n<url>" + sanitizeTag(s.URL) + "</url>\n")
+		b.WriteString("\nsource: " + sanitizeTag(s.URL) + "\n")
 		if s.Title != "" {
-			b.WriteString("<title>" + sanitizeTag(s.Title) + "</title>\n")
+			b.WriteString("title: " + sanitizeTag(s.Title) + "\n")
 		}
 		for _, c := range s.Claims {
-			b.WriteString("- " + c.Text + "\n")
+			b.WriteString("- " + sanitizeTag(c.Text) + "\n")
 		}
 		if len(s.Claims) == 0 && s.Excerpt != "" {
-			b.WriteString("- " + s.Excerpt + "\n")
+			b.WriteString("- " + sanitizeTag(s.Excerpt) + "\n")
 		}
-		b.WriteString("</source>\n")
 	}
 
 	resp, err := a.LLM.Complete(ctx, llm.Request{
 		Tier:      llm.TierStrong,
 		System:    reduceSystemPrompt,
-		Messages:  []llm.Message{llm.User(fmt.Sprintf(reducePrompt, lead.Query) + "\n" + b.String())},
+		Messages:  []llm.Message{llm.User(reduceUserPrompt(fenceToken(), lead.Query, b.String()))},
 		MaxTokens: 2048,
 	})
 	if resp == nil {
@@ -369,7 +416,12 @@ func (a *WebActor) toolCall(lead core.Lead, resp *llm.Response, role core.Role, 
 //
 // Failures are recorded as diligently as successes: the rate per cause is
 // meaningless without a denominator, and §17.1's gate reads both.
-func (a *WebActor) recordOutcome(ctx context.Context, lead core.Lead, rawURL, outcome string, status int, bytes int64, errText string) {
+func (a *WebActor) recordOutcome(ctx context.Context, lead core.Lead, rawURL string, outcome fetch.Outcome, status int, bytes int64, errText string) {
+	a.recordOutcomeFor(ctx, lead, rawURL, fetch.DomainOf(rawURL), outcome, status, bytes, errText)
+}
+
+// recordOutcomeFor is recordOutcome for a caller that already knows the domain.
+func (a *WebActor) recordOutcomeFor(ctx context.Context, lead core.Lead, rawURL, domain string, outcome fetch.Outcome, status int, bytes int64, errText string) {
 	if a.Store == nil {
 		return
 	}
@@ -381,8 +433,8 @@ func (a *WebActor) recordOutcome(ctx context.Context, lead core.Lead, rawURL, ou
 			SessionID:  &sessionID,
 			LeadID:     &leadID,
 			URL:        rawURL,
-			Domain:     domainOf(rawURL),
-			Outcome:    outcome,
+			Domain:     domain,
+			Outcome:    string(outcome),
 			StatusCode: status,
 			Bytes:      bytes,
 			Err:        errText,
@@ -393,19 +445,6 @@ func (a *WebActor) recordOutcome(ctx context.Context, lead core.Lead, rawURL, ou
 		// lead that was otherwise fine.
 		a.logger().WarnContext(ctx, "recording fetch outcome failed", "url", rawURL, "err", err)
 	}
-}
-
-func domainOf(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-	host := strings.ToLower(u.Hostname())
-	parts := strings.Split(host, ".")
-	if len(parts) <= 2 {
-		return host
-	}
-	return strings.Join(parts[len(parts)-2:], ".")
 }
 
 func clamp01(f float64) float64 {

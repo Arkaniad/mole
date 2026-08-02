@@ -17,6 +17,15 @@ type Outcome string
 const (
 	OutcomeOK Outcome = "ok"
 
+	// OutcomeProviderContent is a source read without fetching it, because the
+	// search provider already returned usable page text.
+	//
+	// Distinct from ok on purpose. Every per-cause rate in §10.4 is a fraction
+	// of attempted fetches, and filing these as ok inflated that denominator
+	// with requests never made — dragging js_required and bot_block down by
+	// however much of the corpus the provider happened to cover.
+	OutcomeProviderContent Outcome = "provider_content"
+
 	// OutcomeJSRequired is the SPA signature: the extractor produced almost
 	// nothing, but the document is script-heavy and has an app-root element.
 	// This is the ONLY outcome that counts as evidence for a headless browser.
@@ -59,7 +68,13 @@ func (o Outcome) SystemWorking() bool {
 }
 
 // Usable reports whether the fetch produced text an actor can work with.
-func (o Outcome) Usable() bool { return o == OutcomeOK || o == OutcomeStructuredOnly }
+func (o Outcome) Usable() bool {
+	return o == OutcomeOK || o == OutcomeStructuredOnly || o == OutcomeProviderContent
+}
+
+// Attempted reports whether a request was actually made. It is the denominator
+// for every per-cause rate: provider_content never touched the network.
+func (o Outcome) Attempted() bool { return o != OutcomeProviderContent }
 
 // Result is one fetch attempt, recorded whether or not it succeeded.
 type Result struct {
@@ -92,7 +107,6 @@ var (
 
 	nextDataRe = regexp.MustCompile(`(?i)<script[^>]+id=["']__NEXT_DATA__["']`)
 	jsonLDRe   = regexp.MustCompile(`(?i)<script[^>]+type=["']application/ld\+json["']`)
-	ogTitleRe  = regexp.MustCompile(`(?i)<meta[^>]+property=["']og:(title|description)["']`)
 
 	consentMarkers = []string{
 		"onetrust", "cookiebot", "trustarc", "usercentrics", "quantcast choice",
@@ -155,10 +169,14 @@ func ClassifyBody(html string, extractedLen int) Outcome {
 
 // HasStructuredData reports whether the document carries content in a
 // machine-readable block that a parser could recover without executing JS.
+//
+// OpenGraph deliberately does not qualify. og:title and og:description are
+// metadata a page emits alongside its content, capped at a sentence or two —
+// no parser turns them into the MinUsableText characters that would make this
+// fetch OK. Counting them here filed every SPA as structured_only and held
+// js_required near zero, which is the one number §17.1's decision reads.
 func HasStructuredData(html string) bool {
-	return nextDataRe.MatchString(html) ||
-		jsonLDRe.MatchString(html) ||
-		ogTitleRe.MatchString(html)
+	return nextDataRe.MatchString(html) || jsonLDRe.MatchString(html)
 }
 
 // looksJSRequired is the SPA signature: an app-root element plus enough script
@@ -195,8 +213,13 @@ func ClassifyStatus(status int, body string) Outcome {
 			return OutcomeBotBlock
 		}
 		return OutcomeExtractFailed
+	case status >= 200 && status < 300:
+		return OutcomeOK
 	}
-	return OutcomeOK
+	// 1xx and 3xx reach here only when the client did not follow or consume the
+	// response. Neither carries a document, so reporting ok would enter a fetch
+	// that produced nothing into the denominator as a success.
+	return OutcomeExtractFailed
 }
 
 func containsAny(haystack string, needles []string) bool {
