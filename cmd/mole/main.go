@@ -183,6 +183,59 @@ func openDBRead(ctx context.Context, path string) (*sqlite.DB, error) {
 	return db, nil
 }
 
+// parseArgs is flag.FlagSet.Parse that tolerates flags after positionals.
+//
+// Go's flag package stops at the first non-flag argument, so
+//
+//	mole research "a question" --usd 0.50
+//
+// silently leaves --usd unparsed and folds it into the question. Every usage
+// string in this binary shows the positional first, because that is how people
+// write it — so the parser has to accept it rather than the docs being wrong.
+//
+// Flags are hoisted ahead of positionals and the result handed to Parse, which
+// still owns validation. A bare "--" ends flag parsing, as usual.
+func parseArgs(fs *flag.FlagSet, args []string) error {
+	var flags, positional []string
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			positional = append(positional, args[i+1:]...)
+			i = len(args)
+			continue
+		case a == "-" || !strings.HasPrefix(a, "-"):
+			positional = append(positional, a)
+			continue
+		}
+
+		flags = append(flags, a)
+		name := strings.TrimLeft(a, "-")
+		if strings.Contains(name, "=") {
+			continue // --flag=value carries its own value
+		}
+		f := fs.Lookup(name)
+		if f == nil {
+			continue // unknown: let Parse produce the error
+		}
+		// A boolean flag takes no following value; consuming one would eat a
+		// positional argument.
+		if b, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && b.IsBoolFlag() {
+			continue
+		}
+		if i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+
+	// Always re-emit the "--" separator. Every real flag has been hoisted
+	// above, so anything left is positional by construction — and this is also
+	// what lets a question that happens to start with a dash survive.
+	return fs.Parse(append(append(flags, "--"), positional...))
+}
+
 func newTabWriter() *tabwriter.Writer {
 	return tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 }
@@ -425,7 +478,7 @@ func cmdSessions(ctx context.Context, args []string) error {
 func cmdTrace(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("trace", flag.ContinueOnError)
 	dbPath := addDBFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -847,6 +900,45 @@ func reportLLM(report func(bool, string, string), cfg *config.Config) {
 	report(true, "llm provider", detail+" (unverified — run: mole config test-llm)")
 }
 
+// checkKeyMatchesProvider refuses a key that plainly belongs elsewhere.
+//
+// llm.provider defaults to Anthropic when unset, so a Groq or OpenAI key set on
+// its own yielded "✓ llm provider claude-opus-5 via config" from doctor and
+// then an auth failure at the first model call. A green tick that is wrong is
+// worse than no tick: it is the check being run and passing.
+//
+// Only an unambiguous mismatch is refused. An unrecognized prefix is fine —
+// self-hosted and proxy keys look like anything.
+func checkKeyMatchesProvider(cfg *config.Config, kind llm.Kind) error {
+	vendor, known := llm.VendorFromKey(cfg.LLM.APIKey)
+	if !known || vendor.Kind == kind {
+		return nil
+	}
+	// An explicitly chosen provider is the user's decision to make; only the
+	// silent default is worth blocking on.
+	if cfg.LLM.Provider != "" {
+		return nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "llm.api-key looks like a %s key, but llm.provider is unset so it defaults to anthropic.\n",
+		vendor.Name)
+	b.WriteString("Set the provider explicitly:\n")
+	fmt.Fprintf(&b, "  mole config set llm.provider %s\n", vendor.Kind)
+	if vendor.BaseURL != "" {
+		fmt.Fprintf(&b, "  mole config set llm.base-url %s\n", vendor.BaseURL)
+	}
+	b.WriteString("  mole config set llm.model <name>\n")
+	b.WriteString("  mole config set llm.cheap-model <name>")
+	if vendor.Models != "" {
+		fmt.Fprintf(&b, "        # e.g. %s", vendor.Models)
+	}
+	// USD budgeting needs a price, and a third-party model will not be in the
+	// table. Say so now rather than at the first settle.
+	b.WriteString("\n\nNote: models outside the pricing table cannot be budgeted in USD — use --tokens.")
+	return errors.New(b.String())
+}
+
 // unpricedModels reports models the pricing table does not know.
 //
 // Returns "" when everything is priced, or when the provider is a local one
@@ -904,6 +996,9 @@ func buildLLMWithClient(cfg *config.Config, client *http.Client) (provider llm.P
 		kind := llm.Kind(cfg.LLM.Provider)
 		if kind == "" {
 			kind = llm.KindAnthropic
+		}
+		if err := checkKeyMatchesProvider(cfg, kind); err != nil {
+			return nil, "", err
 		}
 		p, err := llm.New(llm.Config{
 			Kind:        kind,

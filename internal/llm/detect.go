@@ -191,3 +191,57 @@ func Reachable(ctx context.Context, baseURL string, client *http.Client) bool {
 	// /models still means the runtime is up.
 	return resp.StatusCode < 500
 }
+
+// ---------------------------------------------------------------------------
+// Key provenance
+// ---------------------------------------------------------------------------
+
+// Vendor describes where a key came from and what it needs to work.
+type Vendor struct {
+	Name    string
+	Kind    Kind
+	BaseURL string
+	// Example models, so an error message can be acted on rather than
+	// researched. Not defaults: picking a model for someone silently is how a
+	// session runs against something they did not choose.
+	Models string
+}
+
+// keyPrefixes maps the vendor prefixes that are unambiguous in practice.
+//
+// Order matters: "sk-ant-" must be tested before "sk-".
+var keyPrefixes = []struct {
+	prefix string
+	vendor Vendor
+}{
+	{"sk-ant-", Vendor{Name: "Anthropic", Kind: KindAnthropic}},
+	{"gsk_", Vendor{Name: "Groq", Kind: KindOpenAICompatible,
+		BaseURL: "https://api.groq.com/openai/v1",
+		Models:  "llama-3.3-70b-versatile, llama-3.1-8b-instant"}},
+	{"sk-or-v1-", Vendor{Name: "OpenRouter", Kind: KindOpenAICompatible,
+		BaseURL: "https://openrouter.ai/api/v1"}},
+	{"sk-proj-", Vendor{Name: "OpenAI", Kind: KindOpenAICompatible,
+		BaseURL: openAIDefaultBaseURL, Models: "gpt-4o, gpt-4o-mini"}},
+	{"sk-", Vendor{Name: "OpenAI", Kind: KindOpenAICompatible,
+		BaseURL: openAIDefaultBaseURL, Models: "gpt-4o, gpt-4o-mini"}},
+}
+
+// VendorFromKey identifies the provider a key belongs to.
+//
+// This exists to catch one specific false green: llm.provider defaults to
+// Anthropic when unset, so a Groq or OpenAI key set on its own produces a
+// doctor line reading "✓ claude-opus-5 via config" and then an auth failure at
+// the first model call — potentially many leads into a paid session.
+//
+// Prefixes are a convention, not a guarantee, so an unrecognized key is not an
+// error. Only a key that clearly belongs to a DIFFERENT vendor than the one
+// configured is worth refusing.
+func VendorFromKey(key string) (Vendor, bool) {
+	key = strings.TrimSpace(key)
+	for _, p := range keyPrefixes {
+		if strings.HasPrefix(key, p.prefix) {
+			return p.vendor, true
+		}
+	}
+	return Vendor{}, false
+}

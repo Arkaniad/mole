@@ -69,7 +69,7 @@ func cmdResearch(ctx context.Context, args []string) error {
 	timeout := fs.Duration("timeout", 5*time.Minute, "wall-clock ceiling")
 	asJSON := fs.Bool("json", false, "emit JSON")
 	quiet := fs.Bool("quiet", false, "suppress progress")
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 
