@@ -1,9 +1,8 @@
 // Command mole is the daemon and CLI.
 //
-// Through M1: `research` runs a single web lead end to end inside a real
-// reservation, and the rest operate on persisted state or configuration —
-// migrate, doctor, sessions, trace, config — plus a dev seeder. The planner
-// that turns one question into many leads arrives in M3.
+// `research` and `eval` drive and score the planner loop; the rest operate on
+// persisted state or configuration — migrate, doctor, sessions, stats, trace,
+// config — plus a dev seeder.
 package main
 
 import (
@@ -845,6 +844,30 @@ func checkKeyMatchesProvider(cfg *config.Config, kind llm.Kind) error {
 //
 // Returns "" when everything is priced, or when the provider is a local one
 // where zero cost is the correct answer rather than a missing entry.
+// unpricedModelList returns the configured models the pricing table does not
+// know.
+//
+// One implementation for both callers: checkUSDIsEnforceable used to gate on
+// unpricedModels() being non-empty and then recompute the list itself, so if the
+// two ever disagreed the error rendered as "no price is registered for " with
+// nothing after it.
+func unpricedModelList(p llm.Provider) []string {
+	if llm.SourceOf(p) == llm.CredentialNotNeeded {
+		return nil // local model, genuinely free
+	}
+	table := pricing.NewTable()
+	var missing []string
+	for _, m := range []string{p.ModelFor(llm.TierStrong), p.ModelFor(llm.TierCheap)} {
+		if m == "" {
+			continue
+		}
+		if _, ok := table.Lookup(m); !ok && !contains(missing, m) {
+			missing = append(missing, m)
+		}
+	}
+	return missing
+}
+
 func unpricedModels(p llm.Provider) string {
 	if llm.SourceOf(p) == llm.CredentialNotNeeded {
 		return "" // local model, genuinely free

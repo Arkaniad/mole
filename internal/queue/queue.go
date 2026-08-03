@@ -51,16 +51,16 @@ func (q *Queue) SetClock(now func() time.Time) { q.now = now }
 
 // Lease is a worker's claim on one lead.
 type Lease struct {
-	Lead    *core.Lead
-	Owner   string
-	Expires time.Time
+	Lead  *core.Lead
+	Owner string
 }
 
 // Push adds leads to the queue.
 //
-// Depth and parent are carried from the caller: the lead tree is what caps
-// recursion (§9.1), and a follow-up that forgot its parent would restart the
-// depth count and make the cap unenforceable.
+// Depth is carried from the caller. Note that the depth CAP is enforced by the
+// executor's own round counter, not by walking the tree, so Lead.ParentID is
+// currently informational and is not set — the tree is for the trace view, and
+// M4's lineage guard (§11.4) is what will need it populated.
 func (q *Queue) Push(ctx context.Context, leads []core.Lead) error {
 	if len(leads) == 0 {
 		return nil
@@ -93,7 +93,7 @@ func (q *Queue) LeaseNext(ctx context.Context, sessionID, owner string) (*Lease,
 		if err != nil || lead == nil {
 			return err
 		}
-		lease = &Lease{Lead: lead, Owner: owner, Expires: expires}
+		lease = &Lease{Lead: lead, Owner: owner}
 		return nil
 	})
 	return lease, err
@@ -112,9 +112,6 @@ func (q *Queue) Renew(ctx context.Context, l *Lease) (bool, error) {
 		ok, err = tx.RenewLease(ctx, l.Lead.ID, l.Owner, expires)
 		return err
 	})
-	if ok {
-		l.Expires = expires
-	}
 	return ok, err
 }
 
@@ -173,10 +170,11 @@ type Stats struct {
 }
 
 // Pending reports work that is not finished — queued plus in flight.
+//
+// The loop does NOT use this to decide when it is done: it stops when LeaseNext
+// returns nil, because a lead another worker holds is not work this one can take.
+// Pending is for reporting.
 func (s Stats) Pending() int { return s.Queued + s.Leased }
-
-// Total is every lead ever created for the session.
-func (s Stats) Total() int { return s.Queued + s.Leased + s.Done + s.Failed + s.Cached }
 
 // Stats counts the session's leads by status.
 func (q *Queue) Stats(ctx context.Context, sessionID string) (Stats, error) {

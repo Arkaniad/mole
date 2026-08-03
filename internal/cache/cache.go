@@ -2,6 +2,7 @@ package cache
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -14,9 +15,6 @@ type Entry struct {
 	// inflate every claim-count metric §14.3 reads while adding nothing a
 	// reader or the report can use.
 	Claims int
-	// Summary is what the actor concluded, which is what a planner-visible
-	// result has to carry (§4).
-	Summary string
 	// Text is the extracted document, for a URL-keyed entry. This is the field
 	// that makes two queries converging on one page pay for one fetch.
 	Text string
@@ -42,9 +40,12 @@ type Cache struct {
 	mu      sync.RWMutex
 	entries map[string]*Entry
 
-	// Hits and Misses are reported so a session can show whether the cache
-	// earned its keep. An unmeasured cache is an assumption.
-	hits, misses int
+	// Counters are atomic so a lookup can take the read lock. Incrementing them
+	// under the write lock made the RWMutex pointless: every Get serialized.
+	//
+	// Reported so a session can show whether the cache earned its keep. An
+	// unmeasured cache is an assumption.
+	hits, misses atomic.Int64
 }
 
 // New creates an empty cache.
@@ -59,15 +60,15 @@ func (c *Cache) Get(key string) (*Entry, bool) {
 	if c == nil || key == "" {
 		return nil, false
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	c.mu.RLock()
 	e, ok := c.entries[key]
+	c.mu.RUnlock()
+
 	if !ok {
-		c.misses++
+		c.misses.Add(1)
 		return nil, false
 	}
-	c.hits++
+	c.hits.Add(1)
 	return e, true
 }
 
@@ -101,6 +102,7 @@ func (c *Cache) Stats() Stats {
 		return Stats{}
 	}
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return Stats{Entries: len(c.entries), Hits: c.hits, Misses: c.misses}
+	n := len(c.entries)
+	c.mu.RUnlock()
+	return Stats{Entries: n, Hits: int(c.hits.Load()), Misses: int(c.misses.Load())}
 }

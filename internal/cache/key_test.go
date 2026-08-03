@@ -1,6 +1,7 @@
 package cache_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/lajosdeme/mole/internal/cache"
@@ -189,7 +190,10 @@ func TestDOIKeyNormalizesPrefixes(t *testing.T) {
 	}
 }
 
-// TestKeyspacesDoNotCollide: a URL, a query and a DOI must never share a key.
+// TestKeyspacesDoNotCollide. The literal u:/q:/d: prefixes mean the three
+// differ in their first byte by construction, so this can only fail if a
+// prefix is dropped — which is exactly the regression worth catching, since the
+// three key types share one map.
 func TestKeyspacesDoNotCollide(t *testing.T) {
 	keys := map[string]string{
 		"url":   cache.URLKey("https://example.com/x"),
@@ -198,9 +202,21 @@ func TestKeyspacesDoNotCollide(t *testing.T) {
 	}
 	seen := map[string]string{}
 	for kind, k := range keys {
+		if k == "" {
+			t.Errorf("%s produced an empty key", kind)
+			continue
+		}
 		if other, dup := seen[k]; dup {
 			t.Errorf("%s and %s produced the same key %q", kind, other, k)
 		}
 		seen[k] = kind
+	}
+
+	// The property that actually matters: a key must carry its namespace, so a
+	// URL that happens to hash like a query cannot be served for it.
+	for kind, k := range keys {
+		if !strings.Contains(k[:2], ":") {
+			t.Errorf("%s key %q has no namespace prefix", kind, k)
+		}
 	}
 }

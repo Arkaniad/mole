@@ -114,10 +114,14 @@ func Backoff(attempt int, jitter func() float64) time.Duration {
 	if attempt < 1 {
 		attempt = 1
 	}
-	base := time.Duration(1<<uint(attempt-1)) * time.Second
-	if base > 30*time.Second {
-		base = 30 * time.Second
+	// Cap the shift before it happens: 1<<63 is negative, and a negative
+	// duration slips past a `> 30s` check and returns immediately. Unreachable
+	// through MaxAttempts, but Backoff is exported.
+	shift := attempt - 1
+	if shift > 5 {
+		shift = 5
 	}
+	base := time.Duration(1<<uint(shift)) * time.Second
 	if jitter == nil {
 		return base
 	}

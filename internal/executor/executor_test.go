@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -246,6 +247,7 @@ func TestBudgetIsNeverOvershot(t *testing.T) {
 	if _, err := r.exec.Run(context.Background(), r.sess.ID); err != nil {
 		t.Fatal(err)
 	}
+
 	after := r.reload(t)
 	if after.Spent > after.Budget {
 		t.Errorf("spent %d against a %d budget", after.Spent, after.Budget)
@@ -262,6 +264,7 @@ func TestEscrowSurvivesTheLoop(t *testing.T) {
 	if _, err := r.exec.Run(context.Background(), r.sess.ID); err != nil {
 		t.Fatal(err)
 	}
+
 	after := r.reload(t)
 	if after.Escrow <= 0 {
 		t.Fatal("no escrow was held at all")
@@ -393,6 +396,7 @@ func TestSessionStopsWhenThePlannerSaysDone(t *testing.T) {
 	if res.Status != core.StatusDone {
 		t.Errorf("status = %s, want done", res.Status)
 	}
+
 	after := r.reload(t)
 	if after.Spent > after.Budget/2 {
 		t.Errorf("spent %d of %d after being told to stop", after.Spent, after.Budget)
@@ -476,6 +480,7 @@ func TestMaxLeadsCeilingStopsTheLoop(t *testing.T) {
 	if res.StoppedBecause != "max_leads" {
 		t.Errorf("stopped because %q, want max_leads", res.StoppedBecause)
 	}
+
 	after := r.reload(t)
 	if after.LeadCount > after.MaxLeads {
 		t.Errorf("ran %d leads against a ceiling of %d", after.LeadCount, after.MaxLeads)
@@ -620,6 +625,7 @@ func TestReservationIsClampedToWhatRemains(t *testing.T) {
 	if res.LeadsRun == 0 {
 		t.Error("no lead ran at all on a small budget")
 	}
+
 	after := r.reload(t)
 	if after.Spent > after.Budget {
 		t.Errorf("spent %d against a %d budget", after.Spent, after.Budget)
@@ -694,7 +700,6 @@ func TestCachedLeadsCostNothing(t *testing.T) {
 		t.Fatal("nothing was cached; the test asserts nothing")
 	}
 
-	after := r.reload(t)
 	// One actor run at 100k plus planner calls. A second charged run would
 	// double the executor's share.
 	var byRole map[core.Role]core.Cost
@@ -708,7 +713,6 @@ func TestCachedLeadsCostNothing(t *testing.T) {
 	if got := byRole[core.RoleExecutor].USDMicros; got != 100_000 {
 		t.Errorf("executor spend = %d, want exactly one lead's 100000", got)
 	}
-	_ = after
 }
 
 // TestCachedLeadIsMarkedAsCached, so a trace can tell a cache hit from work.
@@ -932,5 +936,151 @@ func TestFinalReplanFailureDoesNotFailTheSession(t *testing.T) {
 	}
 	if !strings.Contains(res.StoppedBecause, "replan") {
 		t.Errorf("stopped because %q, want it to name the replan", res.StoppedBecause)
+	}
+}
+
+// TestLeaseIsHeartbeatedWhileALeadRuns. §9.4's "workers heartbeat their lease".
+// Renew used to be called only BETWEEN retries, so a lead that legitimately
+// outlasted the TTL — a slow fetch plus a slow model call — lost its lease and
+// became sweepable while still running.
+//
+// The obvious version of this test could not fail: nothing sweeps during a run,
+// so an expired lease is simply never observed and deleting the heartbeat left
+// it green. A concurrent sweeper is what makes the expiry visible, and it is
+// also the real scenario — a second process starting up, or M5's periodic
+// recovery.
+func TestLeaseIsHeartbeatedWhileALeadRuns(t *testing.T) {
+	ctx := context.Background()
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "t.db"), sqlite.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	led := budget.New(db, budget.DefaultConfig())
+	sess, err := led.CreateSession(ctx, budget.SessionSpec{
+		Prompt: "q", Mode: core.ModeReport,
+		ActorTypes: []core.ActorType{core.ActorWeb},
+		BudgetUnit: core.BudgetUSD, Budget: 10 * core.MicrosPerUSD,
+		MaxLeads: 5, MaxToolCalls: 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Short TTL, a lead that takes several TTLs, and a sweeper running
+	// throughout — which is what turns a lost lease into an observable
+	// re-dispatch.
+	q := queue.New(db, 90*time.Millisecond)
+	sweeper := queue.New(db, 90*time.Millisecond)
+
+	stop := make(chan struct{})
+	var swept atomic.Int64
+	go func() {
+		tick := time.NewTicker(40 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				if n, err := sweeper.Sweep(context.Background(), sess.ID); err == nil {
+					swept.Add(int64(n))
+				}
+			}
+		}
+	}()
+
+	fl := &scriptedLLM{replies: []string{planJSON("slow"), `{"done":true}`}}
+	slow := &scriptedActor{outcome: func(int, core.Lead) (*actors.Result, error) {
+		time.Sleep(400 * time.Millisecond)
+		return okResult(1, 1_000), nil
+	}}
+
+	e := &executor.Executor{
+		Store: db, Ledger: led, Queue: q,
+		Planner: &planner.Planner{LLM: fl, MaxInitialLeads: 1, MaxDepth: 1},
+		Actors:  map[core.ActorType]actors.Actor{core.ActorWeb: slow},
+		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Sleep:   func(context.Context, time.Duration) error { return nil },
+	}
+
+	res, err := e.Run(ctx, sess.ID)
+	close(stop)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if n := swept.Load(); n != 0 {
+		t.Errorf("the sweeper reclaimed %d lease(s) from a running lead — it was not heartbeated", n)
+	}
+	if slow.count() != 1 {
+		t.Errorf("the actor ran %d times; a swept lease means the lead is re-dispatched and re-charged", slow.count())
+	}
+	if res.LeadsFailed != 0 {
+		t.Errorf("%d leads failed; a lead outlasting the TTL lost its lease", res.LeadsFailed)
+	}
+}
+
+// TestSpentAndCacheStatsAreReported. The three-line comment on the final read
+// says it exists for cancelled and timed-out runs — "exactly the runs whose
+// spend most needs reporting" — and deleting the read left the suite green,
+// including the cancellation test.
+func TestSpentAndCacheStatsAreReported(t *testing.T) {
+	replies := []string{planJSON("same"), planJSON("same"), `{"done":true}`}
+	r := newRig(t, 20*core.MicrosPerUSD, replies,
+		func(int, core.Lead) (*actors.Result, error) { return okResult(2, 25_000), nil })
+	r.exec.Cache = cache.New()
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Spent == 0 {
+		t.Error("Spent is 0 on a run that charged for leads and planner calls")
+	}
+	if after := r.reload(t); res.Spent != after.Spent {
+		t.Errorf("Spent = %d but the ledger says %d", res.Spent, after.Spent)
+	}
+	if res.CacheStats.Hits == 0 && res.LeadsCached > 0 {
+		t.Error("leads were served from cache but CacheStats reports no hits")
+	}
+}
+
+// TestSpentIsReportedOnACancelledRun is the case the comment names.
+func TestSpentIsReportedOnACancelledRun(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	r := newRig(t, 20*core.MicrosPerUSD, []string{planJSON("a", "b", "c")},
+		func(n int, _ core.Lead) (*actors.Result, error) {
+			if n == 1 {
+				cancel()
+			}
+			return okResult(1, 30_000), nil
+		})
+
+	res, err := r.exec.Run(ctx, r.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != core.StatusCancelled {
+		t.Fatalf("status = %s, want cancelled", res.Status)
+	}
+	if res.Spent == 0 {
+		t.Error("Spent is 0 on a cancelled run that charged for two leads")
+	}
+	if after := r.reload(t); res.Spent != after.Spent {
+		t.Errorf("Spent = %d but the ledger says %d", res.Spent, after.Spent)
+	}
+	// And the leads that ran must be recorded as finished, not left leased.
+	stats, err := r.q.Stats(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Leased != 0 {
+		t.Errorf("%d leads left leased after cancellation; they ran and were paid for", stats.Leased)
 	}
 }

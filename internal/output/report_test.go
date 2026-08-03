@@ -263,8 +263,18 @@ func TestClaimBudgetIsBoundedAndDeclared(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := strings.Count(f.prompt, "\n- ["); n > 20 {
-		t.Errorf("%d claims reached the prompt against a cap of 20", n)
+	// Exactly the cap, not "at most": `> 20` also passed for a bug that kept
+	// one claim.
+	if n := strings.Count(f.prompt, "\n- ["); n != 20 {
+		t.Errorf("%d claims reached the prompt, want exactly the cap of 20", n)
+	}
+	// And they must be the MOST CONFIDENT 20. Confidence ascends with i, so the
+	// survivors are findings 180-199; removing the sort left this untested.
+	if strings.Contains(f.prompt, "Finding number 0.") {
+		t.Errorf("the least confident claim survived truncation:\n%s", f.prompt)
+	}
+	if !strings.Contains(f.prompt, "Finding number 199.") {
+		t.Errorf("the most confident claim was dropped:\n%s", f.prompt)
 	}
 	if rep.Degraded == "" {
 		t.Error("truncation was not declared to the reader")
@@ -292,6 +302,100 @@ func TestSameSourceGetsOneNumber(t *testing.T) {
 	if len(rep.Citations[0].Quotes) != 3 {
 		t.Errorf("%d quotes collected, want 3", len(rep.Citations[0].Quotes))
 	}
+}
+
+// TestQuotesPerSourceAreCapped. The previous test supplied exactly three claims
+// and asserted three quotes, so it could not distinguish a cap of 3 from no cap
+// at all — raising the limit to 100000 left the suite green. The cap exists
+// because the source list is for checking a citation, not for reproducing a
+// page: an unbounded list would put a whole document under one entry.
+func TestQuotesPerSourceAreCapped(t *testing.T) {
+	var claims []core.Claim
+	for i := 0; i < 25; i++ {
+		claims = append(claims, claim(
+			fmt.Sprintf("Finding %d.", i),
+			"https://one.example/page",
+			fmt.Sprintf("quote number %d, long enough to be evidence", i)))
+	}
+	st, sid := newStore(t, claims)
+
+	f := &fakeLLM{reply: func(string) string { return "Summary [1]." }}
+	rep, err := (&output.Generator{LLM: f}).Generate(context.Background(), st, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Citations) != 1 {
+		t.Fatalf("%d citations for one source", len(rep.Citations))
+	}
+	if n := len(rep.Citations[0].Quotes); n != 3 {
+		t.Errorf("%d quotes kept for one source out of 25, want the cap of 3", n)
+	}
+}
+
+// TestGenerateDoesNotReorderTheCallersClaims. Generate used to sort the slice it
+// was handed, which aliases the caller's backing array — harmless while it comes
+// straight from a store read, and invisible at the call site if that changes.
+func TestGenerateDoesNotReorderTheCallersClaims(t *testing.T) {
+	var claims []core.Claim
+	for i := 0; i < 10; i++ {
+		c := claim(fmt.Sprintf("Finding %d.", i), fmt.Sprintf("https://s%d.example", i), "a quote long enough here")
+		c.Confidence = float64(i) / 10
+		claims = append(claims, c)
+	}
+	st, sid := newStore(t, claims)
+
+	// Read the claims out in store order, then generate, then confirm the store
+	// order is unchanged.
+	before := listClaimTexts(t, st, sid)
+	f := &fakeLLM{reply: func(string) string { return "Summary [1]." }}
+	if _, err := (&output.Generator{LLM: f, MaxClaims: 3}).Generate(context.Background(), st, sid); err != nil {
+		t.Fatal(err)
+	}
+	after := listClaimTexts(t, st, sid)
+
+	for i := range before {
+		if before[i] != after[i] {
+			t.Fatalf("claim order changed at %d: %q -> %q", i, before[i], after[i])
+		}
+	}
+}
+
+// TestNoBudgetEmitsEvidenceWithoutAModelCall. When the report cannot be reserved
+// the generator runs with no LLM, and must still produce something useful — the
+// escrow already paid to collect the evidence.
+func TestNoBudgetEmitsEvidenceWithoutAModelCall(t *testing.T) {
+	st, sid := newStore(t, []core.Claim{
+		claim("A verified finding.", "https://a.example", "a quote supporting it"),
+	})
+
+	rep, err := (&output.Generator{LLM: nil}).Generate(context.Background(), st, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rep.Body, "A verified finding") {
+		t.Errorf("evidence was not emitted:\n%s", rep.Body)
+	}
+	if rep.Degraded == "" {
+		t.Error("the missing synthesis was not declared")
+	}
+	if !strings.Contains(rep.Markdown(), "[1]") {
+		t.Error("the fallback lost its citations")
+	}
+}
+
+func listClaimTexts(t *testing.T, st store.Store, sid string) []string {
+	t.Helper()
+	var out []string
+	if err := st.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		cs, err := q.ListClaims(ctx, sid, 1000)
+		for _, c := range cs {
+			out = append(out, c.Text)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 // TestDisagreementIsInstructed. §13: contradictions are rendered explicitly
@@ -367,5 +471,61 @@ func TestEveryClaimIsExactlyOneMaterialLine(t *testing.T) {
 
 	if n := strings.Count(f.prompt, "\n- ["); n != len(nasty) {
 		t.Errorf("%d material lines for %d claims:\n%s", n, len(nasty), f.prompt)
+	}
+}
+
+// TestControlCharactersDoNotReachTheTerminal. Quotes must stay byte-identical
+// for §11.5 to mean anything, so nothing upstream may rewrite them —
+// extract.normalizeText only touches whitespace-class runes, and ESC is not one.
+// That leaves render time as the place to defend: a page whose quoted sentence
+// embeds cursor-movement and erase sequences can rewrite what the user sees
+// AFTER the report is printed, including the "Report is incomplete" line.
+func TestControlCharactersDoNotReachTheTerminal(t *testing.T) {
+	evil := "a genuine sentence \x1b[2K\x1b[1A\x1b[31m erased the warning above"
+	st, sid := newStore(t, []core.Claim{
+		claim("A finding.", "https://a.example/\x1b[2K", evil),
+	})
+
+	f := &fakeLLM{reply: func(string) string { return "Body \x1b[2K with an escape [1]." }}
+	rep, err := (&output.Generator{LLM: f}).Generate(context.Background(), st, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	md := rep.Markdown()
+	if strings.ContainsRune(md, 0x1b) {
+		t.Errorf("an ESC survived into the rendered report:\n%q", md)
+	}
+	// The words must still be there — stripping controls, not content.
+	if !strings.Contains(md, "erased the warning above") {
+		t.Errorf("the quote text was dropped rather than stripped:\n%s", md)
+	}
+	// The stored quote keeps its bytes, so a reader can still check the citation.
+	if !strings.ContainsRune(rep.Citations[0].Quotes[0], 0x1b) {
+		t.Error("the stored quote was rewritten; §11.5 needs it byte-identical")
+	}
+}
+
+// TestOneClaimCannotInflateTheSynthesisCall. MaxClaims bounds the count, and
+// claim Text is never length-capped upstream — actors truncate Quote but not
+// Text — so one page could push the call into ErrContextTooLong and degrade the
+// whole report to the fallback.
+func TestOneClaimCannotInflateTheSynthesisCall(t *testing.T) {
+	huge := strings.Repeat("padding ", 30_000) // ~240 KB
+	st, sid := newStore(t, []core.Claim{
+		claim("A normal claim.", "https://a.example", "a quote long enough here"),
+		claim(huge, "https://b.example", "another quote long enough"),
+	})
+
+	f := &fakeLLM{reply: func(string) string { return "Summary [1]." }}
+	if _, err := (&output.Generator{LLM: f}).Generate(context.Background(), st, sid); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.prompt) > 20_000 {
+		t.Errorf("the prompt reached %d bytes; one claim inflated the call", len(f.prompt))
+	}
+	// The claim must still be present, just bounded.
+	if !strings.Contains(f.prompt, "padding") {
+		t.Error("the oversized claim was dropped rather than clamped")
 	}
 }

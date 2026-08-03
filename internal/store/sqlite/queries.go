@@ -856,10 +856,16 @@ func (t *queries) RenewLease(ctx context.Context, leadID, owner string, expires 
 }
 
 // ReleaseLease returns a lead to the queue without completing it.
+//
+// The status guard matters as much as the owner one: without it a Release
+// arriving after a Complete would flip a finished lead back to queued, to be
+// re-run and re-charged. SetLeadStatus clears lease_owner on completion, which
+// closes the same hole from the other side — both, because this is the failure
+// the package exists to prevent.
 func (t *queries) ReleaseLease(ctx context.Context, leadID, owner string) error {
 	_, err := t.q.ExecContext(ctx, `
 		UPDATE leads SET status = ?, lease_owner = NULL, lease_expires = NULL, updated_at = ?
-		 WHERE id = ? AND lease_owner = ?`,
+		 WHERE id = ? AND lease_owner = ? AND status = 'leased'`,
 		string(core.LeadQueued), toMicros(time.Now()), leadID, owner)
 	if err != nil {
 		return fmt.Errorf("sqlite: release lease: %w", err)

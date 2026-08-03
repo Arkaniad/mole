@@ -31,11 +31,9 @@ import (
 
 // mole research
 //
-// This is M1's deliverable made visible: one lead, run end to end, inside a
-// real reservation. There is no planner until M3, so the question becomes a
-// single web lead verbatim rather than a plan — and the output says so, because
-// a command that printed "planning" over a hardcoded single lead would be
-// describing a system that does not exist yet.
+// The planner loop (§9.2) driven from a terminal: decompose the question, work a
+// queue of leads, replan against a rolling digest as evidence arrives, and
+// synthesize a cited report from escrow held back at session start.
 //
 // It runs in-process and holds the database's single writer for its lifetime.
 // That is the same position the daemon will take in M7; until then there is
@@ -241,7 +239,6 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 
 	runRes, runErr := exec.Run(ctx, sess.ID)
 	if runRes != nil {
-		out.Status = string(runRes.Status)
 		out.LeadsRun = runRes.LeadsRun
 		out.LeadsFailed = runRes.LeadsFailed
 		out.LeadsCached = runRes.LeadsCached
@@ -253,7 +250,7 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 			out.OpenQuestions = len(runRes.Digest.Open())
 		}
 		if !o.quiet && !o.asJSON {
-			printProgress(runRes, unit)
+			printProgress(runRes)
 		}
 	}
 	if runErr != nil {
@@ -278,8 +275,10 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	}
 	out.Status = string(status)
 
-	if final, err := loadSession(context.WithoutCancel(ctx), db, sess.ID); err == nil {
-		out.Spent = final.Spent
+	// The executor already read this with a live context, which is the whole
+	// reason that read exists — re-reading here duplicated it.
+	if runRes != nil {
+		out.Spent = runRes.Spent
 	}
 
 	if o.asJSON {
@@ -462,7 +461,7 @@ func buildWebActor(cfg *config.Config, rec *record.Recorder, maxSources int, alw
 		return nil, err
 	}
 
-	model, reason, err := buildLLMWithClient(cfg, rec.Client())
+	model, _, err := buildLLMWithClient(cfg, rec.Client())
 	if err != nil {
 		return nil, err
 	}
@@ -470,7 +469,6 @@ func buildWebActor(cfg *config.Config, rec *record.Recorder, maxSources int, alw
 		return nil, errors.New("no LLM provider found — set one with `mole config set llm.api-key ...`, " +
 			"run `ant auth login`, or start a local model (ollama serve)")
 	}
-	_ = reason
 
 	level := slog.LevelWarn
 	if quiet {
@@ -512,18 +510,9 @@ func buildWebActor(cfg *config.Config, rec *record.Recorder, maxSources int, alw
 // doctor already warns about this. Warning is not enough at the point where
 // money is about to be spent under a limit that does not exist.
 func checkUSDIsEnforceable(p llm.Provider) error {
-	if warn := unpricedModels(p); warn == "" {
+	missing := unpricedModelList(p)
+	if len(missing) == 0 {
 		return nil
-	}
-	table := pricing.NewTable()
-	var missing []string
-	for _, m := range []string{p.ModelFor(llm.TierStrong), p.ModelFor(llm.TierCheap)} {
-		if m == "" {
-			continue
-		}
-		if _, ok := table.Lookup(m); !ok && !contains(missing, m) {
-			missing = append(missing, m)
-		}
 	}
 	return fmt.Errorf(
 		"--usd cannot bound this run: no price is registered for %s, so every model call "+
@@ -611,7 +600,7 @@ type researchOutput struct {
 }
 
 // printProgress shows what the loop did, in the shape §18.3 sketches.
-func printProgress(res *executor.Result, unit core.BudgetUnit) {
+func printProgress(res *executor.Result) {
 	mark := "✓"
 	switch {
 	case res.LeadsRun == 0:
@@ -667,16 +656,4 @@ func fmtAmount(unit core.BudgetUnit, amount int64) string {
 		return fmt.Sprintf("%d tok", amount)
 	}
 	return core.FormatUSD(amount)
-}
-
-func ellipsize(s string, max int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if len(s) <= max {
-		return s
-	}
-	cut := s[:max]
-	if i := strings.LastIndexByte(cut, ' '); i > max/2 {
-		cut = cut[:i]
-	}
-	return cut + "…"
 }

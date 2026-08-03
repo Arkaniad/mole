@@ -359,10 +359,9 @@ func (e *Executor) completeFromCache(
 }
 
 type leadOutcome struct {
-	claims  []core.Claim
-	summary string
-	err     error
-	class   Class
+	claims []core.Claim
+	err    error
+	class  Class
 }
 
 // runLead reserves, runs, settles, and completes one lead.
@@ -416,9 +415,8 @@ func (e *Executor) runLead(
 				digest.RecordDeadEnd("no_evidence", lead.Query)
 			}
 			e.Cache.Put(&cache.Entry{
-				Key:     cache.QueryKey(lead.Query),
-				Claims:  len(out.claims),
-				Summary: out.summary,
+				Key:    cache.QueryKey(lead.Query),
+				Claims: len(out.claims),
 			})
 			e.complete(ctx, lease, core.LeadDone)
 			return out
@@ -498,7 +496,6 @@ func (e *Executor) attempt(ctx context.Context, sess *core.Session, lead core.Le
 			class: Fatal}
 		if result != nil {
 			out.claims = result.Claims
-			out.summary = result.Summary
 		}
 		return out
 	}
@@ -506,7 +503,6 @@ func (e *Executor) attempt(ctx context.Context, sess *core.Session, lead core.Le
 	out := leadOutcome{}
 	if result != nil {
 		out.claims = result.Claims
-		out.summary = result.Summary
 	}
 	if runErr != nil {
 		out.err, out.class = runErr, Classify(runErr)

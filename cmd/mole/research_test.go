@@ -208,14 +208,14 @@ func TestCompleteRunDoesNotClaimOpenQuestions(t *testing.T) {
 // produced something, but not the something it was asked for (§9.5).
 func TestProgressMarksADegradedRun(t *testing.T) {
 	degraded := captureStdout(t, func() {
-		printProgress(&executor.Result{LeadsRun: 6, LeadsFailed: 5}, core.BudgetUSD)
+		printProgress(&executor.Result{LeadsRun: 6, LeadsFailed: 5})
 	})
 	if !strings.Contains(degraded, "~") {
 		t.Errorf("a mostly-failed run was not marked degraded:\n%s", degraded)
 	}
 
 	clean := captureStdout(t, func() {
-		printProgress(&executor.Result{LeadsRun: 6, LeadsFailed: 0}, core.BudgetUSD)
+		printProgress(&executor.Result{LeadsRun: 6, LeadsFailed: 0})
 	})
 	if !strings.Contains(clean, "✓") {
 		t.Errorf("a clean run was not marked clean:\n%s", clean)

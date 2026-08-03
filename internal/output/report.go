@@ -55,6 +55,14 @@ type Report struct {
 	Degraded string
 }
 
+// MaxClaimChars bounds a single claim's text in the prompt.
+//
+// MaxClaims bounds the COUNT, and claim Text is never length-capped upstream —
+// actors truncate Quote but not Text — so one page could inflate the synthesis
+// call into ErrContextTooLong and degrade the whole report to the fallback. A
+// claim is meant to be one sentence; anything past this is not a claim.
+const MaxClaimChars = 600
+
 // Generator writes reports.
 type Generator struct {
 	LLM llm.Provider
@@ -235,16 +243,41 @@ func fallbackBody(question string, claims []*core.Claim, index map[string]int) s
 	return b.String()
 }
 
+// stripControls removes C0/C1 control characters other than newline and tab.
+//
+// Quotes must stay byte-identical for §11.5 to mean anything, so nothing
+// upstream may rewrite them — extract.normalizeText only touches whitespace-class
+// runes, and ESC is not one. That leaves the terminal as the place to defend: a
+// page whose quoted sentence embeds cursor-movement and erase sequences can
+// rewrite what the user sees AFTER the report is printed, including the
+// "stopped:" and "Report is incomplete" lines.
+//
+// Applied at render time only. The stored quote and the JSON output keep the
+// original bytes, so a reader checking a citation against the page still can.
+func stripControls(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // Markdown renders the report with its source list.
 func (r *Report) Markdown() string {
 	var b strings.Builder
-	b.WriteString(r.Body)
+	// The body is model output shaped by page content, so it travels the same
+	// channel as a quote.
+	b.WriteString(stripControls(r.Body))
 	b.WriteString("\n")
 
 	if len(r.Citations) > 0 {
 		b.WriteString("\n## Sources\n\n")
 		for _, c := range r.Citations {
-			fmt.Fprintf(&b, "[%d] %s", c.N, c.Source)
+			fmt.Fprintf(&b, "[%d] %s", c.N, stripControls(c.Source))
 			if c.PublishedAt != nil {
 				fmt.Fprintf(&b, " (%s)", c.PublishedAt.Format("2006-01-02"))
 			}
@@ -252,7 +285,7 @@ func (r *Report) Markdown() string {
 			// The verified span, so a reader can check the citation without
 			// re-fetching. This is the payoff of §11.5 being enforced upstream.
 			for _, q := range c.Quotes {
-				fmt.Fprintf(&b, "    > %s\n", truncate(q, 200))
+				fmt.Fprintf(&b, "    > %s\n", stripControls(truncate(q, 200)))
 			}
 			b.WriteString("\n")
 		}

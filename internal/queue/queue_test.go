@@ -353,7 +353,7 @@ func TestStatsTrackProgress(t *testing.T) {
 	_ = q.Complete(ctx, l3, core.LeadSkippedCache)
 
 	s, _ = q.Stats(ctx, sid)
-	if s.Pending() != 0 || s.Done != 1 || s.Failed != 1 || s.Cached != 1 || s.Total() != 3 {
+	if s.Pending() != 0 || s.Done != 1 || s.Failed != 1 || s.Cached != 1 {
 		t.Errorf("after completion: %+v", s)
 	}
 }
