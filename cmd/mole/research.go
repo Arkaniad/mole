@@ -216,14 +216,16 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	actor.Cache = sessionCache
 
 	exec := &executor.Executor{
-		Store:   db,
-		Ledger:  led,
-		Queue:   q,
-		Cache:   sessionCache,
-		Planner: &planner.Planner{LLM: actor.LLM, MaxDepth: o.maxDepth},
-		Actors:  map[core.ActorType]actors.Actor{core.ActorWeb: actor},
-		Log:     actor.Log,
-		Owner:   "cli",
+		Store:      db,
+		Ledger:     led,
+		Queue:      q,
+		Cache:      sessionCache,
+		Pricing:    actor.Pricing,
+		CheapModel: actor.LLM.ModelFor(llm.TierCheap),
+		Planner:    &planner.Planner{LLM: actor.LLM, MaxDepth: o.maxDepth},
+		Actors:     map[core.ActorType]actors.Actor{core.ActorWeb: actor},
+		Log:        actor.Log,
+		Owner:      "cli",
 	}
 
 	runRes, runErr := exec.Run(ctx, sess.ID)

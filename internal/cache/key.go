@@ -15,8 +15,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/url"
-	"sort"
 	"strings"
+	"unicode"
 )
 
 // trackingParams are dropped from a URL before it is used as a key.
@@ -25,13 +25,19 @@ import (
 // artifact, and a search provider will happily return both. Without this the
 // cache misses precisely where it would help most: aggregators and newsletters,
 // which is where duplicate links come from.
+//
+// "ref" and "source" are deliberately absent. They look like tracking tags and
+// often are, but they also SELECT content: GitHub uses ?ref=<branch> and many
+// viewers use ?source=<document>. Folding them merges two different documents,
+// which attributes evidence to a page that never carried it — the failure this
+// normalization is supposed to avoid, caused by the normalization.
 var trackingParams = map[string]bool{
 	"utm_source": true, "utm_medium": true, "utm_campaign": true,
 	"utm_term": true, "utm_content": true, "utm_id": true,
 	"gclid": true, "fbclid": true, "msclkid": true, "dclid": true,
 	"mc_cid": true, "mc_eid": true, "igshid": true, "twclid": true,
-	"ref": true, "referrer": true, "source": true,
-	"_hsenc": true, "_hsmi": true, "hsCtaTracking": true,
+	"referrer": true,
+	"_hsenc":   true, "_hsmi": true, "hsCtaTracking": true,
 	"spm": true, "scid": true, "yclid": true,
 }
 
@@ -54,12 +60,15 @@ func NormalizeURL(raw string) string {
 		return strings.ToLower(strings.TrimSpace(raw))
 	}
 
+	// Scheme is NOT folded. It is tempting — the two often serve the same
+	// document, and a redirect between them is invisible by the time a URL
+	// reaches here — but content fetched over plaintext http can be rewritten
+	// by anyone on the path, and storing it under the https key means a later
+	// hit on the https URL serves those bytes with no fetch at all. Quotes then
+	// verify against an attacker's text and claims cite an HTTPS URL that was
+	// never retrieved. TLS would protect the document and the cache would
+	// discard the protection.
 	u.Scheme = strings.ToLower(u.Scheme)
-	// http and https serve the same document often enough, and a redirect
-	// between them is invisible by the time a URL reaches here.
-	if u.Scheme == "http" {
-		u.Scheme = "https"
-	}
 
 	host := strings.ToLower(u.Hostname())
 	host = strings.TrimSuffix(host, ".")
@@ -100,19 +109,39 @@ func defaultPort(scheme, port string) bool {
 
 // QueryKey is the key for a research query.
 //
-// Normalized to fold the trivial differences a planner produces across
-// replans — casing, punctuation, word order — without pretending two genuinely
-// different questions are one. Word order is folded because "MambaByte PG-19
-// results" and "PG-19 results MambaByte" are the same search; wording is not,
-// because "what does X achieve" and "why does X fail" are not.
+// Folds casing, punctuation and whitespace. It does NOT fold word order, which
+// an earlier version did on the reasoning that "MambaByte PG-19 results" and
+// "PG-19 results MambaByte" are the same search. They are — but so, under a
+// sorted key, are these:
+//
+//	"did Acme acquire Beta"        /  "did Beta acquire Acme"
+//	"is drug A safer than drug B"  /  "is drug B safer than drug A"
+//	"does smoking cause cancer"    /  "does cancer cause smoking"
+//
+// Word order carries the direction of a relation, and a research question is
+// mostly relations. The consequence was not a missed saving: the second question
+// was completed as skipped_cache and never researched, while the digest was
+// credited with the first one's claims — so the planner could mark it answered
+// and the report would never address it.
+//
+// Keeping word order costs only the occasional missed hit on a genuinely
+// reordered query, which is the cheap direction to be wrong in.
 func QueryKey(query string) string {
-	words := strings.FieldsFunc(strings.ToLower(query), func(r rune) bool {
-		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '-'
+	raw := strings.FieldsFunc(strings.ToLower(query), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-'
 	})
+	// Hyphens are kept inside a word ("pg-19") but a run of them is punctuation,
+	// so trim them at the edges and drop what is left empty. Otherwise "PG-19 --
+	// results" carries a "--" token that "PG-19 results" does not.
+	words := make([]string, 0, len(raw))
+	for _, w := range raw {
+		if w = strings.Trim(w, "-"); w != "" {
+			words = append(words, w)
+		}
+	}
 	if len(words) == 0 {
 		return ""
 	}
-	sort.Strings(words)
 	sum := sha256.Sum256([]byte(strings.Join(words, " ")))
 	return "q:" + hex.EncodeToString(sum[:12])
 }

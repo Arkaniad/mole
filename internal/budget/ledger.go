@@ -27,6 +27,15 @@ import (
 // failure: the executor treats it as "stop taking new work".
 var ErrInsufficientBudget = errors.New("budget: insufficient")
 
+// ErrOvershoot means a settled cost cleared its reservation by more than
+// Config.MaxOvershootFactor.
+//
+// Distinct from ErrInsufficientBudget because the two call for opposite
+// responses: insufficiency is the ceiling working, and overshoot is the ceiling
+// having failed to bind. Reporting the second as the first is how a broken
+// sub-budget reads as a correctly bounded run.
+var ErrOvershoot = errors.New("budget: overshoot past the allowed factor")
+
 // Config tunes the ledger.
 type Config struct {
 	// EscrowFraction is the share of the budget held back at session start for

@@ -87,10 +87,10 @@ type Digest struct {
 	// MaxChars bounds the serialized form. Zero uses DefaultDigestChars.
 	MaxChars int
 
-	// answeredDropped counts questions compaction removed, so the summary line
-	// can still report them. A compaction artefact, not state worth restoring
-	// exactly on resume.
-	answeredDropped int
+	// nextID is the monotonic source of sub-question IDs. Monotonic across the
+	// whole session, so an ID a replan refers to always means what it meant
+	// when it was assigned.
+	nextID int
 
 	// openElided counts OPEN questions compaction had to drop. Surfaced in the
 	// serialized form: the planner must know its view is partial, or it will
@@ -106,21 +106,52 @@ func NewDigest(question string, maxChars int) *Digest {
 	return &Digest{Question: question, MaxChars: maxChars}
 }
 
-// AddQuestions registers sub-questions the planner proposed.
-func (d *Digest) AddQuestions(qs []SubQuestion) {
+// AddQuestions registers sub-questions the planner proposed, and returns them
+// with the IDs the digest assigned.
+//
+// IDs are assigned here, never taken from the model. Model-authored IDs are
+// numbered per batch, so every replan that omits them restarts at q1 and
+// collides with the initial decomposition — and the old dedupe-by-ID then
+// DROPPED the new question while the executor still queued its lead and
+// credited its claims to the question it collided with. Confirmed: two rounds
+// both using q1 left one question holding both rounds' leads, and after
+// MarkAnswered the digest read "No open sub-questions" while a new question was
+// running. That is §9.3's livelock arriving from the other direction.
+//
+// Returning the assigned IDs is what lets the caller map leads correctly;
+// positional correspondence with the input is not enough once duplicates are
+// dropped.
+//
+// Dedupe is by normalized TEXT, because that is what actually identifies a
+// research thread. A replan re-proposing the same wording should not open a
+// second one.
+func (d *Digest) AddQuestions(qs []SubQuestion) []SubQuestion {
+	out := make([]SubQuestion, 0, len(qs))
 	for _, q := range qs {
-		if q.Text == "" {
+		text := oneLine(q.Text)
+		if text == "" {
 			continue
 		}
-		if d.find(q.ID) != nil {
+		if existing := d.findByText(text); existing != nil {
+			out = append(out, *existing)
 			continue
 		}
-		if q.ID == "" {
-			q.ID = fmt.Sprintf("q%d", len(d.Questions)+1)
-		}
-		d.Questions = append(d.Questions, q)
+		d.nextID++
+		added := SubQuestion{ID: fmt.Sprintf("q%d", d.nextID), Text: text}
+		d.Questions = append(d.Questions, added)
+		out = append(out, added)
 	}
 	d.compact()
+	return out
+}
+
+func (d *Digest) findByText(text string) *SubQuestion {
+	for i := range d.Questions {
+		if d.Questions[i].Text == text {
+			return &d.Questions[i]
+		}
+	}
+	return nil
 }
 
 // RecordLead notes a dispatch against a sub-question.
@@ -129,6 +160,10 @@ func (d *Digest) RecordLead(questionID string) {
 	if q := d.find(questionID); q != nil {
 		q.Leads++
 	}
+	// Compact here too. RecordLead grows a serialized per-question line, so
+	// skipping it let the digest sit over MaxChars until some other method
+	// happened to be called.
+	d.compact()
 }
 
 // RecordClaims notes evidence found for a sub-question.
@@ -151,10 +186,11 @@ func (d *Digest) RecordDeadEnd(cause, exampleQuery string) {
 	for i := range d.DeadEnds {
 		if d.DeadEnds[i].Cause == cause {
 			d.DeadEnds[i].Count++
+			d.compact()
 			return
 		}
 	}
-	d.DeadEnds = append(d.DeadEnds, DeadEnd{Cause: cause, Count: 1, Example: exampleQuery})
+	d.DeadEnds = append(d.DeadEnds, DeadEnd{Cause: cause, Count: 1, Example: oneLine(exampleQuery)})
 	d.compact()
 }
 
@@ -202,13 +238,19 @@ func (d *Digest) find(id string) *SubQuestion {
 //
 //  1. Dead ends beyond the worst few. They are already collapsed by cause, so
 //     what is left is a long tail of one-offs.
-//  2. Answered questions, oldest first. The count survives in a summary line —
-//     the planner needs to know six questions were answered, not which.
-//  3. Sub-question text, truncated. Losing the tail of a question is worse
+//  2. Sub-question text, truncated. Losing the tail of a question is worse
 //     than losing the question, so this comes before losing any.
-//  4. Open questions, most-attempted first, with a count of what was elided.
+//  3. Open questions, most-attempted first, with a count of what was elided.
 //
-// Step 4 is a genuine loss and is last for that reason: a planner that cannot
+// Answered questions are deliberately NOT dropped. An earlier version dropped
+// them first, which looked like the gentlest step and was in fact a no-op:
+// String() serializes only OPEN questions, so removing an answered one cannot
+// reduce the serialized size. The loop therefore emptied the entire answered set
+// on every compaction without getting under the limit, then moved on to the
+// steps that actually work. They cost memory, bounded by MaxLeads, and nothing
+// else.
+//
+// Step 3 is a genuine loss and is last for that reason: a planner that cannot
 // see an open question may re-plan it, paying twice. It exists because the
 // alternative is worse. Without it a session where nothing gets answered grows
 // the digest without limit — measured at 43k characters over 500 open
@@ -236,26 +278,7 @@ func (d *Digest) compact() {
 		}
 	}
 
-	// 2. Drop answered questions, oldest first, keeping a tally.
-	for len(d.String()) > limit {
-		idx := -1
-		for i, q := range d.Questions {
-			if q.Answered {
-				idx = i
-				break
-			}
-		}
-		if idx < 0 {
-			break
-		}
-		d.answeredDropped++
-		d.Questions = append(d.Questions[:idx], d.Questions[idx+1:]...)
-	}
-	if len(d.String()) <= limit {
-		return
-	}
-
-	// 3. Truncate question text. Bounded by a floor: a question shortened past
+	// 2. Truncate question text. Bounded by a floor: a question shortened past
 	// recognition is worse than a slightly oversized digest, because the
 	// planner would re-plan it as new.
 	for width := 160; width >= 40; width -= 40 {
@@ -267,7 +290,7 @@ func (d *Digest) compact() {
 		}
 	}
 
-	// 4. Elide open questions, most-attempted first. Genuinely lossy; see the
+	// 3. Elide open questions, most-attempted first. Genuinely lossy; see the
 	// doc comment for why it still beats an unbounded digest.
 	for len(d.String()) > limit {
 		idx, worst := -1, -1
@@ -306,8 +329,8 @@ func (d *Digest) String() string {
 			answered++
 		}
 	}
-	if total := answered + d.answeredDropped; total > 0 {
-		fmt.Fprintf(&b, "%d sub-question(s) answered.\n", total)
+	if answered > 0 {
+		fmt.Fprintf(&b, "%d sub-question(s) answered.\n", answered)
 	}
 
 	open := d.Open()
@@ -343,8 +366,19 @@ func (d *Digest) String() string {
 	return b.String()
 }
 
+// oneLine collapses text to a single line.
+//
+// Digest.String() is a line-structured format the planner reads back, so any
+// multi-line field can forge additional entries — a sub-question whose text
+// contains "\n  [q9] fabricated" renders as a second, fully-formed question
+// with its own coverage counts. Sub-question wording is model output, so it is
+// flattened on the way in.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
 func truncate(s string, max int) string {
-	s = strings.Join(strings.Fields(s), " ")
+	s = oneLine(s)
 	if len(s) <= max {
 		return s
 	}

@@ -8,85 +8,59 @@ import (
 	"github.com/lajosdeme/mole/internal/planner"
 )
 
-// TestDigestIsConstantSizeAsResearchDeepens is the whole reason this type
-// exists. Rev 1 passed every summary on every replan, so planner input grew
-// with lead count and total planner cost was quadratic in leads — worst
-// precisely when research goes deep, which is the case the design serves.
-//
-// The assertion is not "small" but "does not grow": the digest after 500 leads
-// must be the same size as after 20.
-func TestDigestIsConstantSizeAsResearchDeepens(t *testing.T) {
-	d := planner.NewDigest("what is the consensus on byte-level language models?", planner.DefaultDigestChars)
-
-	var sizeAt20, sizeAt500 int
-	for i := 0; i < 500; i++ {
-		// A realistic deep session: new sub-questions appear, leads run,
-		// claims land, and routes dead-end.
-		if i%5 == 0 {
-			d.AddQuestions([]planner.SubQuestion{{
-				ID:   fmt.Sprintf("q%d", i),
-				Text: fmt.Sprintf("Sub-question %d about some reasonably long research topic that a planner would actually produce", i),
-			}})
-		}
-		d.RecordLead(fmt.Sprintf("q%d", (i/5)*5))
-		d.RecordClaims(fmt.Sprintf("q%d", (i/5)*5), 3)
-		if i%7 == 0 {
-			d.RecordDeadEnd(fmt.Sprintf("cause_%d", i%11), fmt.Sprintf("a query that went nowhere %d", i))
-		}
-		if i%3 == 0 {
-			d.MarkAnswered(fmt.Sprintf("q%d", (i/5)*5))
-		}
-
-		if i == 20 {
-			sizeAt20 = len(d.String())
-		}
-	}
-	sizeAt500 = len(d.String())
-
-	if sizeAt500 > planner.DefaultDigestChars {
-		t.Errorf("digest is %d chars after 500 leads, over the %d budget",
-			sizeAt500, planner.DefaultDigestChars)
-	}
-	// The real claim: it converged rather than merely being under the cap by
-	// luck. 25x the leads must not mean a materially larger digest.
-	if sizeAt500 > sizeAt20*3 {
-		t.Errorf("digest grew from %d to %d chars over 25x the leads — not O(1)",
-			sizeAt20, sizeAt500)
-	}
-	t.Logf("digest: %d chars at 20 leads, %d at 500", sizeAt20, sizeAt500)
-}
+// The former TestDigestIsConstantSizeAsResearchDeepens lived here. It answered
+// most of its questions, and String() serializes only OPEN ones, so it stayed
+// small for free: 484 chars at 20 leads against a 4000 budget and a 1452
+// threshold that could not be reached. Deleting compaction entirely left it
+// green. TestDigestStaysBoundedWhenNothingIsAnswered below is the case that
+// actually binds, and a superseded test that reads as coverage is worse than no
+// test.
 
 // TestOpenQuestionsAreSacrificedLast. Compaction can elide an open question —
 // an unbounded digest is worse — but only after everything else is gone. A
 // planner that cannot see what is unanswered re-plans work already done, the
-// livelock §9.3 describes arriving by a different route, so the order matters.
+// livelock §9.3 describes arriving by a different route.
 //
-// Here the budget fits the open questions but not the forty answered ones and
-// the dead-end tail, so all three open ones must survive intact.
+// The earlier version of this test never ran compaction at all: it had 40
+// answered questions and 3 open ones, and since String() serializes only open
+// questions that fits any reasonable budget. Inverting compaction to drop OPEN
+// questions instead of answered ones left it green — the exact inversion it is
+// named for. So this one forces the budget below what the open questions alone
+// need, and checks the order in which the two lossy steps fire.
 func TestOpenQuestionsAreSacrificedLast(t *testing.T) {
-	d := planner.NewDigest("a question", 800)
+	d := planner.NewDigest("a question", 700)
 
-	for i := 0; i < 40; i++ {
-		id := fmt.Sprintf("q%d", i)
-		d.AddQuestions([]planner.SubQuestion{{ID: id, Text: fmt.Sprintf("Sub-question number %d with some real length to it", i)}})
-		if i < 37 {
-			d.MarkAnswered(id)
-		}
-		d.RecordDeadEnd(fmt.Sprintf("cause_%d", i), "some query that failed")
+	// Enough dead-end causes and long-enough questions that step 1 (dead ends)
+	// and step 2 (truncation) both have work to do before any question is cut.
+	added := d.AddQuestions([]planner.SubQuestion{
+		{Text: "First open sub-question, with enough words in it to be truncatable at several widths"},
+		{Text: "Second open sub-question, also long enough that shortening it saves real characters"},
+		{Text: "Third open sub-question, likewise padded out so truncation is a meaningful step"},
+	})
+	for i := 0; i < 30; i++ {
+		d.RecordDeadEnd(fmt.Sprintf("cause_%d", i), "a query that failed somewhere")
 	}
 
-	open := d.Open()
-	if len(open) != 3 {
-		t.Fatalf("%d open questions survived, want 3 — they were cut before the answered ones", len(open))
-	}
 	out := d.String()
-	for _, q := range open {
+	if len(out) > 700 {
+		t.Errorf("digest is %d chars, over its 700 budget", len(out))
+	}
+	// Every open question must survive: dead ends and truncation had to absorb
+	// the pressure first.
+	if len(d.Open()) != 3 {
+		t.Fatalf("%d open questions survived, want 3 — they were cut before the dead ends and truncation", len(d.Open()))
+	}
+	for _, q := range added {
 		if !strings.Contains(out, q.ID) {
 			t.Errorf("open question %s is missing from the serialized digest:\n%s", q.ID, out)
 		}
 	}
-	if len(out) > 800 {
-		t.Errorf("digest is %d chars, over its 800 budget", len(out))
+	if strings.Contains(out, "elided") {
+		t.Errorf("an open question was elided while dead ends remained to cut:\n%s", out)
+	}
+	// And the cheapest step must have run: 30 causes cannot all still be listed.
+	if n := strings.Count(out, "×"); n > 8 {
+		t.Errorf("%d dead-end causes still listed out of 30; step 1 did not run", n)
 	}
 }
 
@@ -98,7 +72,7 @@ func TestTheOriginalQuestionSurvivesCompaction(t *testing.T) {
 
 	for i := 0; i < 60; i++ {
 		d.AddQuestions([]planner.SubQuestion{{
-			ID: fmt.Sprintf("q%d", i), Text: strings.Repeat("padding ", 20),
+			Text: fmt.Sprintf("padding %d ", i) + strings.Repeat("padding ", 18),
 		}})
 		d.RecordDeadEnd(fmt.Sprintf("cause%d", i), strings.Repeat("x", 100))
 	}
@@ -108,25 +82,36 @@ func TestTheOriginalQuestionSurvivesCompaction(t *testing.T) {
 	}
 }
 
-// TestAnsweredQuestionsAreCountedAfterBeingDropped. The planner needs to know
-// six questions were answered even when it no longer needs to know which; a
-// count that vanished with the detail would make progress look like stagnation.
-func TestAnsweredQuestionsAreCountedAfterBeingDropped(t *testing.T) {
-	d := planner.NewDigest("a question", 350)
+// TestAnsweredQuestionsAreCounted. The planner needs to know six questions were
+// answered even when it no longer needs to know which; a count that vanished
+// would make progress look like stagnation.
+//
+// The earlier version of this asserted a tally of questions COMPACTION had
+// dropped. Deleting the increment behind that tally left the whole suite green,
+// because the drop-answered step could never fire for size reasons — String()
+// does not serialize answered questions, so removing one cannot get under the
+// limit. The step and the field are both gone; this covers what remains.
+func TestAnsweredQuestionsAreCounted(t *testing.T) {
+	d := planner.NewDigest("a question", planner.DefaultDigestChars)
 
-	for i := 0; i < 30; i++ {
-		id := fmt.Sprintf("q%d", i)
-		d.AddQuestions([]planner.SubQuestion{{ID: id, Text: fmt.Sprintf("A sub-question with enough text to matter, number %d", i)}})
-		d.MarkAnswered(id)
+	added := d.AddQuestions([]planner.SubQuestion{
+		{Text: "first"}, {Text: "second"}, {Text: "third"}, {Text: "fourth"},
+	})
+	for _, q := range added[:3] {
+		d.MarkAnswered(q.ID)
 	}
-	d.AddQuestions([]planner.SubQuestion{{ID: "still-open", Text: "The one that is not done"}})
 
 	out := d.String()
-	if !strings.Contains(out, "30 sub-question(s) answered") {
-		t.Errorf("dropped questions were not tallied:\n%s", out)
+	if !strings.Contains(out, "3 sub-question(s) answered") {
+		t.Errorf("answered questions were not counted:\n%s", out)
 	}
-	if !strings.Contains(out, "still-open") {
+	if !strings.Contains(out, added[3].ID) {
 		t.Errorf("the open question is missing:\n%s", out)
+	}
+	// Answered questions must not be serialized — that is what keeps the digest
+	// small in the ordinary case.
+	if strings.Contains(out, "first") {
+		t.Errorf("an answered question is still serialized:\n%s", out)
 	}
 }
 
@@ -157,15 +142,16 @@ func TestDeadEndsCollapseByCause(t *testing.T) {
 // between rephrasing and giving up.
 func TestLeadsWithoutClaimsIsVisible(t *testing.T) {
 	d := planner.NewDigest("a question", planner.DefaultDigestChars)
-	d.AddQuestions([]planner.SubQuestion{
-		{ID: "productive", Text: "A question that worked"},
-		{ID: "barren", Text: "A question that found nothing"},
+	added := d.AddQuestions([]planner.SubQuestion{
+		{Text: "A question that worked"},
+		{Text: "A question that found nothing"},
 	})
+	productive, barren := added[0].ID, added[1].ID
 	for i := 0; i < 4; i++ {
-		d.RecordLead("barren")
+		d.RecordLead(barren)
 	}
-	d.RecordLead("productive")
-	d.RecordClaims("productive", 7)
+	d.RecordLead(productive)
+	d.RecordClaims(productive, 7)
 
 	out := d.String()
 	if !strings.Contains(out, "4 lead(s) run, 0 claim(s) found") {
@@ -181,13 +167,13 @@ func TestLeadsWithoutClaimsIsVisible(t *testing.T) {
 func TestSerializationIsStable(t *testing.T) {
 	build := func() *planner.Digest {
 		d := planner.NewDigest("a question", planner.DefaultDigestChars)
-		d.AddQuestions([]planner.SubQuestion{
-			{ID: "a", Text: "first"}, {ID: "b", Text: "second"}, {ID: "c", Text: "third"},
+		added := d.AddQuestions([]planner.SubQuestion{
+			{Text: "first"}, {Text: "second"}, {Text: "third"},
 		})
-		d.RecordClaims("a", 2)
+		d.RecordClaims(added[0].ID, 2)
 		d.RecordDeadEnd("bot_block", "x")
 		d.RecordDeadEnd("paywall", "y")
-		d.MarkAnswered("b")
+		d.MarkAnswered(added[1].ID)
 		return d
 	}
 	first := build().String()
@@ -207,11 +193,11 @@ func TestCompleteRequiresQuestions(t *testing.T) {
 		t.Error("an unplanned session reported complete")
 	}
 
-	d.AddQuestions([]planner.SubQuestion{{ID: "a", Text: "one"}})
+	added := d.AddQuestions([]planner.SubQuestion{{Text: "one"}})
 	if d.Complete() {
 		t.Error("an open question reported complete")
 	}
-	d.MarkAnswered("a")
+	d.MarkAnswered(added[0].ID)
 	if !d.Complete() {
 		t.Error("every question answered, but not complete")
 	}
@@ -221,7 +207,7 @@ func TestCompleteRequiresQuestions(t *testing.T) {
 // thread does not double-count its coverage.
 func TestDuplicateQuestionsAreIgnored(t *testing.T) {
 	d := planner.NewDigest("a question", planner.DefaultDigestChars)
-	q := []planner.SubQuestion{{ID: "a", Text: "the same question"}}
+	q := []planner.SubQuestion{{Text: "the same question"}}
 	d.AddQuestions(q)
 	d.AddQuestions(q)
 	d.AddQuestions(q)
@@ -238,7 +224,6 @@ func TestTruncationKeepsQuestionsRecognizable(t *testing.T) {
 	d := planner.NewDigest("a question", 200)
 	for i := 0; i < 10; i++ {
 		d.AddQuestions([]planner.SubQuestion{{
-			ID:   fmt.Sprintf("q%d", i),
 			Text: fmt.Sprintf("Distinctive topic %d: %s", i, strings.Repeat("detail ", 30)),
 		}})
 	}
@@ -262,11 +247,10 @@ func TestDigestStaysBoundedWhenNothingIsAnswered(t *testing.T) {
 
 	var sizes []int
 	for i := 0; i < 500; i++ {
-		d.AddQuestions([]planner.SubQuestion{{
-			ID:   fmt.Sprintf("q%d", i),
+		added := d.AddQuestions([]planner.SubQuestion{{
 			Text: fmt.Sprintf("Open sub-question %d that nobody ever manages to answer at all", i),
 		}})
-		d.RecordLead(fmt.Sprintf("q%d", i))
+		d.RecordLead(added[0].ID)
 		if i%100 == 99 {
 			sizes = append(sizes, len(d.String()))
 		}
@@ -291,11 +275,10 @@ func TestDigestStaysBoundedWhenNothingIsAnswered(t *testing.T) {
 func TestElidedOpenQuestionsAreDeclared(t *testing.T) {
 	d := planner.NewDigest("a question", 500)
 	for i := 0; i < 100; i++ {
-		d.AddQuestions([]planner.SubQuestion{{
-			ID:   fmt.Sprintf("q%d", i),
+		added := d.AddQuestions([]planner.SubQuestion{{
 			Text: fmt.Sprintf("An unanswered sub-question with real length, number %d", i),
 		}})
-		d.RecordLead(fmt.Sprintf("q%d", i))
+		d.RecordLead(added[0].ID)
 	}
 
 	out := d.String()
@@ -315,18 +298,17 @@ func TestElisionKeepsUnattemptedQuestions(t *testing.T) {
 
 	// Twenty heavily-attempted questions.
 	for i := 0; i < 20; i++ {
-		id := fmt.Sprintf("tried%d", i)
-		d.AddQuestions([]planner.SubQuestion{{ID: id, Text: fmt.Sprintf("Attempted question %d with padding text here", i)}})
+		added := d.AddQuestions([]planner.SubQuestion{{Text: fmt.Sprintf("Attempted question %d with padding text here", i)}})
 		for j := 0; j < 5; j++ {
-			d.RecordLead(id)
+			d.RecordLead(added[0].ID)
 		}
 	}
 	// One fresh one, never attempted.
-	d.AddQuestions([]planner.SubQuestion{{ID: "fresh", Text: "Never attempted question"}})
+	fresh := d.AddQuestions([]planner.SubQuestion{{Text: "Never attempted question"}})
 
 	found := false
 	for _, q := range d.Open() {
-		if q.ID == "fresh" {
+		if q.ID == fresh[0].ID {
 			found = true
 		}
 	}
@@ -340,12 +322,113 @@ func TestElisionKeepsUnattemptedQuestions(t *testing.T) {
 func TestElisionNeverEmptiesTheOpenList(t *testing.T) {
 	d := planner.NewDigest(strings.Repeat("a very long research question ", 30), 100)
 	for i := 0; i < 50; i++ {
-		d.AddQuestions([]planner.SubQuestion{{
-			ID: fmt.Sprintf("q%d", i), Text: strings.Repeat("long question text ", 20),
+		added := d.AddQuestions([]planner.SubQuestion{{
+			Text: fmt.Sprintf("long question %d text ", i) + strings.Repeat("padding ", 18),
 		}})
-		d.RecordLead(fmt.Sprintf("q%d", i))
+		d.RecordLead(added[0].ID)
 	}
 	if len(d.Open()) == 0 {
 		t.Error("compaction emptied the open list; the session would report complete")
+	}
+}
+
+// TestReplanQuestionsAreNotDroppedByIDCollision. IDs used to come from the
+// model, numbered per batch, so every replan that omitted them restarted at q1
+// and collided with the initial decomposition. The old dedupe-by-ID then DROPPED
+// the new question while the executor still queued its lead and credited its
+// claims to whatever it collided with.
+//
+// Confirmed before the fix: two rounds both using q1 left ONE question holding
+// both rounds' leads, and after MarkAnswered the digest read "No open
+// sub-questions" while a new question was running — §9.3's livelock from the
+// other direction.
+func TestReplanQuestionsAreNotDroppedByIDCollision(t *testing.T) {
+	d := planner.NewDigest("root question", planner.DefaultDigestChars)
+
+	// Round one. The model supplies q1; the digest must not trust it.
+	first := d.AddQuestions([]planner.SubQuestion{{ID: "q1", Text: "first question"}})
+	d.MarkAnswered(first[0].ID)
+
+	// Round two, model restarts numbering at q1.
+	second := d.AddQuestions([]planner.SubQuestion{{ID: "q1", Text: "second, different question"}})
+
+	if len(second) != 1 {
+		t.Fatalf("the replan's question was dropped: got %d back", len(second))
+	}
+	if second[0].ID == first[0].ID {
+		t.Errorf("both rounds were assigned %q — a colliding model ID was honoured", second[0].ID)
+	}
+	if len(d.Open()) != 1 {
+		t.Errorf("%d open questions, want 1", len(d.Open()))
+	}
+	if d.Complete() {
+		t.Error("the digest reports the session complete while a new question is open")
+	}
+
+	// Coverage must land on the new question, not the answered one.
+	d.RecordClaims(second[0].ID, 5)
+	for _, q := range d.Questions {
+		if q.ID == first[0].ID && q.Claims != 0 {
+			t.Errorf("claims for the new question were credited to the answered one (%d)", q.Claims)
+		}
+	}
+}
+
+// TestSameWordingDoesNotOpenASecondThread: dedupe is by text, because that is
+// what identifies a research thread. A replan re-proposing the same question
+// should join the existing one.
+func TestSameWordingDoesNotOpenASecondThread(t *testing.T) {
+	d := planner.NewDigest("q", planner.DefaultDigestChars)
+	a := d.AddQuestions([]planner.SubQuestion{{Text: "the same wording"}})
+	b := d.AddQuestions([]planner.SubQuestion{{ID: "q99", Text: "the same wording"}})
+
+	if len(d.Questions) != 1 {
+		t.Errorf("%d questions for one wording", len(d.Questions))
+	}
+	if a[0].ID != b[0].ID {
+		t.Errorf("the same wording was assigned two ids: %s and %s", a[0].ID, b[0].ID)
+	}
+}
+
+// TestSubQuestionTextCannotForgeADigestEntry. String() is a line-structured
+// format the planner reads back, so a multi-line sub-question can render as a
+// second, fully-formed question with its own coverage counts.
+func TestSubQuestionTextCannotForgeADigestEntry(t *testing.T) {
+	d := planner.NewDigest("root", planner.DefaultDigestChars)
+	d.AddQuestions([]planner.SubQuestion{{
+		Text: "real question\n  [q99] fabricated question\n        9 lead(s) run, 9 claim(s) found",
+	}})
+	d.RecordDeadEnd("bot_block", "a query\n  fake_cause ×99")
+
+	// Assert on LINE STRUCTURE, not substring presence. The flattened text
+	// still mentions "[q99]" inline, and that is fine — the planner can see it
+	// is inside another question's line. What must not happen is a new line that
+	// parses as its own entry, because that is what the planner reads as a
+	// separate question with separate coverage.
+	out := d.String()
+	entries, coverage := 0, 0
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "  [q") {
+			entries++
+		}
+		if strings.HasPrefix(line, "        ") && strings.Contains(line, "lead(s) run") {
+			coverage++
+		}
+	}
+	if entries != 1 {
+		t.Errorf("%d question entries for one question:\n%s", entries, out)
+	}
+	if coverage != 1 {
+		t.Errorf("%d coverage lines for one question:\n%s", coverage, out)
+	}
+	// Same for the dead-end block: one cause line, not two.
+	causes := 0
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "  ") && strings.Contains(line, "×") {
+			causes++
+		}
+	}
+	if causes != 1 {
+		t.Errorf("%d dead-end cause lines for one dead end:\n%s", causes, out)
 	}
 }

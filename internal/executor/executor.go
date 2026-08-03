@@ -27,6 +27,7 @@ import (
 	"github.com/lajosdeme/mole/internal/cache"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/planner"
+	"github.com/lajosdeme/mole/internal/pricing"
 	"github.com/lajosdeme/mole/internal/queue"
 	"github.com/lajosdeme/mole/internal/store"
 )
@@ -47,6 +48,13 @@ type Executor struct {
 	// with the actor, so a lead-level hit and a URL-level hit are the same
 	// cache and one lead's fetches serve another's.
 	Cache *cache.Cache
+
+	// Pricing and CheapModel convert a USD reservation into the token ceiling
+	// an actor can act on. CheapModel names the tier chunk mining actually
+	// uses; pricing the ceiling off the strong model would set it several
+	// times too low. Both empty leaves the actor's configured budget in place.
+	Pricing    *pricing.Table
+	CheapModel string
 
 	// Estimator sizes reservations. Nil uses a fresh one for the session's
 	// budget unit.
@@ -152,13 +160,16 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 		res.StoppedBecause = "planning failed: " + err.Error()
 		return res, err
 	}
-	digest.AddQuestions(plan.Questions)
+	// Map leads to the IDs the DIGEST assigned, not the ones the model supplied
+	// — those collide across replans, and a positional mapping onto the input
+	// credits a new question's coverage to whatever it collided with.
+	assigned := digest.AddQuestions(plan.Questions)
 	for i := range plan.Leads {
 		if plan.Leads[i].ID == "" {
 			plan.Leads[i].ID = core.NewLeadID()
 		}
-		if i < len(plan.Questions) {
-			leadQuestion[plan.Leads[i].ID] = plan.Questions[i].ID
+		if i < len(assigned) {
+			leadQuestion[plan.Leads[i].ID] = assigned[i].ID
 		}
 	}
 	if err := e.Queue.Push(ctx, plan.Leads); err != nil {
@@ -428,7 +439,10 @@ func (e *Executor) attempt(ctx context.Context, sess *core.Session, lead core.Le
 		return leadOutcome{err: err, class: Classify(err)}
 	}
 
-	result, runErr := actor.Run(ctx, lead)
+	// §9.2's withSubBudget. The reservation is the only ceiling that knows what
+	// this lead may cost; without passing it the actor's configured budget bore
+	// no relation to the money held for it.
+	result, runErr := actor.Run(actors.WithSubBudget(ctx, e.subBudget(sess, est)), lead)
 
 	// Settle unconditionally. The tokens were billed either way, and a
 	// reservation left held is budget neither spent nor available.
@@ -436,10 +450,27 @@ func (e *Executor) attempt(ctx context.Context, sess *core.Session, lead core.Le
 	if result != nil {
 		costs = result.Costs
 	}
-	if _, err := e.Ledger.Settle(context.WithoutCancel(ctx), reservation, costs); err != nil {
+	settled, err := e.Ledger.Settle(context.WithoutCancel(ctx), reservation, costs)
+	if err != nil {
 		e.logger().ErrorContext(ctx, "settle failed; budget accounting is now unreliable",
 			"lead", lead.ID, "err", err)
 		return leadOutcome{err: err, class: Fatal}
+	}
+	// §8.2 bounds overshoot to estimate error on a single lead. Flagged means
+	// the actual cost cleared the reserved amount by more than the configured
+	// factor, which is not estimate error — it is the sub-budget failing to
+	// bind. Continuing would repeat it on every remaining lead, so stop.
+	if settled.Flagged {
+		e.logger().ErrorContext(ctx, "lead overshot its reservation past the allowed factor",
+			"lead", lead.ID, "reserved", settled.Reserved, "charged", settled.Charged)
+		out := leadOutcome{err: fmt.Errorf(
+			"%w: lead charged %d against a %d reservation", budget.ErrOvershoot, settled.Charged, settled.Reserved),
+			class: Fatal}
+		if result != nil {
+			out.claims = result.Claims
+			out.summary = result.Summary
+		}
+		return out
 	}
 
 	out := leadOutcome{}
@@ -475,13 +506,13 @@ func (e *Executor) replan(
 		return 0, true, nil
 	}
 
-	digest.AddQuestions(plan.Questions)
+	assigned := digest.AddQuestions(plan.Questions)
 	for i := range plan.Leads {
 		if plan.Leads[i].ID == "" {
 			plan.Leads[i].ID = core.NewLeadID()
 		}
-		if i < len(plan.Questions) {
-			leadQuestion[plan.Leads[i].ID] = plan.Questions[i].ID
+		if i < len(assigned) {
+			leadQuestion[plan.Leads[i].ID] = assigned[i].ID
 		}
 	}
 	if len(plan.Leads) == 0 {
@@ -535,6 +566,51 @@ func (e *Executor) settlePlanner(ctx context.Context, sess *core.Session, plan *
 		e.logger().ErrorContext(ctx, "settling a planner call failed", "err", err)
 	}
 	return callErr
+}
+
+// subBudget derives the actor's per-lead ceiling from the reserved amount.
+//
+// In token mode the reservation IS a token count, so the mapping is exact. In
+// USD mode it has to be converted, and the rate comes from the cheap tier —
+// chunk mining is where an actor's input tokens actually go, and pricing the
+// ceiling off the strong model would set it several times too low.
+//
+// inputShare leaves room for output tokens and for EstimateTokens running
+// short. Overshooting is a hard failure; underspending is a smaller run.
+func (e *Executor) subBudget(sess *core.Session, reserved int64) actors.Budget {
+	const inputShare = 70 // percent of the reservation available for input
+
+	tokens := reserved
+	if sess.BudgetUnit == core.BudgetUSD {
+		tokens = e.tokensForMicros(reserved)
+	}
+	tokens = tokens * inputShare / 100
+	if tokens <= 0 {
+		// Nothing usable to derive from — leave the configured budget alone
+		// rather than pinning the actor to zero and guaranteeing an empty run.
+		return actors.Budget{}
+	}
+	return actors.Budget{MaxInputTokens: tokens}
+}
+
+// tokensForMicros converts a USD amount into an input-token count.
+func (e *Executor) tokensForMicros(micros int64) int64 {
+	if e.CheapModel == "" {
+		return 0
+	}
+	table := e.Pricing
+	if table == nil {
+		table = pricing.NewTable()
+	}
+	rate, ok := table.Lookup(e.CheapModel)
+	if !ok || rate.Input <= 0 {
+		// No price for this model, so USD cannot bound it — the CLI already
+		// refuses --usd in that case (checkUSDIsEnforceable). Returning zero
+		// leaves the configured ceiling in place rather than inventing a rate.
+		return 0
+	}
+	// Rates are nano-dollars per token; micros are 1000 nano.
+	return micros * pricing.NanoPerMicro / rate.Input
 }
 
 // countLead increments the session's dispatched-lead counter, which is what

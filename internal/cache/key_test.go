@@ -15,7 +15,6 @@ func TestSameDocumentFoldsToOneKey(t *testing.T) {
 
 	same := []string{
 		"https://arxiv.org/abs/2401.13660",
-		"http://arxiv.org/abs/2401.13660",            // scheme
 		"https://ARXIV.ORG/abs/2401.13660",           // host case
 		"https://www.arxiv.org/abs/2401.13660",       // www
 		"https://arxiv.org/abs/2401.13660/",          // trailing slash
@@ -77,15 +76,14 @@ func TestUnparseableURLsStillKey(t *testing.T) {
 	}
 }
 
-// TestQueryKeyFoldsWordOrderButNotWording. "MambaByte PG-19 results" and "PG-19
-// results MambaByte" are the same search; "what does X achieve" and "why does X
-// fail" are not.
-func TestQueryKeyFoldsWordOrderButNotWording(t *testing.T) {
+// TestQueryKeyFoldsFormattingOnly. Casing, punctuation and whitespace are noise
+// a planner produces across replans; word order is not.
+func TestQueryKeyFoldsFormattingOnly(t *testing.T) {
 	same := []string{
 		"MambaByte PG-19 results",
-		"PG-19 results MambaByte",
 		"mambabyte pg-19 results",
 		"  MambaByte,  PG-19   results!  ",
+		"MambaByte... PG-19 -- results?",
 	}
 	first := cache.QueryKey(same[0])
 	for _, q := range same[1:] {
@@ -96,6 +94,70 @@ func TestQueryKeyFoldsWordOrderButNotWording(t *testing.T) {
 
 	if cache.QueryKey("what does MambaByte achieve") == cache.QueryKey("why does MambaByte fail") {
 		t.Error("two genuinely different questions share a key")
+	}
+}
+
+// TestQueryKeyPreservesTheDirectionOfARelation. An earlier version sorted the
+// words, so these collided — and the second question was then completed as
+// skipped_cache and never researched, while the digest was credited with the
+// first one's claims.
+func TestQueryKeyPreservesTheDirectionOfARelation(t *testing.T) {
+	for _, p := range [][2]string{
+		{"did Acme acquire Beta", "did Beta acquire Acme"},
+		{"is drug A safer than drug B", "is drug B safer than drug A"},
+		{"does smoking cause cancer", "does cancer cause smoking"},
+		{"is X faster than Y", "is Y faster than X"},
+		{"does A cause B or does B cause A", "does B cause A or does A cause B"},
+	} {
+		if cache.QueryKey(p[0]) == cache.QueryKey(p[1]) {
+			t.Errorf("%q and %q share a key — word order carries the relation", p[0], p[1])
+		}
+	}
+}
+
+// TestNonLatinQueriesStillKey. The earlier character class was [a-z0-9-], so any
+// query in another script produced an empty key and silently disabled lead-level
+// caching for it.
+func TestNonLatinQueriesStillKey(t *testing.T) {
+	for _, q := range []string{
+		"バイトレベル言語モデルの現状",
+		"каковы результаты MambaByte",
+		"字节级语言模型",
+	} {
+		if cache.QueryKey(q) == "" {
+			t.Errorf("QueryKey(%q) is empty — caching is silently disabled for this script", q)
+		}
+	}
+	if cache.QueryKey("字节级语言模型") == cache.QueryKey("バイトレベル言語モデルの現状") {
+		t.Error("two different non-Latin queries share a key")
+	}
+}
+
+// TestPlaintextAndTLSAreDifferentDocuments. Content fetched over http can be
+// rewritten by anyone on the path; storing it under the https key means a later
+// hit on the https URL serves those bytes with no fetch, quotes verify against
+// the attacker's text, and claims cite a URL that was never retrieved.
+func TestPlaintextAndTLSAreDifferentDocuments(t *testing.T) {
+	if cache.URLKey("http://example.com/doc") == cache.URLKey("https://example.com/doc") {
+		t.Error("plaintext content is stored under the TLS key")
+	}
+}
+
+// TestContentSelectingParamsAreNotTreatedAsTracking. "ref" and "source" look
+// like tracking tags and often are, but they also select content — GitHub uses
+// ?ref=<branch>. Folding them merges two different documents.
+func TestContentSelectingParamsAreNotTreatedAsTracking(t *testing.T) {
+	for _, p := range [][2]string{
+		{"https://gh.example/f.md?ref=main", "https://gh.example/f.md?ref=attacker-branch"},
+		{"https://v.example/view?source=a", "https://v.example/view?source=b"},
+	} {
+		if cache.URLKey(p[0]) == cache.URLKey(p[1]) {
+			t.Errorf("%s and %s folded together", p[0], p[1])
+		}
+	}
+	// Genuine tracking tags must still fold.
+	if cache.URLKey("https://a.example/x?utm_source=news") != cache.URLKey("https://a.example/x") {
+		t.Error("a real tracking tag was not stripped")
 	}
 }
 

@@ -54,7 +54,15 @@ func (a *WebActor) logger() *slog.Logger {
 
 // Run executes one lead.
 func (a *WebActor) Run(ctx context.Context, lead core.Lead) (*Result, error) {
-	budget := a.Budget.withDefaults()
+	budget := a.Budget
+	// The executor's reservation is the only ceiling that knows what this lead
+	// may actually cost (§9.2). Without it the actor's configured budget bore
+	// no relation to the money held for it, and a lead could spend several
+	// times the whole session budget.
+	if sub, ok := SubBudgetFrom(ctx); ok {
+		budget = budget.tighten(sub)
+	}
+	budget = budget.withDefaults()
 	res := &Result{}
 
 	// 1. Search.

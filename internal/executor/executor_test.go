@@ -771,3 +771,129 @@ func TestCachedDeadEndStaysADeadEnd(t *testing.T) {
 			deadEnds, res.LeadsCached, want)
 	}
 }
+
+// TestOneLeadCannotSpendTheWholeBudget is the bound §8.2 claims and §14.3
+// requires ("max overshoot must be ~0").
+//
+// Before the sub-budget existed, the reservation bounded nothing: the actor's
+// ceiling came from config and bore no relation to the money held for it. A
+// single lead costing five times the budget spent all of it — measured at 5.0x
+// with the escrow consumed — while TestBudgetIsNeverOvershot passed because its
+// parameters stopped short of the boundary.
+//
+// A fake actor cannot be made to honour a sub-budget it does not read, so this
+// asserts the OTHER half: the settle-time factor check stops the session
+// instead of letting the pattern repeat on every remaining lead.
+func TestOneLeadCannotSpendTheWholeBudget(t *testing.T) {
+	// $1.00 budget; a lead that ignores its ceiling and spends $5.00.
+	r := newRig(t, core.MicrosPerUSD, []string{planJSON("a", "b", "c"), `{"done":true}`},
+		func(int, core.Lead) (*actors.Result, error) {
+			return okResult(1, 5*core.MicrosPerUSD), nil
+		})
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The run must stop on the first offending lead rather than repeating it.
+	if r.actor.count() != 1 {
+		t.Errorf("the actor ran %d times after blowing its reservation, want 1", r.actor.count())
+	}
+	if res.Status != core.StatusFailed {
+		t.Errorf("status = %s, want failed — an unbounded overshoot is not a clean stop", res.Status)
+	}
+	if !strings.Contains(res.StoppedBecause, "overshoot") {
+		t.Errorf("stopped because %q, want it to name the overshoot", res.StoppedBecause)
+	}
+
+	after := r.reload(t)
+	if after.Held != 0 {
+		t.Errorf("%d held after an overshoot", after.Held)
+	}
+	v, _ := r.led.Verify(context.Background(), r.sess.ID)
+	if !v.Consistent() {
+		t.Error("the ledger does not reconcile after an overshoot")
+	}
+}
+
+// TestSubBudgetIsDerivedFromTheReservation. The actor has to be TOLD what it
+// may spend; a ceiling from config cannot know what was reserved.
+func TestSubBudgetIsDerivedFromTheReservation(t *testing.T) {
+	var seen []actors.Budget
+
+	r := newRig(t, 200_000, []string{planJSON("a"), `{"done":true}`}, nil)
+	r.exec.Actors = map[core.ActorType]actors.Actor{
+		core.ActorWeb: &budgetSpy{seen: &seen},
+	}
+	r.exec.CheapModel = "claude-haiku-4-5"
+
+	if _, err := r.exec.Run(context.Background(), r.sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) == 0 {
+		t.Fatal("the actor never ran")
+	}
+	for i, b := range seen {
+		if b.MaxInputTokens <= 0 {
+			t.Errorf("lead %d ran with no input ceiling: %+v", i, b)
+		}
+	}
+}
+
+// TestTokenModeSubBudgetIsExact: in token mode the reservation IS a token
+// count, so no conversion is involved and the ceiling must track it directly.
+func TestTokenModeSubBudgetIsExact(t *testing.T) {
+	ctx := context.Background()
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "t.db"), sqlite.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	led := budget.New(db, budget.DefaultConfig())
+	sess, err := led.CreateSession(ctx, budget.SessionSpec{
+		Prompt: "q", Mode: core.ModeReport,
+		ActorTypes: []core.ActorType{core.ActorWeb},
+		BudgetUnit: core.BudgetTokens, Budget: 500_000,
+		MaxLeads: 10, MaxToolCalls: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var seen []actors.Budget
+	fl := &scriptedLLM{replies: []string{planJSON("a"), `{"done":true}`}}
+	e := &executor.Executor{
+		Store: db, Ledger: led, Queue: queue.New(db, time.Minute),
+		Planner: &planner.Planner{LLM: fl, MaxInitialLeads: 1, MaxDepth: 1},
+		Actors:  map[core.ActorType]actors.Actor{core.ActorWeb: &budgetSpy{seen: &seen}},
+		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Sleep:   func(context.Context, time.Duration) error { return nil },
+	}
+	if _, err := e.Run(ctx, sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) == 0 {
+		t.Fatal("the actor never ran")
+	}
+	// The estimator seed for a web lead in token mode; the ceiling must be a
+	// fraction of it, not unrelated to it.
+	got := seen[0].MaxInputTokens
+	if got <= 0 || got > 500_000 {
+		t.Errorf("sub-budget = %d tokens against a 500000 budget — not derived from the reservation", got)
+	}
+}
+
+// budgetSpy records the sub-budget it was handed.
+type budgetSpy struct{ seen *[]actors.Budget }
+
+func (b *budgetSpy) Type() core.ActorType { return core.ActorWeb }
+func (b *budgetSpy) Run(ctx context.Context, lead core.Lead) (*actors.Result, error) {
+	sub, _ := actors.SubBudgetFrom(ctx)
+	*b.seen = append(*b.seen, sub)
+	return okResult(1, 1_000), nil
+}
