@@ -315,3 +315,39 @@ func TestAnsweredIsReturnedNotApplied(t *testing.T) {
 		t.Error("the planner mutated the digest")
 	}
 }
+
+// TestDepthNoneMeansNoFollowUps. The obvious `<= 0` default treatment made
+// --max-depth 0 silently plan two extra rounds, against ceilings that
+// maxLeadsFor had sized for none — so the run ended on max_leads instead of on
+// the plan. Zero now means "unset" and DepthNone means "none", because the two
+// have to be distinguishable.
+func TestDepthNoneMeansNoFollowUps(t *testing.T) {
+	f := &fakeLLM{reply: func(string) string { return plan("more", "and more") }}
+	p := &planner.Planner{LLM: f, MaxDepth: planner.DepthNone}
+
+	got, err := p.Replan(context.Background(), session("q"), planner.NewDigest("q", 0), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Done {
+		t.Error("--max-depth 0 still planned a round of follow-ups")
+	}
+	if len(f.prompts) != 0 {
+		t.Error("a model call was made for a replan that cannot produce leads")
+	}
+}
+
+// TestUnsetDepthTakesTheDefault: the zero value keeps Go's convention, so a
+// struct literal that omits MaxDepth still replans.
+func TestUnsetDepthTakesTheDefault(t *testing.T) {
+	f := &fakeLLM{reply: func(string) string { return plan("a follow-up") }}
+	p := &planner.Planner{LLM: f}
+
+	got, err := p.Replan(context.Background(), session("q"), planner.NewDigest("q", 0), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Done {
+		t.Error("an unset depth stopped immediately instead of taking the default")
+	}
+}

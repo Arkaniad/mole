@@ -97,8 +97,8 @@ func newResearchCmd() *cobra.Command {
 	f.DurationVar(&o.timeout, "timeout", 5*time.Minute, "wall-clock ceiling for the whole session")
 	f.BoolVar(&o.asJSON, "json", false, "emit the result as JSON")
 	f.BoolVar(&o.quiet, "quiet", false, "suppress progress; print only the result")
-	f.IntVar(&o.maxDepth, "max-depth", 2,
-		"how many rounds of follow-up leads the planner may add")
+	f.IntVar(&o.maxDepth, "max-depth", planner.DefaultMaxDepth,
+		"rounds of follow-up leads the planner may add (0 for none)")
 	f.BoolVar(&o.alwaysFetch, "always-fetch", false,
 		"fetch every page even when the search provider supplied its text (slower; required for citation accuracy and the §17.1 gate)")
 	return c
@@ -202,12 +202,23 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 		fmt.Println(" executing ─────────────────────────────────────────")
 	}
 
-	// Recover anything a previous crash left leased before starting (§9.4).
+	// Recover what a previous crash left behind (§9.4). Both halves: leases,
+	// and the reservations those leads were holding — a stale hold is budget
+	// neither spent nor available, and Ledger.SweepExpired had no caller at all,
+	// so a crash mid-lead understated a session's Available() permanently.
+	//
+	// Unscoped on purpose: boot recovery does not know which sessions were in
+	// flight, and this is the one caller for which that is correct.
 	q := queue.New(db, 0)
-	if n, err := q.Sweep(ctx); err != nil {
+	if n, err := q.Sweep(ctx, ""); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: lease sweep failed: %v\n", err)
 	} else if n > 0 && !o.quiet {
 		fmt.Printf(" recovered %d lead(s) stranded by a previous run\n", n)
+	}
+	if n, err := led.SweepExpired(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: reservation sweep failed: %v\n", err)
+	} else if n > 0 && !o.quiet {
+		fmt.Printf(" released %d stale reservation(s) from a previous run\n", n)
 	}
 
 	// One cache shared between the loop and the actor, so a lead-level hit and
@@ -304,38 +315,68 @@ func generateReport(
 	out *researchOutput,
 	o researchOpts,
 ) *output.Report {
-	released, err := led.ReleaseEscrow(context.WithoutCancel(ctx), sess.ID)
+	ctx = context.WithoutCancel(ctx)
+
+	released, err := led.ReleaseEscrow(ctx, sess.ID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not release escrow: %v\n", err)
 	}
 
+	// Reserve BEFORE generating. The order used to be release → generate →
+	// reserve, which inverts §8.2 and had a concrete failure: after any research
+	// overshoot the reserve was refused, and the report tokens — already spent —
+	// were never written to the ledger. §8.1 says every tool call writes a cost
+	// row, and Verify() still reconciled because the row never existed.
+	//
+	// Bounded by what is actually available, not by what escrow nominally
+	// released: an overshoot may already have eaten into it.
+	amount := released
+	if sess, err := loadSession(ctx, db, sess.ID); err == nil {
+		if avail := sess.Available(); amount > avail {
+			amount = avail
+		}
+	}
+
 	gen := &output.Generator{LLM: actor.LLM}
-	report, err := gen.Generate(context.WithoutCancel(ctx), db, sess.ID)
+	var reservation *core.Reservation
+	if amount > 0 {
+		reservation, err = led.ReserveOutput(ctx, sess.ID, amount)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not reserve for the report: %v\n", err)
+		}
+	}
+	if reservation == nil {
+		// Nothing to spend. Emit the evidence without prose rather than making
+		// a call whose cost cannot be recorded.
+		gen.LLM = nil
+	}
+
+	report, err := gen.Generate(ctx, db, sess.ID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: report generation failed: %v\n", err)
+		if reservation != nil {
+			if rerr := led.Release(ctx, reservation); rerr != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not release the report hold: %v\n", rerr)
+			}
+		}
 		return nil
 	}
 
-	// Charge it. The tokens were spent whether or not the prose was any good,
-	// and a ledger of successes cannot enforce a ceiling.
-	if !report.Cost.IsZero() {
-		amount := released
-		if amount <= 0 {
-			amount = 1
+	if reservation != nil {
+		// Settle unconditionally, including a zero cost: an unresolved hold is
+		// budget neither spent nor available.
+		var calls []core.ToolCall
+		if !report.Cost.IsZero() {
+			calls = append(calls, core.ToolCall{
+				SessionID: sess.ID,
+				Role:      core.RoleOutput,
+				Type:      core.CallLLM,
+				Model:     report.Model,
+				Input:     "report",
+				Cost:      priceReport(actor, report),
+			})
 		}
-		reservation, rerr := led.ReserveOutput(context.WithoutCancel(ctx), sess.ID, amount)
-		if rerr != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not reserve for the report; its cost is unrecorded: %v\n", rerr)
-			return report
-		}
-		if _, serr := led.Settle(context.WithoutCancel(ctx), reservation, []core.ToolCall{{
-			SessionID: sess.ID,
-			Role:      core.RoleOutput,
-			Type:      core.CallLLM,
-			Model:     report.Model,
-			Input:     "report",
-			Cost:      priceReport(actor, report),
-		}}); serr != nil {
+		if _, serr := led.Settle(ctx, reservation, calls); serr != nil {
 			fmt.Fprintf(os.Stderr, "warning: settling the report failed: %v\n", serr)
 		}
 	}
@@ -373,6 +414,15 @@ func priceReport(actor *actors.WebActor, r *output.Report) core.Cost {
 
 // maxLeadsFor bounds the lead tree from the planner's own fan-out limits, so
 // the ceiling and the plan cannot disagree.
+// plannerDepth translates the flag into the planner's encoding, where zero
+// means "unset" and DepthNone means "no follow-ups".
+func plannerDepth(flag int) int {
+	if flag <= 0 {
+		return planner.DepthNone
+	}
+	return flag
+}
+
 func maxLeadsFor(o researchOpts) int {
 	depth := o.maxDepth
 	if depth < 0 {

@@ -165,7 +165,7 @@ func (l *Ledger) escrowFor(budget int64) int64 {
 // also a TOCTOU bug — the peeked lead is not necessarily the popped one. Here
 // the amount reserved is always for the lead actually dequeued.
 func (l *Ledger) Reserve(ctx context.Context, sessionID string, amount int64) (*core.Reservation, error) {
-	return l.reserve(ctx, sessionID, amount, true)
+	return l.reserveWith(ctx, sessionID, amount, true, nil)
 }
 
 // ReserveOutput reserves for the report, ignoring the unit-independent
@@ -181,10 +181,10 @@ func (l *Ledger) Reserve(ctx context.Context, sessionID string, amount int64) (*
 // spend what Available() then reports. A session that has genuinely run out of
 // money still cannot reserve.
 func (l *Ledger) ReserveOutput(ctx context.Context, sessionID string, amount int64) (*core.Reservation, error) {
-	return l.reserve(ctx, sessionID, amount, false)
+	return l.reserveWith(ctx, sessionID, amount, false, nil)
 }
 
-func (l *Ledger) reserve(ctx context.Context, sessionID string, amount int64, enforceCeilings bool) (*core.Reservation, error) {
+func (l *Ledger) reserveWith(ctx context.Context, sessionID string, amount int64, enforceCeilings bool, leadID *string) (*core.Reservation, error) {
 	if amount <= 0 {
 		return nil, fmt.Errorf("budget: reserve amount must be positive, got %d", amount)
 	}
@@ -195,6 +195,7 @@ func (l *Ledger) reserve(ctx context.Context, sessionID string, amount int64, en
 		SessionID: sessionID,
 		Amount:    amount,
 		Status:    core.ReservationHeld,
+		LeadID:    leadID,
 		CreatedAt: now,
 		ExpiresAt: now.Add(l.cfg.ReservationTTL),
 	}
@@ -232,12 +233,11 @@ func (l *Ledger) reserve(ctx context.Context, sessionID string, amount int64, en
 // ReserveFor is Reserve with the lead recorded on the hold, so a stranded
 // reservation can be traced back to the work that took it.
 func (l *Ledger) ReserveFor(ctx context.Context, sessionID, leadID string, amount int64) (*core.Reservation, error) {
-	r, err := l.Reserve(ctx, sessionID, amount)
-	if err != nil {
-		return nil, err
-	}
-	r.LeadID = &leadID
-	return r, nil
+	// Set on the reservation BEFORE it is inserted. Setting it afterwards only
+	// touched the in-memory copy, so the stored lead_id stayed NULL — and the
+	// stranded-reservation case this exists to serve is exactly the one where
+	// the in-memory copy is gone.
+	return l.reserveWith(ctx, sessionID, amount, true, &leadID)
 }
 
 // SettleResult reports what a settle actually cost against what was held.

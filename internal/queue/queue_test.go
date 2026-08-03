@@ -2,6 +2,7 @@ package queue_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -178,7 +179,7 @@ func TestExpiredLeaseIsRecovered(t *testing.T) {
 	}
 
 	now = now.Add(2 * time.Minute)
-	n, err := q.Sweep(ctx)
+	n, err := q.Sweep(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +213,7 @@ func TestSweepLeavesLiveLeasesAlone(t *testing.T) {
 	}
 
 	now = now.Add(30 * time.Minute) // well inside the hour
-	if n, _ := q.Sweep(ctx); n != 0 {
+	if n, _ := q.Sweep(ctx, ""); n != 0 {
 		t.Errorf("swept %d live leases", n)
 	}
 }
@@ -240,7 +241,7 @@ func TestRenewKeepsALongLeadAlive(t *testing.T) {
 		if !ok {
 			t.Fatalf("renewal %d rejected while the lease was still held", i)
 		}
-		if n, _ := q.Sweep(ctx); n != 0 {
+		if n, _ := q.Sweep(ctx, ""); n != 0 {
 			t.Errorf("renewal %d: lease swept anyway", i)
 		}
 	}
@@ -261,7 +262,7 @@ func TestRenewFailsAfterTheSweep(t *testing.T) {
 	lease, _ := q.LeaseNext(ctx, sid, "stalled")
 
 	now = now.Add(2 * time.Minute)
-	if _, err := q.Sweep(ctx); err != nil {
+	if _, err := q.Sweep(ctx, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -399,11 +400,154 @@ func TestSweepIsCrossSession(t *testing.T) {
 	_, _ = q.LeaseNext(ctx, sess2.ID, "w")
 
 	now = now.Add(2 * time.Minute)
-	n, err := q.Sweep(ctx)
+	n, err := q.Sweep(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 2 {
 		t.Errorf("swept %d, want 2 across both sessions", n)
+	}
+}
+
+// TestSweepIgnoresOtherSessionsWhenScoped. An unscoped sweep from a running
+// executor requeues another live process's in-flight leases — and nothing stops
+// that process finishing its lead, so both run it and both settle a charge.
+// Reachable with a single worker: the database has no exclusive lock.
+func TestSweepIgnoresOtherSessionsWhenScoped(t *testing.T) {
+	ctx := context.Background()
+	q, db, mine := newQ(t, time.Minute)
+	now := time.Unix(1_700_000_000, 0)
+	q.SetClock(func() time.Time { return now })
+
+	theirs, err := budget.New(db, budget.DefaultConfig()).CreateSession(ctx, budget.SessionSpec{
+		Prompt: "theirs", Mode: core.ModeReport,
+		ActorTypes: []core.ActorType{core.ActorWeb},
+		BudgetUnit: core.BudgetUSD, Budget: core.MicrosPerUSD,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.Push(ctx, leads(mine, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Push(ctx, leads(theirs.ID, 1)); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = q.LeaseNext(ctx, mine, "me")
+	_, _ = q.LeaseNext(ctx, theirs.ID, "them")
+
+	now = now.Add(2 * time.Minute)
+	n, err := q.Sweep(ctx, mine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("swept %d leads, want only my own 1", n)
+	}
+	// Their lead must still be leased.
+	if lease, _ := q.LeaseNext(ctx, theirs.ID, "opportunist"); lease != nil {
+		t.Error("a scoped sweep requeued another session's in-flight lead")
+	}
+}
+
+// TestSweepSkipsTerminalSessions. Requeueing their leads produces rows no
+// executor will ever lease — LeaseNextLead filters by session — so the CLI
+// reports "recovered N leads" for work that is permanently stuck.
+func TestSweepSkipsTerminalSessions(t *testing.T) {
+	ctx := context.Background()
+	q, db, sid := newQ(t, time.Minute)
+	now := time.Unix(1_700_000_000, 0)
+	q.SetClock(func() time.Time { return now })
+
+	if err := q.Push(ctx, leads(sid, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.LeaseNext(ctx, sid, "w"); err != nil {
+		t.Fatal(err)
+	}
+	if err := budget.New(db, budget.DefaultConfig()).Finish(ctx, sid, core.StatusDone); err != nil {
+		t.Fatal(err)
+	}
+
+	now = now.Add(2 * time.Minute)
+	if n, _ := q.Sweep(ctx, ""); n != 0 {
+		t.Errorf("swept %d leads from a finished session", n)
+	}
+}
+
+// TestCompleteRequiresTheLease. A worker that lost its lease must not be able to
+// terminalize a lead another worker now holds.
+func TestCompleteRequiresTheLease(t *testing.T) {
+	ctx := context.Background()
+	q, _, sid := newQ(t, time.Minute)
+	if err := q.Push(ctx, leads(sid, 1)); err != nil {
+		t.Fatal(err)
+	}
+	lease, _ := q.LeaseNext(ctx, sid, "real-owner")
+
+	impostor := &queue.Lease{Lead: lease.Lead, Owner: "someone-else"}
+	err := q.Complete(ctx, impostor, core.LeadDone)
+	if err == nil {
+		t.Fatal("a non-owner completed someone else's lead")
+	}
+	if !errors.Is(err, queue.ErrLeaseLost) {
+		t.Errorf("err = %v, want ErrLeaseLost so the caller can stop", err)
+	}
+	// The real owner must still be able to finish.
+	if err := q.Complete(ctx, lease, core.LeadDone); err != nil {
+		t.Errorf("the lease holder could not complete: %v", err)
+	}
+}
+
+// TestCompletionClearsTheLease. Leaving lease_owner set on a terminal lead let
+// ReleaseLease — which matches on owner alone — flip a finished lead back to
+// queued, to be re-run and re-charged.
+func TestCompletionClearsTheLease(t *testing.T) {
+	ctx := context.Background()
+	q, _, sid := newQ(t, time.Minute)
+	if err := q.Push(ctx, leads(sid, 1)); err != nil {
+		t.Fatal(err)
+	}
+	lease, _ := q.LeaseNext(ctx, sid, "w")
+	if err := q.Complete(ctx, lease, core.LeadDone); err != nil {
+		t.Fatal(err)
+	}
+
+	// A stale Release must not resurrect it.
+	_ = q.Release(ctx, lease)
+	if again, _ := q.LeaseNext(ctx, sid, "w2"); again != nil {
+		t.Error("a completed lead was resurrected to queued and re-dispatched")
+	}
+}
+
+// TestDefaultLeaseTTLApplies. queue.New(st, 0) is the only configuration the CLI
+// actually ships, and it was the one nothing covered: every test passed an
+// explicit TTL, so changing the fallback to a nanosecond left the suite green.
+func TestDefaultLeaseTTLApplies(t *testing.T) {
+	ctx := context.Background()
+	q, _, sid := newQ(t, 0)
+	now := time.Unix(1_700_000_000, 0)
+	q.SetClock(func() time.Time { return now })
+
+	if got := q.TTL(); got != queue.DefaultLeaseTTL {
+		t.Fatalf("TTL = %v, want the default %v", got, queue.DefaultLeaseTTL)
+	}
+	if err := q.Push(ctx, leads(sid, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.LeaseNext(ctx, sid, "w"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Just inside the default: must survive.
+	now = now.Add(queue.DefaultLeaseTTL - time.Second)
+	if n, _ := q.Sweep(ctx, ""); n != 0 {
+		t.Errorf("swept a lease %v before its default expiry", time.Second)
+	}
+	// Just outside: must be recovered.
+	now = now.Add(2 * time.Second)
+	if n, _ := q.Sweep(ctx, ""); n != 1 {
+		t.Error("a lease past the default TTL was not recovered")
 	}
 }

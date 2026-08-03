@@ -33,6 +33,12 @@ type Planner struct {
 
 	// MaxDepth caps the lead tree independently of budget (§9.1). A follow-up
 	// of a follow-up of a follow-up is usually drift, not depth.
+	//
+	// Zero means unset, per Go convention, and takes DefaultMaxDepth. Use
+	// DepthNone to mean "no follow-up rounds at all" — the two have to be
+	// distinguishable, because the obvious `<= 0` treatment made
+	// `--max-depth 0` silently plan two extra rounds against ceilings that had
+	// been sized for none.
 	MaxDepth int
 }
 
@@ -45,6 +51,10 @@ const (
 	DefaultMaxDepth             = 2
 )
 
+// DepthNone disables follow-up rounds: the initial decomposition and nothing
+// more. Distinct from the zero value, which means "unset".
+const DepthNone = -1
+
 func (p *Planner) withDefaults() *Planner {
 	out := *p
 	if out.MaxInitialLeads <= 0 {
@@ -56,8 +66,11 @@ func (p *Planner) withDefaults() *Planner {
 	if out.ReplanEvery <= 0 {
 		out.ReplanEvery = DefaultReplanEvery
 	}
-	if out.MaxDepth <= 0 {
+	switch {
+	case out.MaxDepth == 0:
 		out.MaxDepth = DefaultMaxDepth
+	case out.MaxDepth < 0:
+		out.MaxDepth = 0
 	}
 	return &out
 }

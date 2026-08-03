@@ -141,6 +141,16 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 		return nil, err
 	}
 
+	// One estimator for the whole session, so Observe actually accumulates.
+	// It had no callers at all, and e.estimate built a fresh one per call, so
+	// every reservation was the cold seed forever and §8.4's "improves with
+	// use" never happened. That mattered more once the sub-budget started
+	// deriving the actor's ceiling from the reservation: a permanently wrong
+	// estimate now caps how much work each lead may do.
+	if e.Estimator == nil {
+		e.Estimator = budget.NewEstimator(sess.BudgetUnit)
+	}
+
 	res := &Result{SessionID: sessionID, Status: core.StatusDone}
 	digest := planner.NewDigest(sess.Prompt, 0)
 	res.Digest = digest
@@ -154,11 +164,16 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 	leadQuestion := map[string]string{}
 
 	// 1. Decompose.
-	plan, err := e.Planner.InitialLeads(ctx, sess)
-	if err := e.settlePlanner(ctx, sess, plan, err); err != nil {
+	plan, err := e.planWithBudget(ctx, sess, func() (*planner.Plan, error) {
+		return e.Planner.InitialLeads(ctx, sess)
+	})
+	if err != nil {
+		// The one planning failure that IS fatal: with no initial plan there is
+		// nothing to research. Reported through Status like every other outcome
+		// rather than as a returned error, so callers have one thing to read.
 		res.Status = core.StatusFailed
 		res.StoppedBecause = "planning failed: " + err.Error()
-		return res, err
+		return res, nil
 	}
 	// Map leads to the IDs the DIGEST assigned, not the ones the model supplied
 	// — those collide across replans, and a positional mapping onto the input
@@ -215,9 +230,15 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 			}
 			added, done, err := e.replan(ctx, sess, digest, depth, res, leadQuestion)
 			if err != nil {
-				res.Status = core.StatusFailed
-				res.StoppedBecause = "replan failed: " + err.Error()
-				return res, err
+				// A failed replan at drain time is the END of the research, not
+				// a failed session. §9.5 classifies 429/5xx/timeout as transient
+				// — never abort — and this used to return, so a complete run
+				// with claims collected reported as failed with a non-zero exit
+				// because its last planner call got throttled. The mid-loop
+				// replan below already only warns; the two now agree.
+				e.logger().WarnContext(ctx, "final replan failed; ending with what was found", "err", err)
+				res.StoppedBecause = "final replan failed: " + err.Error()
+				break
 			}
 			completedSinceReplan = 0
 			if done || added == 0 {
@@ -251,7 +272,7 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 		// Counting first makes the lead that reaches the ceiling fail on its
 		// own reservation instead of running and stopping the next one, which
 		// turns "we did the work we were allowed" into "the last lead errored".
-		if err := e.countLead(ctx, sessionID); err != nil {
+		if err := e.countLead(context.WithoutCancel(ctx), sessionID); err != nil {
 			e.logger().WarnContext(ctx, "could not count a lead; the max_leads ceiling may not bind",
 				"lead", lease.Lead.ID, "err", err)
 		}
@@ -333,9 +354,7 @@ func (e *Executor) completeFromCache(
 		digest.RecordDeadEnd("no_evidence", lease.Lead.Query)
 	}
 
-	if err := e.Queue.Complete(ctx, lease, core.LeadSkippedCache); err != nil {
-		e.logger().WarnContext(ctx, "could not complete a cached lead", "lead", lease.Lead.ID, "err", err)
-	}
+	e.complete(ctx, lease, core.LeadSkippedCache)
 	return true
 }
 
@@ -366,7 +385,7 @@ func (e *Executor) runLead(
 	if !ok {
 		err := fmt.Errorf("executor: no actor registered for %q", lead.ActorType)
 		digest.RecordDeadEnd("no_actor", lead.Query)
-		_ = e.Queue.Complete(ctx, lease, core.LeadFailed)
+		e.complete(ctx, lease, core.LeadFailed)
 		return leadOutcome{err: err, class: Fatal}
 	}
 
@@ -386,7 +405,7 @@ func (e *Executor) runLead(
 			}
 		}
 
-		out := e.attempt(ctx, sess, lead, actor)
+		out := e.attempt(ctx, sess, lead, actor, lease)
 		last = out
 
 		if out.err == nil {
@@ -401,7 +420,7 @@ func (e *Executor) runLead(
 				Claims:  len(out.claims),
 				Summary: out.summary,
 			})
-			_ = e.Queue.Complete(ctx, lease, core.LeadDone)
+			e.complete(ctx, lease, core.LeadDone)
 			return out
 		}
 		if out.class != Transient {
@@ -420,12 +439,12 @@ func (e *Executor) runLead(
 	if last.class != Fatal {
 		last.class = Degraded
 	}
-	_ = e.Queue.Complete(ctx, lease, core.LeadFailed)
+	e.complete(ctx, lease, core.LeadFailed)
 	return last
 }
 
 // attempt is one reserve → run → settle cycle.
-func (e *Executor) attempt(ctx context.Context, sess *core.Session, lead core.Lead, actor actors.Actor) leadOutcome {
+func (e *Executor) attempt(ctx context.Context, sess *core.Session, lead core.Lead, actor actors.Actor, lease *queue.Lease) leadOutcome {
 	est := e.estimate(sess, lead)
 	if avail := sess.Available(); est > avail {
 		est = avail
@@ -442,7 +461,13 @@ func (e *Executor) attempt(ctx context.Context, sess *core.Session, lead core.Le
 	// §9.2's withSubBudget. The reservation is the only ceiling that knows what
 	// this lead may cost; without passing it the actor's configured budget bore
 	// no relation to the money held for it.
+	// Heartbeat while the lead runs. Renew used to be called only BETWEEN
+	// retries, so a lead that legitimately outlasted the lease TTL — a slow
+	// fetch plus a slow model call — silently lost its lease and became eligible
+	// for a sweep, which is §9.4's "workers heartbeat their lease" unimplemented.
+	stopHeartbeat := e.heartbeat(ctx, lease)
 	result, runErr := actor.Run(actors.WithSubBudget(ctx, e.subBudget(sess, est)), lead)
+	stopHeartbeat()
 
 	// Settle unconditionally. The tokens were billed either way, and a
 	// reservation left held is budget neither spent nor available.
@@ -456,6 +481,11 @@ func (e *Executor) attempt(ctx context.Context, sess *core.Session, lead core.Le
 			"lead", lead.ID, "err", err)
 		return leadOutcome{err: err, class: Fatal}
 	}
+	// Feed the estimate back before anything else. Even an overshoot is a
+	// sample — arguably the most valuable one, since it is the case the seed
+	// got wrong.
+	e.Estimator.Observe(lead.ActorType, lead.Depth, settled.Charged)
+
 	// §8.2 bounds overshoot to estimate error on a single lead. Flagged means
 	// the actual cost cleared the reserved amount by more than the configured
 	// factor, which is not estimate error — it is the sub-budget failing to
@@ -493,9 +523,11 @@ func (e *Executor) replan(
 	res *Result,
 	leadQuestion map[string]string,
 ) (added int, done bool, err error) {
-	plan, perr := e.Planner.Replan(ctx, sess, digest, depth)
-	if err := e.settlePlanner(ctx, sess, plan, perr); err != nil {
-		return 0, false, err
+	plan, perr := e.planWithBudget(ctx, sess, func() (*planner.Plan, error) {
+		return e.Planner.Replan(ctx, sess, digest, depth)
+	})
+	if perr != nil {
+		return 0, false, perr
 	}
 	res.Replans++
 
@@ -524,48 +556,101 @@ func (e *Executor) replan(
 	return len(plan.Leads), false, nil
 }
 
-// settlePlanner charges a planning call.
+// planWithBudget reserves, runs a planning call, and settles it.
 //
-// Planner tokens are spent whether or not the plan parsed, and they are charged
-// to the planner role so §14.3's role breakdown can show what planning cost —
-// the number that says whether the digest is doing its job.
-func (e *Executor) settlePlanner(ctx context.Context, sess *core.Session, plan *planner.Plan, callErr error) error {
-	if plan == nil {
-		return callErr
+// Reserve BEFORE the call, which is §8.2's order and was inverted here: the call
+// happened first and a reservation of exactly 1 was taken afterwards purely to
+// have something to settle against. Two consequences, both measured. Planner
+// spend was never gated — a 5000-token decomposition ran against a 1000-token
+// budget — and when the after-the-fact reserve was refused because a ceiling had
+// just fired, the cost was logged and dropped: 920 tokens spent, 460 recorded.
+//
+// Planner cost is charged to the planner role, so §14.3's breakdown can show
+// what planning cost — the number that says whether the digest is doing its job.
+func (e *Executor) planWithBudget(ctx context.Context, sess *core.Session, call func() (*planner.Plan, error)) (*planner.Plan, error) {
+	est := budget.PlannerSeed(sess.BudgetUnit)
+	if avail := sess.Available(); est > avail {
+		est = avail
 	}
-	if plan.Usage.IsZero() {
-		return callErr
+	if est <= 0 {
+		return nil, fmt.Errorf("%w: nothing left to plan with", budget.ErrInsufficientBudget)
 	}
 
-	reservation, err := e.Ledger.Reserve(ctx, sess.ID, 1)
+	reservation, err := e.Ledger.Reserve(ctx, sess.ID, est)
 	if err != nil {
-		// No budget left to even record the call. The cost is real, so say so
-		// loudly rather than dropping it silently.
-		e.logger().ErrorContext(ctx, "could not reserve to settle a planner call; cost unrecorded",
-			"session", sess.ID, "err", err)
-		return callErr
+		return nil, err
 	}
 
-	tc := core.ToolCall{
-		SessionID: sess.ID,
-		Role:      core.RolePlanner,
-		Type:      core.CallLLM,
-		Model:     plan.Model,
-		Input:     "plan",
-		Cost: core.Cost{
-			InputTokens:      plan.Usage.InputTokens,
-			OutputTokens:     plan.Usage.OutputTokens,
-			CacheReadTokens:  plan.Usage.CacheReadTokens,
-			CacheWriteTokens: plan.Usage.CacheWriteTokens,
-		},
+	plan, callErr := call()
+
+	// Settle unconditionally: the tokens were spent whether or not the plan
+	// parsed, and a reservation left held is budget neither spent nor available.
+	var calls []core.ToolCall
+	if plan != nil && !plan.Usage.IsZero() {
+		tc := core.ToolCall{
+			SessionID: sess.ID,
+			Role:      core.RolePlanner,
+			Type:      core.CallLLM,
+			Model:     plan.Model,
+			Input:     "plan",
+			Cost: core.Cost{
+				InputTokens:      plan.Usage.InputTokens,
+				OutputTokens:     plan.Usage.OutputTokens,
+				CacheReadTokens:  plan.Usage.CacheReadTokens,
+				CacheWriteTokens: plan.Usage.CacheWriteTokens,
+			},
+		}
+		if callErr != nil {
+			tc.Err = callErr.Error()
+		}
+		calls = append(calls, tc)
 	}
-	if callErr != nil {
-		tc.Err = callErr.Error()
+	if _, err := e.Ledger.Settle(context.WithoutCancel(ctx), reservation, calls); err != nil {
+		e.logger().ErrorContext(ctx, "settling a planner call failed; accounting is now unreliable", "err", err)
 	}
-	if _, err := e.Ledger.Settle(context.WithoutCancel(ctx), reservation, []core.ToolCall{tc}); err != nil {
-		e.logger().ErrorContext(ctx, "settling a planner call failed", "err", err)
+	return plan, callErr
+}
+
+// heartbeat renews a lease in the background until the returned function is
+// called.
+//
+// Renews at a third of the TTL, so two consecutive failures still leave time to
+// recover before the lease expires.
+func (e *Executor) heartbeat(ctx context.Context, lease *queue.Lease) func() {
+	interval := e.Queue.TTL() / 3
+	if interval <= 0 {
+		return func() {}
 	}
-	return callErr
+
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				// A lost lease is not recoverable from here: another worker may
+				// hold the lead. Log and stop renewing; the run's own checks
+				// surface it.
+				if ok, err := e.Queue.Renew(context.WithoutCancel(ctx), lease); err != nil || !ok {
+					e.logger().WarnContext(ctx, "lease renewal failed mid-lead",
+						"lead", lease.Lead.ID, "ok", ok, "err", err)
+					return
+				}
+			}
+		}
+	}()
+
+	return func() {
+		close(done)
+		<-stopped
+	}
 }
 
 // subBudget derives the actor's per-lead ceiling from the reserved amount.
@@ -613,6 +698,19 @@ func (e *Executor) tokensForMicros(micros int64) int64 {
 	return micros * pricing.NanoPerMicro / rate.Input
 }
 
+// complete terminalizes a lead, surviving cancellation.
+//
+// On the same context as the run, a cancelled session settled the charge (Settle
+// uses WithoutCancel) and then failed to complete the lead — leaving a lead that
+// ran and was paid for recorded as still leased, for a later sweep to requeue
+// and re-run.
+func (e *Executor) complete(ctx context.Context, lease *queue.Lease, status core.LeadStatus) {
+	if err := e.Queue.Complete(context.WithoutCancel(ctx), lease, status); err != nil {
+		e.logger().ErrorContext(ctx, "could not complete a lead; it may be re-run and re-charged",
+			"lead", lease.Lead.ID, "status", status, "err", err)
+	}
+}
+
 // countLead increments the session's dispatched-lead counter, which is what
 // makes MaxLeads enforceable.
 func (e *Executor) countLead(ctx context.Context, sessionID string) error {
@@ -622,11 +720,10 @@ func (e *Executor) countLead(ctx context.Context, sessionID string) error {
 }
 
 func (e *Executor) estimate(sess *core.Session, lead core.Lead) int64 {
-	est := e.Estimator
-	if est == nil {
-		est = budget.NewEstimator(sess.BudgetUnit)
+	if e.Estimator == nil {
+		e.Estimator = budget.NewEstimator(sess.BudgetUnit)
 	}
-	return est.For(lead.ActorType, lead.Depth)
+	return e.Estimator.For(lead.ActorType, lead.Depth)
 }
 
 func (e *Executor) owner() string {

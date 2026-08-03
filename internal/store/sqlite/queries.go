@@ -769,10 +769,21 @@ func (t *queries) ListLeads(ctx context.Context, sessionID string, limit int) ([
 	return out, rows.Err()
 }
 
-func (t *queries) SetLeadStatus(ctx context.Context, id string, status core.LeadStatus) error {
-	res, err := t.q.ExecContext(ctx,
-		`UPDATE leads SET status = ?, updated_at = ? WHERE id = ?`,
-		string(status), toMicros(time.Now()), id)
+func (t *queries) SetLeadStatus(ctx context.Context, id, owner string, status core.LeadStatus) error {
+	// Clear the lease alongside the status. Leaving lease_owner set on a
+	// terminal lead let ReleaseLease — which matches on owner alone — flip a
+	// finished lead back to queued, to be re-run and re-charged.
+	query := `UPDATE leads SET status = ?, lease_owner = NULL, lease_expires = NULL, updated_at = ?
+	           WHERE id = ?`
+	args := []any{string(status), toMicros(time.Now()), id}
+	if owner != "" {
+		// A worker that lost its lease must not terminalize a lead someone else
+		// now holds.
+		query += ` AND lease_owner = ?`
+		args = append(args, owner)
+	}
+
+	res, err := t.q.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("sqlite: set lead status: %w", err)
 	}
@@ -857,11 +868,21 @@ func (t *queries) ReleaseLease(ctx context.Context, leadID, owner string) error 
 }
 
 // SweepExpiredLeases requeues leads whose worker died (§9.4).
-func (t *queries) SweepExpiredLeases(ctx context.Context, now time.Time) (int, error) {
-	res, err := t.q.ExecContext(ctx, `
+func (t *queries) SweepExpiredLeases(ctx context.Context, sessionID string, now time.Time) (int, error) {
+	// Terminal sessions are excluded: requeueing their leads produces rows no
+	// executor will ever lease (LeaseNextLead filters by session), so the CLI
+	// reports "recovered N leads" for work that is permanently stuck.
+	query := `
 		UPDATE leads SET status = ?, lease_owner = NULL, lease_expires = NULL, updated_at = ?
-		 WHERE status = ? AND lease_expires IS NOT NULL AND lease_expires < ?`,
-		string(core.LeadQueued), toMicros(now), string(core.LeadLeased), toMicros(now))
+		 WHERE status = ? AND lease_expires IS NOT NULL AND lease_expires < ?
+		   AND session_id IN (SELECT id FROM sessions WHERE status = 'running')`
+	args := []any{string(core.LeadQueued), toMicros(now), string(core.LeadLeased), toMicros(now)}
+	if sessionID != "" {
+		query += ` AND session_id = ?`
+		args = append(args, sessionID)
+	}
+
+	res, err := t.q.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("sqlite: sweep expired leases: %w", err)
 	}

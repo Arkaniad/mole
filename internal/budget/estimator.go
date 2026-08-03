@@ -46,6 +46,22 @@ func depthBucket(d int) int {
 // SeedsUSD are cold-start estimates in micro-dollars, deliberately generous.
 // Over-reserving briefly under-utilizes the budget; under-reserving lets work
 // start that cannot be paid for.
+// PlannerSeed is the reservation for one planning call, per budget unit.
+//
+// A planning call has no actor, so the actor-keyed seeds do not apply. Reserving
+// a token before the fact — which is what the loop used to do — means planner
+// spend is never gated at all: a 5000-token decomposition against a 1000-token
+// budget went through unopposed.
+//
+// Sized generously relative to a lead, because being refused a planning call is
+// worse than being refused a lead: without a plan there is nothing to research.
+func PlannerSeed(unit core.BudgetUnit) int64 {
+	if unit == core.BudgetTokens {
+		return 4_000
+	}
+	return 20_000 // $0.02
+}
+
 func SeedsUSD() map[core.ActorType]int64 {
 	return map[core.ActorType]int64{
 		core.ActorWeb:          60_000, // $0.06

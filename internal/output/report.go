@@ -112,12 +112,26 @@ func (g *Generator) Generate(ctx context.Context, st store.Store, sessionID stri
 		return rep, nil
 	}
 
+	// No model available or affordable: return the evidence without prose. The
+	// escrow already paid to collect it, and verified claims with citations are
+	// a real answer — less readable, not less true.
+	if gen.LLM == nil {
+		kept := mostConfident(claims, gen.MaxClaims)
+		rep.Citations = numberSources(kept)
+		index := map[string]int{}
+		for _, c := range rep.Citations {
+			index[c.Source] = c.N
+		}
+		rep.Body = fallbackBody(sess.Prompt, kept, index)
+		rep.Degraded = "no budget left to synthesize; evidence listed unsynthesized"
+		return rep, nil
+	}
+
 	kept := claims
 	if len(kept) > gen.MaxClaims {
 		// Keep the most confident. Truncating arbitrarily would drop evidence
 		// the pipeline rated highest.
-		sort.SliceStable(kept, func(i, j int) bool { return kept[i].Confidence > kept[j].Confidence })
-		kept = kept[:gen.MaxClaims]
+		kept = mostConfident(claims, gen.MaxClaims)
 		rep.Degraded = fmt.Sprintf("%d of %d claims included; the rest did not fit the report budget",
 			gen.MaxClaims, len(claims))
 	}
@@ -163,6 +177,20 @@ func (g *Generator) Generate(ctx context.Context, st store.Store, sessionID stri
 		rep.Degraded = "synthesis returned nothing"
 	}
 	return rep, nil
+}
+
+// mostConfident keeps the n highest-confidence claims.
+//
+// Sorts a copy: Generate used to sort the slice it was handed, which aliases the
+// caller's backing array. Harmless while it comes straight from a store read,
+// and invisible at the call site if that ever changes.
+func mostConfident(claims []*core.Claim, n int) []*core.Claim {
+	out := append([]*core.Claim(nil), claims...)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Confidence > out[j].Confidence })
+	if n > 0 && len(out) > n {
+		out = out[:n]
+	}
+	return out
 }
 
 // numberSources assigns each distinct source a citation number in first-seen

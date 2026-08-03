@@ -14,6 +14,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -41,6 +42,9 @@ func New(st store.Store, ttl time.Duration) *Queue {
 	}
 	return &Queue{st: st, ttl: ttl, now: time.Now}
 }
+
+// TTL is the lease duration in force, so a caller can size a heartbeat from it.
+func (q *Queue) TTL() time.Duration { return q.ttl }
 
 // SetClock overrides time, for tests.
 func (q *Queue) SetClock(now func() time.Time) { q.now = now }
@@ -121,10 +125,20 @@ func (q *Queue) Complete(ctx context.Context, l *Lease, status core.LeadStatus) 
 	default:
 		return fmt.Errorf("queue: %q is not a terminal lead status", status)
 	}
-	return q.st.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
-		return tx.SetLeadStatus(ctx, l.Lead.ID, status)
+	err := q.st.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.SetLeadStatus(ctx, l.Lead.ID, l.Owner, status)
 	})
+	if errors.Is(err, store.ErrNotFound) {
+		// The lease is gone — swept, and possibly re-leased. Distinguishable so
+		// the caller can stop rather than treat a lost lead as completed.
+		return fmt.Errorf("%w: lease for lead %s is no longer held by %s",
+			ErrLeaseLost, l.Lead.ID, l.Owner)
+	}
+	return err
 }
+
+// ErrLeaseLost means the lease was taken before the operation could complete.
+var ErrLeaseLost = errors.New("queue: lease lost")
 
 // Release returns a lead to the queue without completing it.
 func (q *Queue) Release(ctx context.Context, l *Lease) error {
@@ -133,16 +147,21 @@ func (q *Queue) Release(ctx context.Context, l *Lease) error {
 	})
 }
 
-// Sweep requeues every lead whose lease has expired, across all sessions.
+// Sweep requeues leads whose lease has expired.
 //
-// Run at boot and periodically. At boot it is the recovery step §9.4 describes:
-// after a crash, every lead the dead process held is leased with an expiry in
-// the past, and without this they stay that way.
-func (q *Queue) Sweep(ctx context.Context) (int, error) {
+// sessionID scopes it. A running executor must pass its own: an unscoped sweep
+// requeues another live process's in-flight leases, and since nothing stops that
+// process finishing its lead, both end up running it and both settle a charge.
+// Confirmed reachable with a single worker — the database has no exclusive lock.
+//
+// Empty sessionID sweeps every running session, which is what boot recovery
+// needs (§9.4): after a crash every lead the dead process held is leased with an
+// expiry in the past, and without this they stay that way.
+func (q *Queue) Sweep(ctx context.Context, sessionID string) (int, error) {
 	var n int
 	err := q.st.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
 		var err error
-		n, err = tx.SweepExpiredLeases(ctx, q.now())
+		n, err = tx.SweepExpiredLeases(ctx, sessionID, q.now())
 		return err
 	})
 	return n, err

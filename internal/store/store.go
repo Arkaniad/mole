@@ -132,7 +132,11 @@ type Tx interface {
 	RecordFetchOutcome(ctx context.Context, o *FetchOutcome) error
 
 	InsertLead(ctx context.Context, l *core.Lead) error
-	SetLeadStatus(ctx context.Context, id string, status core.LeadStatus) error
+	// SetLeadStatus moves a lead to a terminal state. owner must match the
+	// lease holder; an empty owner skips the check, for callers that legitimately
+	// have no lease. Without it a worker that lost its lease could terminalize a
+	// lead another worker now holds.
+	SetLeadStatus(ctx context.Context, id, owner string, status core.LeadStatus) error
 
 	// LeaseNextLead atomically claims the highest-priority queued lead.
 	//
@@ -152,7 +156,11 @@ type Tx interface {
 
 	// SweepExpiredLeases requeues leads whose worker died. Without it a crash
 	// strands them as leased forever, with no way out (§9.4).
-	SweepExpiredLeases(ctx context.Context, now time.Time) (int, error)
+	//
+	// sessionID scopes the sweep. Empty means every session, which is what boot
+	// recovery needs; a running executor must pass its own, or it requeues
+	// another live process's in-flight leads and both end up running the lead.
+	SweepExpiredLeases(ctx context.Context, sessionID string, now time.Time) (int, error)
 
 	// InsertClaims writes a batch in one transaction. Claims from one actor
 	// run land together or not at all: a partial batch would leave the graph

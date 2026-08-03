@@ -30,9 +30,10 @@ import (
 // ---------------------------------------------------------------------------
 
 type scriptedLLM struct {
-	mu      sync.Mutex
-	replies []string
-	calls   int
+	mu       sync.Mutex
+	replies  []string
+	calls    int
+	errAfter int // when >0, calls at or past this index fail
 }
 
 func (s *scriptedLLM) Name() string               { return "fake" }
@@ -42,14 +43,18 @@ func (s *scriptedLLM) Complete(ctx context.Context, req llm.Request) (*llm.Respo
 	defer s.mu.Unlock()
 	i := s.calls
 	s.calls++
-	text := `{"done":true}`
-	if i < len(s.replies) {
-		text = s.replies[i]
-	}
-	return &llm.Response{
-		Model: "fake-model", Text: text,
+	resp := &llm.Response{
+		Model: "fake-model",
 		Usage: llm.Usage{InputTokens: 400, OutputTokens: 60},
-	}, nil
+	}
+	if s.errAfter > 0 && i >= s.errAfter {
+		return resp, llm.ErrRateLimited
+	}
+	resp.Text = `{"done":true}`
+	if i < len(s.replies) {
+		resp.Text = s.replies[i]
+	}
+	return resp, nil
 }
 
 func planJSON(questions ...string) string {
@@ -896,4 +901,36 @@ func (b *budgetSpy) Run(ctx context.Context, lead core.Lead) (*actors.Result, er
 	sub, _ := actors.SubBudgetFrom(ctx)
 	*b.seen = append(*b.seen, sub)
 	return okResult(1, 1_000), nil
+}
+
+// TestFinalReplanFailureDoesNotFailTheSession. §9.5 classifies 429/5xx/timeout
+// as transient — never abort. This path used to return, so a complete run with
+// claims collected reported as failed with a non-zero exit because its last
+// planner call got throttled.
+func TestFinalReplanFailureDoesNotFailTheSession(t *testing.T) {
+	// One question, then the drain-time replan errors.
+	fl := &scriptedLLM{replies: []string{planJSON("only one")}}
+	fl.errAfter = 1
+
+	r := newRig(t, 20*core.MicrosPerUSD, nil,
+		func(int, core.Lead) (*actors.Result, error) { return okResult(3, 10_000), nil })
+	r.exec.Planner = &planner.Planner{LLM: fl, MaxInitialLeads: 1, ReplanEvery: 99, MaxDepth: 2}
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatalf("a throttled final replan returned an error: %v", err)
+	}
+	if res.Status == core.StatusFailed {
+		t.Errorf("status = failed after collecting %d claims; §9.5 says degrade", len(res.Claims))
+	}
+	if len(res.Claims) != 3 {
+		t.Errorf("%d claims survived, want 3", len(res.Claims))
+	}
+	// The spend read must still happen — the early return used to skip it.
+	if res.Spent == 0 {
+		t.Error("Spent is 0 on a run that charged for a lead and two planner calls")
+	}
+	if !strings.Contains(res.StoppedBecause, "replan") {
+		t.Errorf("stopped because %q, want it to name the replan", res.StoppedBecause)
+	}
 }
