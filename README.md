@@ -184,6 +184,13 @@ make cover
 Tests use real on-disk SQLite (not `:memory:`) so they exercise the actual WAL
 and single-writer configuration the daemon runs. Nothing touches the network.
 
+The CLI tests drive the real command tree, so they redirect `MOLE_DB` and
+`MOLE_CONFIG_DIR` to temporary paths — enforced by
+`TestCLITestsCannotReachTheRealEnvironment`. Without that they used the
+developer's live config and database, and once a reachable local model was
+configured they created sessions in it and blocked on real model calls. A test
+that is safe only because a provider happens to be unreachable is not safe.
+
 The suites that carry weight:
 
 | Test | Guards against |

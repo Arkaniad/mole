@@ -2,14 +2,30 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 // exec runs the real command tree against captured output, so these assert what
 // a user gets rather than what an internal function returns.
+//
+// ISOLATED, and that is not optional. These drive the actual commands, so
+// without redirecting the database and the config they use the developer's real
+// ones — which is exactly what happened: the flag-parsing test below created
+// sessions in a live database and, once a reachable local model was configured,
+// started making real model calls and hung until the test timeout.
+//
+// The empty config directory is what keeps that impossible: no search provider
+// is configured, so `research` refuses before it can reach any provider. A test
+// that asserts flag parsing must not depend on being unable to reach the
+// network — it must be unable to get that far.
 func exec(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	t.Setenv("MOLE_CONFIG_DIR", t.TempDir())
+	t.Setenv("MOLE_DB", filepath.Join(t.TempDir(), "cli-test.db"))
+
 	root := newRootCmd()
 	var out bytes.Buffer
 	root.SetOut(&out)
@@ -36,11 +52,17 @@ func TestFlagsAfterPositionalsAreParsed(t *testing.T) {
 	} {
 		_, err := exec(t, args...)
 		if err == nil {
-			continue // reached execution: the budget parsed
+			t.Errorf("%v: expected a refusal from the empty test config", args)
+			continue
 		}
-		// Whatever it failed on, it must not be a missing budget.
+		// It must fail on the missing search provider — which proves the budget
+		// parsed, because resolveBudget runs first and would have refused there.
 		if strings.Contains(err.Error(), "no budget given") {
 			t.Errorf("%v: --usd was not parsed", args)
+		}
+		if !strings.Contains(err.Error(), "search provider") {
+			t.Errorf("%v: failed on %q, not on the expected missing provider — "+
+				"the test may be reaching a real provider", args, err)
 		}
 	}
 }
@@ -159,5 +181,38 @@ func TestEvalRequiresASession(t *testing.T) {
 	_, err := exec(t, "eval")
 	if err == nil || !strings.Contains(err.Error(), "mole eval") {
 		t.Errorf("err = %v, want the usage line", err)
+	}
+}
+
+// TestCLITestsCannotReachTheRealEnvironment guards the isolation above.
+//
+// The flag-parsing test drives the real `research` command. Without redirected
+// paths it used the developer's live config and database, so once a reachable
+// local model was configured it created sessions in that database and blocked on
+// real model calls until the test timeout. The README's "nothing touches the
+// network" stopped being true, and nothing noticed.
+//
+// A test that is safe only because a provider happens to be unreachable is not
+// safe. This asserts the redirection itself.
+func TestCLITestsCannotReachTheRealEnvironment(t *testing.T) {
+	realDB := defaultDBPath()
+
+	// exec sets both env vars; observe what a command actually resolves.
+	out, err := exec(t, "sessions", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = out
+
+	if got := os.Getenv("MOLE_DB"); got == "" || got == realDB {
+		t.Errorf("MOLE_DB = %q, which is not an isolated path (real: %q)", got, realDB)
+	}
+	if got := os.Getenv("MOLE_CONFIG_DIR"); got == "" {
+		t.Error("MOLE_CONFIG_DIR was not redirected; tests would read the real config")
+	}
+	// And the isolated config must be empty, so no provider is reachable.
+	if _, err := exec(t, "research", "a question", "--usd", "1.00"); err == nil ||
+		!strings.Contains(err.Error(), "search provider") {
+		t.Errorf("research got past the provider check with an isolated config: %v", err)
 	}
 }

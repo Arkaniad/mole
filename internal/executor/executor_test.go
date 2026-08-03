@@ -1084,3 +1084,48 @@ func TestSpentIsReportedOnACancelledRun(t *testing.T) {
 		t.Errorf("%d leads left leased after cancellation; they ran and were paid for", stats.Leased)
 	}
 }
+
+// TestInterruptDuringInitialPlanningIsCancelledNotFailed. With no plan there is
+// nothing to research either way, but WHY the session ended is not the same
+// thing: a deliberate Ctrl-C reported as a failure looks like a crash to
+// whoever reads the status or the exit code.
+//
+// Found on a real run — a local model too slow to finish, interrupted, and the
+// session recorded as failed.
+func TestInterruptDuringInitialPlanningIsCancelledNotFailed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	r := newRig(t, 20*core.MicrosPerUSD, nil, nil)
+	// A planner whose call is interrupted mid-flight, exactly as an HTTP round
+	// trip is when the signal arrives.
+	r.exec.Planner = &planner.Planner{LLM: &cancellingLLM{cancel: cancel}, MaxDepth: 1}
+
+	res, err := r.exec.Run(ctx, r.sess.ID)
+	if err != nil {
+		t.Fatalf("run returned an error rather than a status: %v", err)
+	}
+	if res.Status != core.StatusCancelled {
+		t.Errorf("status = %s, want cancelled — an interrupt is not a failure", res.Status)
+	}
+
+	// And nothing may be left held.
+	if after := r.reload(t); after.Held != 0 {
+		t.Errorf("%d held after an interrupted plan", after.Held)
+	}
+	v, _ := r.led.Verify(context.Background(), r.sess.ID)
+	if !v.Consistent() {
+		t.Error("the ledger does not reconcile after an interrupted plan")
+	}
+}
+
+// cancellingLLM cancels the context and then fails, which is what an
+// interrupted HTTP round trip looks like from the caller's side.
+type cancellingLLM struct{ cancel context.CancelFunc }
+
+func (c *cancellingLLM) Name() string               { return "cancelling" }
+func (c *cancellingLLM) ModelFor(t llm.Tier) string { return "m" }
+func (c *cancellingLLM) Complete(ctx context.Context, req llm.Request) (*llm.Response, error) {
+	c.cancel()
+	return &llm.Response{Model: "m", Usage: llm.Usage{InputTokens: 100}},
+		fmt.Errorf("Post \"http://127.0.0.1:11434/v1/chat/completions\": %w", context.Canceled)
+}

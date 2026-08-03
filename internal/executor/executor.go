@@ -168,10 +168,16 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 		return e.Planner.InitialLeads(ctx, sess)
 	})
 	if err != nil {
-		// The one planning failure that IS fatal: with no initial plan there is
-		// nothing to research. Reported through Status like every other outcome
-		// rather than as a returned error, so callers have one thing to read.
+		// With no initial plan there is nothing to research, so this ends the
+		// session either way — but WHY it ended is not the same thing. A user
+		// pressing Ctrl-C during the first planner call is a cancellation, and
+		// reporting it as a failure makes a deliberate interrupt look like a
+		// crash to whoever reads the status or the exit code. The main loop
+		// already distinguishes these; this path did not.
 		res.Status = core.StatusFailed
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			res.Status = statusForContext(ctxErr)
+		}
 		res.StoppedBecause = "planning failed: " + err.Error()
 		return res, nil
 	}
