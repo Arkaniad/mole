@@ -12,6 +12,7 @@ import (
 
 	"github.com/lajosdeme/mole/internal/actors"
 	"github.com/lajosdeme/mole/internal/budget"
+	"github.com/lajosdeme/mole/internal/cache"
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/executor"
@@ -209,10 +210,16 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 		fmt.Printf(" recovered %d lead(s) stranded by a previous run\n", n)
 	}
 
+	// One cache shared between the loop and the actor, so a lead-level hit and
+	// a URL-level hit are the same cache and one lead's fetches serve another's.
+	sessionCache := cache.New()
+	actor.Cache = sessionCache
+
 	exec := &executor.Executor{
 		Store:   db,
 		Ledger:  led,
 		Queue:   q,
+		Cache:   sessionCache,
 		Planner: &planner.Planner{LLM: actor.LLM, MaxDepth: o.maxDepth},
 		Actors:  map[core.ActorType]actors.Actor{core.ActorWeb: actor},
 		Log:     actor.Log,
@@ -224,7 +231,9 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 		out.Status = string(runRes.Status)
 		out.LeadsRun = runRes.LeadsRun
 		out.LeadsFailed = runRes.LeadsFailed
+		out.LeadsCached = runRes.LeadsCached
 		out.Replans = runRes.Replans
+		out.CacheHits = runRes.CacheStats.Hits
 		out.Claims = runRes.Claims
 		out.StoppedBecause = runRes.StoppedBecause
 		if runRes.Digest != nil {
@@ -536,6 +545,8 @@ type researchOutput struct {
 
 	LeadsRun      int `json:"leads_run"`
 	LeadsFailed   int `json:"leads_failed"`
+	LeadsCached   int `json:"leads_cached"`
+	CacheHits     int `json:"cache_hits"`
 	Replans       int `json:"replans"`
 	OpenQuestions int `json:"open_questions"`
 
@@ -560,6 +571,10 @@ func printProgress(res *executor.Result, unit core.BudgetUnit) {
 	}
 	fmt.Printf(" %s %d lead(s) run, %d failed  ·  %d replan(s)  ·  %d claim(s)\n",
 		mark, res.LeadsRun, res.LeadsFailed, res.Replans, len(res.Claims))
+	if res.LeadsCached > 0 || res.CacheStats.Hits > 0 {
+		fmt.Printf("   cache: %d lead(s) reused, %d source(s) served without a fetch\n",
+			res.LeadsCached, res.CacheStats.Hits)
+	}
 	if res.StoppedBecause != "" {
 		fmt.Printf("   stopped: %s\n", res.StoppedBecause)
 	}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/lajosdeme/mole/internal/actors"
 	"github.com/lajosdeme/mole/internal/budget"
+	"github.com/lajosdeme/mole/internal/cache"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/executor"
 	"github.com/lajosdeme/mole/internal/llm"
@@ -620,5 +621,153 @@ func TestReservationIsClampedToWhatRemains(t *testing.T) {
 	}
 	if after.Held != 0 {
 		t.Errorf("%d held after a clamped run", after.Held)
+	}
+}
+
+// TestCachedLeadReturnsAResultRatherThanSkipping is §9.3's correctness fix, and
+// the reason the cache is result-returning rather than a skip list.
+//
+// Rev 1 did `if cache.SeenRecently(lead) { continue }`. The planner asked for
+// something and got nothing back, so the next replan spawned an equivalent lead
+// and the loop livelocked. Recording the coverage is what closes it: the planner
+// learns the question was answered.
+func TestCachedLeadReturnsAResultRatherThanSkipping(t *testing.T) {
+	// A planner that keeps proposing the SAME question — exactly the livelock
+	// shape. Without a result-returning cache this never converges.
+	replies := []string{
+		planJSON("the same question"),
+		planJSON("the same question"),
+		planJSON("the same question"),
+		planJSON("the same question"),
+		`{"done":true}`,
+	}
+	r := newRig(t, 50*core.MicrosPerUSD, replies,
+		func(int, core.Lead) (*actors.Result, error) { return okResult(3, 10_000), nil })
+	r.exec.Cache = cache.New()
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The actor must run the question once, not once per proposal.
+	if got := r.actor.count(); got != 1 {
+		t.Errorf("the actor ran %d times for one repeated question, want 1", got)
+	}
+	if res.LeadsCached == 0 {
+		t.Error("no lead was served from cache")
+	}
+	// The precise assertion: every cached hit must ADD its coverage to the
+	// digest. A substring check on "claim(s) found" is vacuous — every open
+	// question prints that line whether or not anything was found — so count
+	// instead. One real run plus N cached hits at 3 claims each.
+	//
+	// This is what distinguishes a result-returning cache from a skip list. A
+	// skip records nothing, so the total stays at the single real run's 3, the
+	// planner never learns the question was answered, and it keeps proposing it.
+	wantClaims := 3 * (1 + res.LeadsCached)
+	if res.Digest.ClaimsFound != wantClaims {
+		t.Errorf("digest recorded %d claims across %d cached lead(s) and 1 real one, want %d — "+
+			"a cache hit is not reporting its coverage",
+			res.Digest.ClaimsFound, res.LeadsCached, wantClaims)
+	}
+}
+
+// TestCachedLeadsCostNothing. A hit that charged would make the cache a
+// rounding error rather than a saving.
+func TestCachedLeadsCostNothing(t *testing.T) {
+	replies := []string{planJSON("repeat me"), planJSON("repeat me"), `{"done":true}`}
+	r := newRig(t, 50*core.MicrosPerUSD, replies,
+		func(int, core.Lead) (*actors.Result, error) { return okResult(2, 100_000), nil })
+	r.exec.Cache = cache.New()
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.LeadsCached == 0 {
+		t.Fatal("nothing was cached; the test asserts nothing")
+	}
+
+	after := r.reload(t)
+	// One actor run at 100k plus planner calls. A second charged run would
+	// double the executor's share.
+	var byRole map[core.Role]core.Cost
+	if err := r.db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		var err error
+		byRole, err = q.SumCostsByRole(ctx, r.sess.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := byRole[core.RoleExecutor].USDMicros; got != 100_000 {
+		t.Errorf("executor spend = %d, want exactly one lead's 100000", got)
+	}
+	_ = after
+}
+
+// TestCachedLeadIsMarkedAsCached, so a trace can tell a cache hit from work.
+func TestCachedLeadIsMarkedAsCached(t *testing.T) {
+	replies := []string{planJSON("same"), planJSON("same"), `{"done":true}`}
+	r := newRig(t, 50*core.MicrosPerUSD, replies,
+		func(int, core.Lead) (*actors.Result, error) { return okResult(1, 1_000), nil })
+	r.exec.Cache = cache.New()
+
+	if _, err := r.exec.Run(context.Background(), r.sess.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := r.q.Stats(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Cached == 0 {
+		t.Errorf("no lead recorded as skipped_cached: %+v", stats)
+	}
+}
+
+// TestNoCacheStillWorks: the cache is optional, and a nil one must not change
+// behaviour beyond costing more.
+func TestNoCacheStillWorks(t *testing.T) {
+	replies := []string{planJSON("same"), planJSON("same"), `{"done":true}`}
+	r := newRig(t, 50*core.MicrosPerUSD, replies,
+		func(int, core.Lead) (*actors.Result, error) { return okResult(1, 1_000), nil })
+	r.exec.Cache = nil
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.LeadsCached != 0 {
+		t.Error("a nil cache reported hits")
+	}
+	if r.actor.count() < 2 {
+		t.Error("without a cache the repeated question should be researched twice")
+	}
+}
+
+// TestCachedDeadEndStaysADeadEnd. A question that found nothing must not read
+// as answered on the second ask, or the planner stops probing a real gap.
+func TestCachedDeadEndStaysADeadEnd(t *testing.T) {
+	replies := []string{planJSON("barren"), planJSON("barren"), `{"done":true}`}
+	r := newRig(t, 50*core.MicrosPerUSD, replies,
+		func(int, core.Lead) (*actors.Result, error) { return okResult(0, 1_000), nil })
+	r.exec.Cache = cache.New()
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Count, not substring: the first uncached run already records one
+	// no_evidence, so its mere presence proves nothing about the cached ones.
+	var deadEnds int
+	for _, de := range res.Digest.DeadEnds {
+		if de.Cause == "no_evidence" {
+			deadEnds = de.Count
+		}
+	}
+	if want := 1 + res.LeadsCached; deadEnds != want {
+		t.Errorf("no_evidence recorded %d times across %d cached lead(s) and 1 real one, want %d",
+			deadEnds, res.LeadsCached, want)
 	}
 }

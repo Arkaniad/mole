@@ -207,6 +207,10 @@ The suites that carry weight:
 | `TestProviderContentIsExcludedFromEveryRate` | The §17.1 gate reading a padded denominator |
 | `TestBudgetOvershootIsARegression` | A ceiling that stopped binding, scored as fine |
 | `TestBlockedMetricsAreNamedNotOmitted` | Partial scoring read as full coverage |
+| `TestNothingIsLeftHeldOnAnyPath` | Budget stranded by a skipped settle |
+| `TestDigestStaysBoundedWhenNothingIsAnswered` | Quadratic planner cost returning |
+| `TestNoLeadIsDispatchedTwice` | Paying twice for one lead |
+| `TestCachedLeadReturnsAResultRatherThanSkipping` | Rev 1's replan livelock |
 | `TestRoundingDoesNotUnderBill` | Truncation quietly understating spend |
 
 ---
@@ -218,7 +222,7 @@ The suites that carry weight:
 | M0 | Foundations — store, ledger, cassettes, tracing | **done** |
 | M1 | WebActor end to end + fetch failure classification | **done** |
 | M2 | Eval harness + `mole stats --fetch` | in progress |
-| M3 | Planner loop, rolling digest, error policy | in progress |
+| M3 | Planner loop, rolling digest, error policy | **done** |
 | M4 | Claim graph + Verifier | |
 | M5 | Executor pool | |
 | M6 | AcademicActor | |
@@ -232,9 +236,11 @@ The suites that carry weight:
 
 Stated plainly rather than left to be discovered:
 
-- **M3 is partly done.** Queue, planner, executor loop and report output are
-  in; the artifact cache (§9.3) is not, so two leads converging on one URL still
-  pay for two fetches.
+- **The cache is session-scoped and in memory.** A cross-session cache has to
+  answer "how stale is too stale", and the answer differs per question type — a
+  settled fact keeps for months, a "current consensus" for days. §14.2's corpus
+  is what would settle it, so the durable version waits for data rather than a
+  guess.
 - **M2 is partly done.** `mole stats --fetch`, the cassette wiring, and the
   mechanical scorer (`mole eval`) are in; the question corpus (§14.2) is not. Two of its metrics —
   contradiction recall and staleness detection — will read zero until the

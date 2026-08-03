@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lajosdeme/mole/internal/cache"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/llm"
 	"github.com/lajosdeme/mole/internal/pricing"
@@ -35,6 +36,11 @@ type WebActor struct {
 
 	// SessionID scopes the claims and fetch outcomes this actor records.
 	SessionID string
+
+	// Cache, when set, holds documents already fetched in this session. The
+	// nested check §9.3 describes: two distinct queries converging on one page
+	// pay for one fetch. Nil disables it.
+	Cache *cache.Cache
 }
 
 func (a *WebActor) Type() core.ActorType { return core.ActorWeb }
@@ -213,9 +219,30 @@ func (a *WebActor) readSource(ctx context.Context, lead core.Lead, hit search.Re
 		return source{}, false
 	}
 
+	// Check the URL cache after search, before fetch (§9.3). A page another
+	// lead already read is free, and converging queries are the common case
+	// once a planner is decomposing one question several ways.
+	key := cache.URLKey(hit.URL)
+	if e, ok := a.Cache.Get(key); ok && len(e.Text) >= fetch.MinUsableText {
+		res.Stats.CacheHits++
+		return source{
+			doc: &extract.Document{
+				Text:        e.Text,
+				Title:       e.Title,
+				PublishedAt: e.PublishedAt,
+				Source:      extract.SourcePlainText,
+			},
+			url:    hit.URL,
+			domain: fetch.DomainOf(hit.URL),
+		}, true
+	}
+
 	if hit.HasUsableContent() && !budget.AlwaysFetch {
 		res.Stats.SkippedFetch++
 		a.recordOutcome(ctx, lead, hit.URL, fetch.OutcomeProviderContent, 0, 0, "")
+		a.Cache.Put(&cache.Entry{
+			Key: key, Text: hit.Content, Title: hit.Title, PublishedAt: hit.PublishedAt,
+		})
 		return source{
 			doc: &extract.Document{
 				Text:        hit.Content,
@@ -275,6 +302,17 @@ func (a *WebActor) readSource(ctx context.Context, lead core.Lead, hit search.Re
 	}
 	if doc.PublishedAt == nil {
 		doc.PublishedAt = hit.PublishedAt
+	}
+	// Key on the URL we were given AND the one we landed on: a later lead may
+	// surface either, and a redirect chain that costs one fetch should not cost
+	// a second because the search provider phrased the link differently.
+	a.Cache.Put(&cache.Entry{
+		Key: key, Text: doc.Text, Title: doc.Title, PublishedAt: doc.PublishedAt,
+	})
+	if fk := cache.URLKey(finalURL); fk != key {
+		a.Cache.Put(&cache.Entry{
+			Key: fk, Text: doc.Text, Title: doc.Title, PublishedAt: doc.PublishedAt,
+		})
 	}
 	return source{doc: doc, url: finalURL, domain: domain}, true
 }

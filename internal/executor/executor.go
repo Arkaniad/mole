@@ -24,6 +24,7 @@ import (
 
 	"github.com/lajosdeme/mole/internal/actors"
 	"github.com/lajosdeme/mole/internal/budget"
+	"github.com/lajosdeme/mole/internal/cache"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/planner"
 	"github.com/lajosdeme/mole/internal/queue"
@@ -41,6 +42,11 @@ type Executor struct {
 
 	// Owner identifies this worker in a lease. M5 gives each worker its own.
 	Owner string
+
+	// Cache holds artifacts already researched in this session (§9.3). Shared
+	// with the actor, so a lead-level hit and a URL-level hit are the same
+	// cache and one lead's fetches serve another's.
+	Cache *cache.Cache
 
 	// Estimator sizes reservations. Nil uses a fresh one for the session's
 	// budget unit.
@@ -65,7 +71,12 @@ type Result struct {
 
 	LeadsRun    int
 	LeadsFailed int
+	LeadsCached int
 	Replans     int
+
+	// CacheStats reports whether the cache earned its keep. An unmeasured
+	// cache is an assumption.
+	CacheStats cache.Stats
 
 	// Spent is the settled total in the session's budget unit.
 	Spent int64
@@ -206,6 +217,16 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 			continue
 		}
 
+		// A cache hit RETURNS the prior result; it does not skip the lead
+		// (§9.3). Rev 1 skipped, so the planner asked for something and got
+		// nothing back — and the next replan spawned an equivalent lead,
+		// forever. Recording the coverage is what closes that loop.
+		if e.completeFromCache(ctx, lease, digest, leadQuestion) {
+			res.LeadsCached++
+			completedSinceReplan++
+			continue
+		}
+
 		outcome := e.runLead(ctx, sess, lease, digest, leadQuestion)
 		res.LeadsRun++
 
@@ -267,13 +288,51 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 	if err == nil {
 		res.Spent = final.Spent
 	}
+	res.CacheStats = e.Cache.Stats()
 	return res, nil
 }
 
+// completeFromCache satisfies a lead from a prior identical one.
+//
+// Reports the coverage to the digest before completing, which is the whole
+// difference from rev 1: the planner learns the question was answered, so it
+// stops re-proposing it. A hit costs nothing — the claims are already in the
+// store under the lead that first found them, and re-inserting copies would
+// inflate every claim count §14.3 reads without giving a reader anything.
+func (e *Executor) completeFromCache(
+	ctx context.Context,
+	lease *queue.Lease,
+	digest *planner.Digest,
+	leadQuestion map[string]string,
+) bool {
+	if e.Cache == nil {
+		return false
+	}
+	key := cache.QueryKey(lease.Lead.Query)
+	entry, ok := e.Cache.Get(key)
+	if !ok {
+		return false
+	}
+
+	questionID := leadQuestion[lease.Lead.ID]
+	digest.RecordLead(questionID)
+	if entry.Claims > 0 {
+		digest.RecordClaims(questionID, entry.Claims)
+	} else {
+		digest.RecordDeadEnd("no_evidence", lease.Lead.Query)
+	}
+
+	if err := e.Queue.Complete(ctx, lease, core.LeadSkippedCache); err != nil {
+		e.logger().WarnContext(ctx, "could not complete a cached lead", "lead", lease.Lead.ID, "err", err)
+	}
+	return true
+}
+
 type leadOutcome struct {
-	claims []core.Claim
-	err    error
-	class  Class
+	claims  []core.Claim
+	summary string
+	err     error
+	class   Class
 }
 
 // runLead reserves, runs, settles, and completes one lead.
@@ -326,6 +385,11 @@ func (e *Executor) runLead(
 				// for the planner: the question was asked and not answered.
 				digest.RecordDeadEnd("no_evidence", lead.Query)
 			}
+			e.Cache.Put(&cache.Entry{
+				Key:     cache.QueryKey(lead.Query),
+				Claims:  len(out.claims),
+				Summary: out.summary,
+			})
 			_ = e.Queue.Complete(ctx, lease, core.LeadDone)
 			return out
 		}
@@ -381,6 +445,7 @@ func (e *Executor) attempt(ctx context.Context, sess *core.Session, lead core.Le
 	out := leadOutcome{}
 	if result != nil {
 		out.claims = result.Claims
+		out.summary = result.Summary
 	}
 	if runErr != nil {
 		out.err, out.class = runErr, Classify(runErr)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lajosdeme/mole/internal/actors"
+	"github.com/lajosdeme/mole/internal/cache"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/tools/fetch"
@@ -248,5 +249,128 @@ func TestDefaultStillSkipsTheFetch(t *testing.T) {
 	}
 	if res.Stats.SkippedFetch != 1 || res.Stats.Fetched != 0 {
 		t.Errorf("skipped=%d fetched=%d, want 1 and 0", res.Stats.SkippedFetch, res.Stats.Fetched)
+	}
+}
+
+// TestConvergingQueriesPayForOneFetch is §9.3's concrete win, stated in its own
+// words: "two distinct queries converging on one page pay for one fetch".
+//
+// Common once a planner is decomposing one question several ways — the sub-
+// questions overlap, and the same authoritative page answers more than one.
+func TestConvergingQueriesPayForOneFetch(t *testing.T) {
+	ctx := context.Background()
+	const shared = "https://arxiv.org/abs/2401.13660"
+
+	h := newHarness(t, []search.Result{{URL: shared, Rank: 1}},
+		map[string]*fetch.Result{
+			shared: {URL: shared, Domain: "arxiv.org", Outcome: fetch.OutcomeOK,
+				StatusCode: 200, ContentType: "text/html", Content: []byte(articleHTML())},
+		}, nil)
+	h.actor.Cache = cache.New()
+	h.actor.Budget = actors.Budget{MaxSources: 1, MaxInputTokens: 1_000_000}
+
+	// Two leads with different wording, same page.
+	first := h.lead
+	first.Query = "what does MambaByte achieve on PG-19"
+	if _, err := h.actor.Run(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := h.lead
+	second.ID = core.NewLeadID()
+	second.Query = "MambaByte bits per byte benchmark results"
+	if err := h.db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.InsertLead(ctx, &second)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res2, err := h.actor.Run(ctx, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h.fetcher.mu.Lock()
+	fetches := len(h.fetcher.fetched)
+	h.fetcher.mu.Unlock()
+
+	if fetches != 1 {
+		t.Errorf("the shared page was fetched %d times, want 1", fetches)
+	}
+	if res2.Stats.CacheHits != 1 {
+		t.Errorf("cache hits on the second lead = %d, want 1", res2.Stats.CacheHits)
+	}
+	// The second lead must still produce claims — a hit returns the document,
+	// it does not skip the source.
+	if len(res2.Claims) == 0 {
+		t.Error("a cached source produced no claims; the hit skipped rather than returned")
+	}
+}
+
+// TestRedirectTargetIsAlsoCached. A later lead may surface either URL, and a
+// redirect chain that cost one fetch should not cost a second because the search
+// provider phrased the link differently.
+func TestRedirectTargetIsAlsoCached(t *testing.T) {
+	ctx := context.Background()
+	const (
+		linked = "https://old.example/paper"
+		final  = "https://new.example/paper"
+	)
+
+	h := newHarness(t, []search.Result{{URL: linked, Rank: 1}},
+		map[string]*fetch.Result{
+			linked: {URL: linked, FinalURL: final, Domain: "new.example",
+				Outcome: fetch.OutcomeOK, StatusCode: 200, ContentType: "text/html",
+				Content: []byte(articleHTML())},
+		}, nil)
+	h.actor.Cache = cache.New()
+	h.actor.Budget = actors.Budget{MaxSources: 1, MaxInputTokens: 1_000_000}
+
+	if _, err := h.actor.Run(ctx, h.lead); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second lead that surfaces the POST-redirect URL directly.
+	h.search.results = []search.Result{{URL: final, Rank: 1}}
+	second := h.lead
+	second.ID = core.NewLeadID()
+	if err := h.db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.InsertLead(ctx, &second)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res2, err := h.actor.Run(ctx, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if res2.Stats.CacheHits != 1 {
+		t.Errorf("the redirect target was not cached: hits = %d", res2.Stats.CacheHits)
+	}
+}
+
+// TestCacheDoesNotServeUnusableText. An entry too short to work with would turn
+// a cache hit into a source that produces nothing, which is worse than a fetch.
+func TestCacheDoesNotServeUnusableText(t *testing.T) {
+	c := cache.New()
+	const u = "https://example.com/thin"
+	c.Put(&cache.Entry{Key: cache.URLKey(u), Text: "far too short to be usable"})
+
+	h := newHarness(t, []search.Result{{URL: u, Rank: 1}},
+		map[string]*fetch.Result{
+			u: {URL: u, Domain: "example.com", Outcome: fetch.OutcomeOK,
+				StatusCode: 200, ContentType: "text/html", Content: []byte(articleHTML())},
+		}, nil)
+	h.actor.Cache = c
+	h.actor.Budget = actors.Budget{MaxSources: 1, MaxInputTokens: 1_000_000}
+
+	res, err := h.actor.Run(context.Background(), h.lead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Stats.CacheHits != 0 {
+		t.Error("an unusably short cache entry was served")
+	}
+	if res.Stats.Fetched != 1 {
+		t.Errorf("fetched %d times; the thin entry should have fallen through", res.Stats.Fetched)
 	}
 }

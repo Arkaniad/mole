@@ -53,6 +53,10 @@ type RunStats struct {
 	// the result looks thin rather than broken.
 	ChunksFailed int
 
+	// CacheHits counts sources served from the session cache instead of the
+	// network (§9.3).
+	CacheHits int
+
 	ClaimsProposed int
 	// ClaimsRejected counts claims discarded because their quote did not
 	// appear in the source. A rising rate here is the signal that a model or
