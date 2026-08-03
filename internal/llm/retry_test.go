@@ -2,6 +2,7 @@ package llm_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -174,5 +175,56 @@ func TestContextCancellationBeatsBackoff(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "429") && !strings.Contains(err.Error(), "rate") {
 		t.Errorf("error does not say what we were waiting on: %v", err)
+	}
+}
+
+// TestEmptyContentFromAReasoningModelIsDiagnosed. qwen3 and gemma4 emit a
+// `reasoning` field that mole does not read, charged against the same output
+// budget. Ask for too few tokens and the whole allowance goes to reasoning,
+// leaving content empty with finish_reason "length" — a successful HTTP call
+// that returned nothing.
+//
+// Measured on a real ollama: qwen3:4b at max_tokens=300 produced 300 completion
+// tokens and an empty string. Without this the symptom surfaces as "no JSON
+// object in model response", which sends whoever reads the log looking at the
+// prompt instead of at MaxTokens.
+func TestEmptyContentFromAReasoningModelIsDiagnosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"model":"qwen3:4b","choices":[{"message":{"content":"","reasoning":"thinking..."},
+			"finish_reason":"length"}],"usage":{"prompt_tokens":20,"completion_tokens":300}}`))
+	}))
+	defer srv.Close()
+
+	_, err := newProvider(t, srv.URL, 0).Complete(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.User("hi")}, MaxTokens: 300,
+	})
+	if err == nil {
+		t.Fatal("an empty completion was reported as success")
+	}
+	if !errors.Is(err, llm.ErrEmptyOutput) {
+		t.Errorf("err = %v, want ErrEmptyOutput", err)
+	}
+	// The message has to name the cause, or it is no better than a parse error.
+	for _, want := range []string{"300", "length", "MaxTokens"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// TestNormalEmptyResponseIsNotMisdiagnosed: a completion with no tokens at all
+// is a different thing, and must not be reported as a reasoning overflow.
+func TestNormalEmptyResponseIsNotMisdiagnosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"model":"m","choices":[{"message":{"content":""},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":20,"completion_tokens":0}}`))
+	}))
+	defer srv.Close()
+
+	_, err := newProvider(t, srv.URL, 0).Complete(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.User("hi")}, MaxTokens: 300,
+	})
+	if errors.Is(err, llm.ErrEmptyOutput) {
+		t.Errorf("a zero-token completion was diagnosed as a reasoning overflow: %v", err)
 	}
 }

@@ -137,6 +137,20 @@ var (
 	// chunker's job is to prevent this; when it happens anyway the actor
 	// re-splits rather than failing the lead.
 	ErrContextTooLong = errors.New("llm: context too long")
+
+	// ErrEmptyOutput means the provider returned a successful response with no
+	// content.
+	//
+	// The case that produces it in practice is a reasoning model: qwen3, gemma4
+	// and others emit a `reasoning` field that mole does not read, and it is
+	// charged against the same output budget. Ask for too few tokens and the
+	// whole allowance goes to reasoning, leaving content empty with
+	// finish_reason "length" — a successful call that returned nothing.
+	//
+	// Worth its own sentinel because the symptom is otherwise a JSON parse
+	// failure, which sends whoever reads the log looking at the prompt instead
+	// of at MaxTokens.
+	ErrEmptyOutput = errors.New("llm: provider returned empty content")
 )
 
 // APIError carries provider detail alongside a sentinel.

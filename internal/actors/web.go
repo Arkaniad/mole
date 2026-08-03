@@ -422,10 +422,12 @@ func (a *WebActor) reduce(ctx context.Context, lead core.Lead, sources []sourceS
 	}
 
 	resp, err := a.LLM.Complete(ctx, llm.Request{
-		Tier:      llm.TierStrong,
-		System:    reduceSystemPrompt,
-		Messages:  []llm.Message{llm.User(reduceUserPrompt(fenceToken(), lead.Query, b.String()))},
-		MaxTokens: 2048,
+		Tier:     llm.TierStrong,
+		System:   reduceSystemPrompt,
+		Messages: []llm.Message{llm.User(reduceUserPrompt(fenceToken(), lead.Query, b.String()))},
+		// Headroom for a reasoning model, which spends this budget on its own
+		// reasoning before emitting anything. Unused output tokens are free.
+		MaxTokens: 4000,
 	})
 	if resp == nil {
 		return "", err

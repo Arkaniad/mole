@@ -51,6 +51,16 @@ const (
 	DefaultMaxDepth             = 2
 )
 
+// plannerMaxTokens is the output allowance for a planning call.
+//
+// Far more than the JSON needs, because a reasoning model spends this budget on
+// its own reasoning first and only then emits content. qwen3:4b was measured at
+// 1000-1800 characters of reasoning on a trivial prompt; at 300 tokens it
+// returned nothing at all. The planner is the worst place to be short — a
+// failure here ends the session before any research happens — and unused output
+// tokens are not billed.
+const plannerMaxTokens = 4000
+
 // DepthNone disables follow-up rounds: the initial decomposition and nothing
 // more. Distinct from the zero value, which means "unset".
 const DepthNone = -1
@@ -107,7 +117,7 @@ func (p *Planner) InitialLeads(ctx context.Context, sess *core.Session) (*Plan, 
 		Tier:      llm.TierStrong,
 		System:    plannerSystemPrompt,
 		Messages:  []llm.Message{llm.User(decomposePrompt(fence, sess.Prompt, pl.MaxInitialLeads))},
-		MaxTokens: 1500,
+		MaxTokens: plannerMaxTokens,
 	}
 
 	resp, err := pl.LLM.Complete(ctx, req)
@@ -178,7 +188,7 @@ func (p *Planner) Replan(ctx context.Context, sess *core.Session, d *Digest, dep
 		Tier:      llm.TierStrong,
 		System:    plannerSystemPrompt,
 		Messages:  []llm.Message{llm.User(replanPrompt(fence, d, pl.MaxNewLeadsPerReplan))},
-		MaxTokens: 1500,
+		MaxTokens: plannerMaxTokens,
 	})
 	if resp == nil {
 		return nil, err

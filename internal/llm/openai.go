@@ -285,6 +285,19 @@ func (p *openAIProvider) Complete(ctx context.Context, req Request) (*Response, 
 
 	choice := parsed.Choices[0]
 
+	// A reasoning model that ran out of room emits nothing usable. Say so
+	// precisely: the alternative symptom is "no JSON object in model response",
+	// which points at the prompt when the problem is the token budget.
+	if strings.TrimSpace(choice.Message.Content) == "" && parsed.Usage.CompletionTokens > 0 {
+		reason := choice.FinishReason
+		if reason == "" {
+			reason = "unknown"
+		}
+		return nil, fmt.Errorf("%w: %d completion tokens produced no content (finish_reason %q) — "+
+			"a reasoning model can spend the whole output budget on its reasoning; raise MaxTokens",
+			ErrEmptyOutput, parsed.Usage.CompletionTokens, reason)
+	}
+
 	// Cache accounting varies by vendor. DeepSeek splits hit/miss; the OpenAI
 	// shape nests cached_tokens. Both mean the same thing, and getting it
 	// wrong double-counts cached input as fresh input in the ledger.
