@@ -328,15 +328,40 @@ func (t *queries) ExpireStaleReservations(ctx context.Context, now time.Time) (i
 		return 0, err
 	}
 
+	// Per-reservation, and one bad row must not abort the batch.
+	//
+	// This is boot recovery: it runs before anything else and it sweeps EVERY
+	// session, so a single unreleasable hold used to take the whole transaction
+	// down and leave every other session's stale reservations in place. Seen
+	// for real, from reservations orphaned by a session deleted with foreign
+	// keys disabled.
+	var released int
+	var firstErr error
 	for _, s := range list {
 		if err := t.ResolveReservation(ctx, s.id, core.ReservationReleased, now); err != nil {
-			return 0, err
+			if firstErr == nil {
+				firstErr = fmt.Errorf("sqlite: resolve reservation %s: %w", s.id, err)
+			}
+			continue
 		}
-		if err := t.ApplyBudgetDelta(ctx, s.sessionID, store.BudgetDelta{Held: -s.amount}); err != nil {
-			return 0, err
+		err := t.ApplyBudgetDelta(ctx, s.sessionID, store.BudgetDelta{Held: -s.amount})
+		if errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
+			// The session is gone, or its counters cannot absorb the credit.
+			// The reservation is resolved either way — there is no counter left
+			// to give the money back to, and leaving it held would make it
+			// unreleasable forever.
+			released++
+			continue
 		}
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("sqlite: release hold on %s: %w", s.sessionID, err)
+			}
+			continue
+		}
+		released++
 	}
-	return len(list), nil
+	return released, firstErr
 }
 
 // ---------------------------------------------------------------------------

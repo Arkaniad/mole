@@ -740,3 +740,70 @@ func TestFinishedSessionsAreLeftAlone(t *testing.T) {
 		t.Errorf("swept %d finished sessions", n)
 	}
 }
+
+// TestSweepSurvivesAnUnreleasableReservation. This is boot recovery: it runs
+// before anything else and sweeps EVERY session, so a single bad row used to
+// take the whole transaction down and leave every other session's stale
+// reservations in place.
+//
+// Seen for real, though by a route mole itself cannot produce: a session
+// deleted through a connection with foreign keys disabled left `held`
+// reservations pointing at a row that no longer existed, and every subsequent
+// run failed the sweep with "would violate a non-negative invariant" — so no
+// reservation anywhere was released, ever.
+//
+// The store rejects orphaned reservations outright, so this reproduces the
+// reachable version of the same shape: counter drift, where a session's held
+// total no longer covers the reservations still recorded against it. One
+// release must fail and the rest must still happen.
+func TestSweepSurvivesAnUnreleasableReservation(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	cfg := budget.DefaultConfig()
+	cfg.ReservationTTL = 10 * time.Millisecond
+	led := budget.New(db, cfg)
+
+	sess, err := led.CreateSession(ctx, budget.SessionSpec{
+		Prompt: "drifted", Mode: core.ModeReport,
+		ActorTypes: []core.ActorType{core.ActorWeb},
+		BudgetUnit: core.BudgetUSD, Budget: 10 * core.MicrosPerUSD,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := led.Reserve(ctx, sess.ID, 50_000); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Drive held below what the two reservations claim, so releasing both would
+	// take it negative and the second must be refused.
+	if err := db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.ApplyBudgetDelta(ctx, sess.ID, store.BudgetDelta{Held: -50_000})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(30 * time.Millisecond)
+
+	n, err := led.SweepExpired(ctx)
+	if n == 0 {
+		t.Errorf("no reservation released (err=%v); one bad row aborted the whole sweep", err)
+	}
+
+	// Every reservation must end up resolved, or a sweep that cannot release a
+	// hold leaves it to be retried forever.
+	var held int64
+	if err := db.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		held, err = q.SumHeldReservations(ctx, sess.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if held != 0 {
+		t.Errorf("%d still held in unresolved reservations after the sweep", held)
+	}
+}
