@@ -873,6 +873,28 @@ func (t *queries) ReleaseLease(ctx context.Context, leadID, owner string) error 
 	return nil
 }
 
+// SweepAbandonedSessions marks running sessions whose process is gone (§9.4).
+//
+// Conservative on purpose: a session with ANY unexpired lease is live by
+// definition, and idleSince has to be well past the lease TTL or a slow-but-
+// working run gets marked dead underneath itself.
+func (t *queries) SweepAbandonedSessions(ctx context.Context, idleSince time.Time) (int, error) {
+	res, err := t.q.ExecContext(ctx, `
+		UPDATE sessions SET status = 'failed', updated_at = ?
+		 WHERE status = 'running'
+		   AND updated_at < ?
+		   AND id NOT IN (
+		       SELECT session_id FROM leads
+		        WHERE status = 'leased' AND lease_expires IS NOT NULL AND lease_expires > ?
+		   )`,
+		toMicros(time.Now()), toMicros(idleSince), toMicros(time.Now()))
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: sweep abandoned sessions: %w", err)
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
+
 // SweepExpiredLeases requeues leads whose worker died (§9.4).
 func (t *queries) SweepExpiredLeases(ctx context.Context, sessionID string, now time.Time) (int, error) {
 	// Terminal sessions are excluded: requeueing their leads produces rows no

@@ -593,3 +593,150 @@ func TestReserveOutputStillRespectsAvailableBudget(t *testing.T) {
 		t.Error("ReserveOutput handed out budget the session does not have")
 	}
 }
+
+// TestAbandonedSessionsAreReclaimed is the third half of §9.4. Leases and
+// reservations were reclaimed at boot and the session row was not, so a killed
+// process left a session `running` forever — listed by `sessions` and
+// reconciled by `doctor` for the life of the database.
+//
+// Found for real: a test binary killed mid-run left four such rows behind.
+func TestAbandonedSessionsAreReclaimed(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	// A tiny threshold against the real clock. The row's updated_at is written
+	// from the real clock too, so this keeps one clock in play — the first
+	// version fast-forwarded an injectable clock and made a just-created
+	// session look stale, because only the cutoff moved.
+	cfg := budget.DefaultConfig()
+	cfg.AbandonedSessionIdle = 20 * time.Millisecond
+	led := budget.New(db, cfg)
+
+	abandoned, err := led.CreateSession(ctx, budget.SessionSpec{
+		Prompt: "abandoned", Mode: core.ModeReport,
+		ActorTypes: []core.ActorType{core.ActorWeb},
+		BudgetUnit: core.BudgetUSD, Budget: core.MicrosPerUSD,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Nothing touches it for longer than the threshold.
+	time.Sleep(50 * time.Millisecond)
+
+	n, err := led.SweepAbandonedSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("swept %d sessions, want 1", n)
+	}
+
+	var after *core.Session
+	if err := db.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		after, err = q.GetSession(ctx, abandoned.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != core.StatusFailed {
+		t.Errorf("status = %s, want failed", after.Status)
+	}
+}
+
+// TestALiveSessionIsNotReclaimed. Marking a slow-but-working run as dead
+// underneath itself would be far worse than leaving a stale row: the ledger
+// would refuse its next reservation, because Reserve rejects terminal sessions.
+func TestALiveSessionIsNotReclaimed(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	cfg := budget.DefaultConfig()
+	cfg.AbandonedSessionIdle = 20 * time.Millisecond
+	led := budget.New(db, cfg)
+
+	// Idle past the threshold, BUT holding a live lease — which is the definition
+	// of a running worker.
+	leased, err := led.CreateSession(ctx, budget.SessionSpec{
+		Prompt: "slow but working", Mode: core.ModeReport,
+		ActorTypes: []core.ActorType{core.ActorWeb},
+		BudgetUnit: core.BudgetUSD, Budget: core.MicrosPerUSD,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lead := core.Lead{
+		ID: core.NewLeadID(), SessionID: leased.ID, ActorType: core.ActorWeb,
+		Query: "q", Status: core.LeadQueued,
+	}
+	if err := db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		if err := tx.InsertLead(ctx, &lead); err != nil {
+			return err
+		}
+		// A lease that is still valid far into the future.
+		_, err := tx.LeaseNextLead(ctx, leased.ID, "worker", time.Now().Add(2*time.Hour))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Created after the wait, so it is genuinely recent.
+	fresh, err := led.CreateSession(ctx, budget.SessionSpec{
+		Prompt: "fresh", Mode: core.ModeReport,
+		ActorTypes: []core.ActorType{core.ActorWeb},
+		BudgetUnit: core.BudgetUSD, Budget: core.MicrosPerUSD,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := led.SweepAbandonedSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("swept %d live sessions", n)
+	}
+	for _, id := range []string{fresh.ID, leased.ID} {
+		var s *core.Session
+		db.Read(ctx, func(ctx context.Context, q store.Queries) error {
+			var err error
+			s, err = q.GetSession(ctx, id)
+			return err
+		})
+		if s.Status != core.StatusRunning {
+			t.Errorf("session %s was marked %s", id, s.Status)
+		}
+	}
+}
+
+// TestFinishedSessionsAreLeftAlone, or a completed run would be rewritten as
+// failed.
+func TestFinishedSessionsAreLeftAlone(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	cfg := budget.DefaultConfig()
+	cfg.AbandonedSessionIdle = time.Millisecond
+	led := budget.New(db, cfg)
+
+	done, err := led.CreateSession(ctx, budget.SessionSpec{
+		Prompt: "done", Mode: core.ModeReport,
+		ActorTypes: []core.ActorType{core.ActorWeb},
+		BudgetUnit: core.BudgetUSD, Budget: core.MicrosPerUSD,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Finish(ctx, done.ID, core.StatusDone); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	if n, _ := led.SweepAbandonedSessions(ctx); n != 0 {
+		t.Errorf("swept %d finished sessions", n)
+	}
+}

@@ -56,6 +56,16 @@ type Config struct {
 	// died mid-run holds budget forever.
 	ReservationTTL time.Duration
 
+	// AbandonedSessionIdle is how long a running session may go untouched
+	// before boot recovery presumes its process is gone (§9.4).
+	//
+	// Compared against the row's updated_at, which the store writes from the
+	// real clock — so this deliberately does NOT go through the injectable
+	// clock. Mixing the two was the first attempt and it made a freshly created
+	// session look stale under a fast-forwarded test clock, because the row
+	// carried a real timestamp and the cutoff did not.
+	AbandonedSessionIdle time.Duration
+
 	// MaxOvershootFactor caps how far actual cost may exceed the reservation
 	// before Settle flags it. Exceeding it does not reject the settle — the
 	// money was spent and the ledger records what happened — but it is the
@@ -65,10 +75,11 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		EscrowFraction:     0.15,
-		MinEscrow:          0,
-		ReservationTTL:     15 * time.Minute,
-		MaxOvershootFactor: 2.0,
+		EscrowFraction:       0.15,
+		MinEscrow:            0,
+		ReservationTTL:       15 * time.Minute,
+		AbandonedSessionIdle: DefaultAbandonedSessionIdle,
+		MaxOvershootFactor:   2.0,
 	}
 }
 
@@ -441,6 +452,34 @@ func (l *Ledger) Verify(ctx context.Context, sessionID string) (VerifyResult, er
 		return nil
 	})
 	return v, err
+}
+
+// DefaultAbandonedSessionIdle is comfortably past the lease TTL: a live run
+// touches updated_at on every settle and every counted lead, so anything
+// quieter than this with nothing leased is not running.
+const DefaultAbandonedSessionIdle = 30 * time.Minute
+
+// SweepAbandonedSessions marks running sessions whose process died (§9.4).
+//
+// The third half of crash recovery. Leases and reservations were reclaimed at
+// boot and the session row was not, so a killed process left a session
+// `running` forever — listed by `sessions` and reconciled by `doctor` for the
+// life of the database.
+func (l *Ledger) SweepAbandonedSessions(ctx context.Context) (int, error) {
+	var n int
+	err := l.st.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		var err error
+		idle := l.cfg.AbandonedSessionIdle
+		if idle <= 0 {
+			idle = DefaultAbandonedSessionIdle
+		}
+		// Real clock: updated_at is written from it, and comparing a real
+		// timestamp against an injectable one is what made a just-created
+		// session look abandoned.
+		n, err = tx.SweepAbandonedSessions(ctx, time.Now().Add(-idle))
+		return err
+	})
+	return n, err
 }
 
 // SweepExpired releases holds whose TTL has passed. Run it on daemon boot and

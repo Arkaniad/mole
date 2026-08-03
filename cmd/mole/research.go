@@ -218,6 +218,11 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	} else if n > 0 && !o.quiet {
 		fmt.Printf(" released %d stale reservation(s) from a previous run\n", n)
 	}
+	if n, err := led.SweepAbandonedSessions(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: session sweep failed: %v\n", err)
+	} else if n > 0 && !o.quiet {
+		fmt.Printf(" closed %d session(s) abandoned by a previous run\n", n)
+	}
 
 	// One cache shared between the loop and the actor, so a lead-level hit and
 	// a URL-level hit are the same cache and one lead's fetches serve another's.

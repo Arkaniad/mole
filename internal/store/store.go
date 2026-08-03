@@ -154,6 +154,19 @@ type Tx interface {
 	// ReleaseLease returns a lead to the queue without completing it.
 	ReleaseLease(ctx context.Context, leadID, owner string) error
 
+	// SweepAbandonedSessions marks running sessions whose process is gone.
+	//
+	// The third half of §9.4. Leases and reservations are reclaimed at boot,
+	// but nothing touched the session row, so a killed process left a session
+	// `running` forever — visible in `sessions` and reconciled by `doctor` for
+	// the life of the database.
+	//
+	// Liveness is judged by updated_at plus the absence of a live lease, which
+	// is the same signal leases already use. A live run touches updated_at on
+	// every settle and every counted lead, so silence past the threshold with
+	// nothing leased means the process is gone.
+	SweepAbandonedSessions(ctx context.Context, idleSince time.Time) (int, error)
+
 	// SweepExpiredLeases requeues leads whose worker died. Without it a crash
 	// strands them as leased forever, with no way out (§9.4).
 	//
