@@ -11,9 +11,16 @@ A Planner–Executor–Verifier deep research agent with budget as a first-class
 primitive. Web research, academic literature, and local-data analysis behind one
 Actor interface, exposed to coding agents over MCP.
 
-**Status: M0 (foundations) complete.** There is no research loop yet — see
-[the milestone table](#milestones). What exists is the substrate everything else
-is built on: the schema, the budget ledger, the record/replay layer, and tracing.
+**Status: M3 complete — the research loop runs end to end.** Decompose → fetch →
+mine claims → digest → replan → report, with the budget ledger binding at every
+step. Verified against a live provider rather than only fakes: a nine-lead run
+held to 114,654 of 400,000 tokens with 0% overshoot, replanned twice, served
+eight sources from cache without a fetch, and reconciled a 40-call ledger.
+
+What is not done: M2's question corpus, and M4's Verifier — so claims are
+extracted, quote-checked against their source, and cited, but not yet
+cross-checked against each other. See [the milestone table](#milestones) and
+[known gaps](#known-gaps).
 
 Full design: [`mole-architecture-sketch.md`](./mole-architecture-sketch.md).
 
@@ -105,17 +112,20 @@ in a config file it would slowly write every API response to disk.
 `mole trace` output:
 
 ```
-s_06FVYMAVHFR3EAAS  $0.5015 / $3.0000  ·  status=done  mode=report
+s_06FWWN0FBRZ9V8QR  114654 tok / 400000 tok  ·  status=budget_exhausted  mode=report
 
-ROLE      SPEND    SHARE  TOKENS
-planner   $0.0335  7%     3900
-executor  $0.2165  43%    46300
-verifier  $0.0505  10%    10100
-output    $0.2010  40%    34200
+ROLE      SPEND       SHARE  TOKENS
+planner   2099 tok    2%     2099
+executor  111529 tok  97%    111529
+output    1026 tok    1%     1026
 
-tokens: 51400 in · 9100 out · 34000 cache-read · 0 cache-write
-ledger: consistent (5 calls)
+tokens: 104403 in · 10251 out · 0 cache-read · 0 cache-write
+ledger: consistent (40 calls)
 ```
+
+Real output from a live run, so there is no `verifier` row — M4 has not landed.
+The 2%/97% split is the number the rolling digest exists to protect: planning cost
+scales with the number of *replans*, not the number of leads (§9.1).
 
 The role breakdown is a single `GROUP BY` over the ledger — the entire reason
 `ToolCall.Role` exists. Reconstructing it later would be archaeology.
@@ -133,7 +143,17 @@ The role breakdown is a single `GROUP BY` over the ledger — the entire reason
 | `internal/budget` | Reserve / Settle / Release, escrow, estimator, `Verify` |
 | `internal/record` | Cassette record/replay transport with credential redaction |
 | `internal/obs` | Structured logging, lead-level spans persisted to the DB |
-| `cmd/mole` | CLI: `migrate`, `doctor`, `sessions`, `trace`, `dev seed` |
+| `internal/llm` | Provider boundary — Anthropic and any OpenAI-compatible endpoint |
+| `internal/tools` | Search providers, fetch + robots, extraction, rate limiter |
+| `internal/actors` | `Actor` interface, WebActor, chunk mining, quote verification |
+| `internal/planner` | Decomposition, the rolling digest, replan |
+| `internal/queue` | Lease-based lead queue: heartbeat, crash recovery |
+| `internal/executor` | The loop — sub-budgets, error policy, replan batching |
+| `internal/cache` | Artifact-level result-returning cache (URL, DOI, query) |
+| `internal/output` | Report synthesis and citation rendering |
+| `internal/eval` | Mechanical scorecard, citation re-verification |
+| `internal/config` | Config file and environment resolution |
+| `cmd/mole` | CLI: `research`, `eval`, `stats`, `trace`, `sessions`, `doctor`, `config`, `migrate`, `dev` |
 
 ### Decisions worth knowing before you read the code
 
@@ -228,7 +248,7 @@ The suites that carry weight:
 |---|---|---|
 | M0 | Foundations — store, ledger, cassettes, tracing | **done** |
 | M1 | WebActor end to end + fetch failure classification | **done** |
-| M2 | Eval harness + `mole stats --fetch` | in progress |
+| M2 | Eval harness + `mole stats --fetch` | scorer **done**, corpus (§14.2) open |
 | M3 | Planner loop, rolling digest, error policy | **done** |
 | M4 | Claim graph + Verifier | |
 | M5 | Executor pool | |
@@ -248,15 +268,33 @@ Stated plainly rather than left to be discovered:
   settled fact keeps for months, a "current consensus" for days. §14.2's corpus
   is what would settle it, so the durable version waits for data rather than a
   guess.
-- **M2 is partly done.** `mole stats --fetch`, the cassette wiring, and the
-  mechanical scorer (`mole eval`) are in; the question corpus (§14.2) is not. Two of its metrics —
-  contradiction recall and staleness detection — will read zero until the
-  Verifier lands in M4, and that is not a regression.
-
+- **M2 is open while M3 is done, on purpose.** `mole stats --fetch`, the cassette
+  wiring, and the mechanical scorer (`mole eval`) are in; the question corpus
+  (§14.2) is not. The milestones are not a strict chain — the corpus is labelled
+  data, and building it before there was a loop worth measuring would have meant
+  guessing at what to label. Two of the scorer's metrics, contradiction recall and
+  staleness detection, read zero until the Verifier lands in M4, and that is not a
+  regression.
+- **The planner never converges by answering; it stops at a cap.**
+  `MaxNewLeadsPerReplan` equals `ReplanEvery`, so the queue drains at exactly the
+  rate it refills, and the two quality-driven exits — a drained queue, and the
+  planner declaring itself done — cannot fire in practice. Termination is still
+  bounded and safe (the depth cap holds a default run to ten leads), and the
+  planner now sees how much allowance is left so `done` is at least an informed
+  choice. Tapering the fan-out is the obvious next move and is a cost/quality
+  tradeoff that cannot be evaluated without the corpus above.
+- **Reasoning models are unusable through the OpenAI-compatible endpoint.** qwen3,
+  gemma4 and others emit their reasoning in a `reasoning` field, which mole does
+  not read, and charge it against the same output allowance — so the whole budget
+  can go to reasoning and `content` comes back empty. `llm.ErrEmptyOutput` names
+  this rather than surfacing it as a JSON parse failure. Ollama's `/v1` endpoint
+  ignored every documented way to disable it (`think:false`, `/no_think`,
+  `chat_template_kwargs.enable_thinking`). Use a non-reasoning model, or the
+  native API.
 - **The estimator does not warm from history.** Attributing a settled cost to
-  `(actor_type, depth)` needs a join to `leads`, which M3 populates. Guessing
-  the actor type would poison the distribution — worse than the honestly
-  conservative cold-start seeds.
+  `(actor_type, depth)` needs a join to `leads`, which M3 now populates, so the
+  blocker is gone and this is simply unimplemented. Guessing the actor type would
+  poison the distribution — worse than the honestly conservative cold-start seeds.
 - **The binary is ~24MB, up 8.3MB after the cobra port.** Cobra itself is only
   ~0.3MB on top of this dependency set — measured, not assumed. The rest is
   retained type metadata: cobra and `text/template` use reflection, which stops
@@ -268,6 +306,9 @@ Stated plainly rather than left to be discovered:
   Not a problem for how this ships. Every cobra-based CLI is in the same range
   — `docker` 27.8MB, `gh` 38.6MB, `kubectl` 84.8MB. It would matter for a
   per-invocation container image or an edge target, and neither is the plan.
-- **`mole doctor` only checks what M0 owns.** Provider keys, contact email,
-  socket permissions, and sandbox availability are reported as unconfigured and
-  wired up in their own milestones.
+- **`mole doctor` checks what has landed, and says so about the rest.** The store,
+  schema, pricing table, ledger reconciliation, config permissions, and both
+  provider credentials are checked for real — including whether the search provider
+  returns page content, which decides whether §17.1's gate has a denominator. The
+  contact email (Unpaywall/NCBI, M6), MCP socket permissions (M7), and sandbox
+  availability (M8) are reported as informational until their milestone lands.
