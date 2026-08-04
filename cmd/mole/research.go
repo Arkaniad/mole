@@ -241,6 +241,9 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 		Log:        actor.Log,
 		Owner:      "cli",
 	}
+	if !o.quiet && !o.asJSON {
+		exec.Progress = progressPrinter()
+	}
 
 	runRes, runErr := exec.Run(ctx, sess.ID)
 	if runRes != nil {
@@ -602,6 +605,33 @@ type researchOutput struct {
 	StoppedBecause string `json:"stopped_because,omitempty"`
 	Degraded       string `json:"degraded,omitempty"`
 	Error          string `json:"error,omitempty"`
+}
+
+// progressPrinter reports each phase as it happens, with elapsed time.
+//
+// Live feedback, not decoration. Planning is one model call that produces no
+// output until it returns, and on a local model that is minutes of silence after
+// a one-line header — which reads as a hang. Three real runs were killed by hand
+// before reaching the first lead.
+func progressPrinter() func(executor.Event) {
+	start := time.Now()
+	return func(ev executor.Event) {
+		el := time.Since(start).Round(time.Second)
+		switch ev.Phase {
+		case "planning":
+			fmt.Printf(" [%6s] planning: %s…\n", el, ev.Detail)
+		case "executing":
+			fmt.Printf(" [%6s] plan ready: %s\n", el, ev.Detail)
+		case "replanning":
+			fmt.Printf(" [%6s] replanning: %s…\n", el, ev.Detail)
+		case "lead":
+			fmt.Printf(" [%6s]   → %s\n", el, ev.Detail)
+		case "lead-done":
+			fmt.Printf(" [%6s]     %s\n", el, ev.Detail)
+		case "cached":
+			fmt.Printf(" [%6s]   ⤿ cached: %s\n", el, ev.Detail)
+		}
+	}
 }
 
 // printProgress shows what the loop did, in the shape §18.3 sketches.

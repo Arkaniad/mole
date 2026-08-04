@@ -230,3 +230,62 @@ func TestAmountFormattingMatchesTheUnit(t *testing.T) {
 		t.Errorf("tokens formatted as %q, want \"50000 tok\"", got)
 	}
 }
+
+// TestProgressPrinterEmitsEachPhase covers the printer itself.
+func TestProgressPrinterEmitsEachPhase(t *testing.T) {
+	p := progressPrinter()
+	got := captureStdout(t, func() {
+		p(executor.Event{Phase: "planning", Detail: "decomposing the question"})
+		p(executor.Event{Phase: "executing", Detail: "4 sub-question(s) queued"})
+		p(executor.Event{Phase: "lead", Detail: "a sub-question"})
+		p(executor.Event{Phase: "lead-done", Detail: "3 claim(s)"})
+		p(executor.Event{Phase: "replanning", Detail: "2 open sub-question(s)"})
+		p(executor.Event{Phase: "cached", Detail: "a repeated question"})
+	})
+
+	for _, want := range []string{
+		"planning: decomposing", "plan ready: 4 sub-question(s)",
+		"a sub-question", "3 claim(s)", "replanning: 2 open", "cached: a repeated",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output is missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestResearchWiresTheProgressPrinter is the test that was missing, and its
+// absence is why the previous commit shipped a silent binary.
+//
+// The executor emitted all six events and the printer formatted all six, both
+// covered — but nothing asserted that cmdResearch actually ASSIGNS the callback.
+// A struct-literal edit that failed to apply left Progress nil, the events fired
+// into nothing, and every test still passed. Same shape as the MaxLeads ceiling
+// whose counter no caller incremented: mechanism tested, wiring not.
+func TestResearchWiresTheProgressPrinter(t *testing.T) {
+	src, err := os.ReadFile("research.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+
+	// The assignment has to exist, and it has to be gated on the output mode —
+	// JSON callers must not get progress lines interleaved with their document.
+	if !strings.Contains(body, "exec.Progress = progressPrinter()") {
+		t.Error("cmdResearch never assigns exec.Progress; the loop's events go nowhere")
+	}
+	i := strings.Index(body, "exec.Progress = progressPrinter()")
+	if i < 0 {
+		return
+	}
+	preceding := body[max(0, i-120):i]
+	if !strings.Contains(preceding, "o.quiet") || !strings.Contains(preceding, "o.asJSON") {
+		t.Errorf("the assignment is not gated on --quiet/--json:\n%s", preceding)
+	}
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
