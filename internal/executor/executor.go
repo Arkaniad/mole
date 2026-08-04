@@ -257,7 +257,7 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 			if !e.Planner.ShouldReplan(completedSinceReplan, true) {
 				break
 			}
-			added, done, err := e.replan(ctx, sess, digest, depth, res, leadQuestion)
+			added, done, reason, err := e.replan(ctx, sess, digest, depth, res, leadQuestion)
 			if err != nil {
 				// A failed replan at drain time is the END of the research, not
 				// a failed session. §9.5 classifies 429/5xx/timeout as transient
@@ -271,7 +271,9 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 			}
 			completedSinceReplan = 0
 			if done || added == 0 {
-				res.StoppedBecause = "no further leads"
+				// The cap and "the planner had nothing left to add" are
+				// different endings; report whichever it was.
+				res.StoppedBecause = orElse(reason, "no further leads")
 				break
 			}
 			depth++
@@ -331,13 +333,13 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 		}
 
 		if e.Planner.ShouldReplan(completedSinceReplan, false) {
-			added, done, err := e.replan(ctx, sess, digest, depth, res, leadQuestion)
+			added, done, reason, err := e.replan(ctx, sess, digest, depth, res, leadQuestion)
 			if err != nil {
 				e.logger().WarnContext(ctx, "replan failed; continuing with the current queue", "err", err)
 			}
 			completedSinceReplan = 0
 			if done {
-				res.StoppedBecause = "planner reported done"
+				res.StoppedBecause = orElse(reason, "planner reported done")
 				break
 			}
 			if added > 0 {
@@ -543,6 +545,14 @@ func (e *Executor) attempt(ctx context.Context, sess *core.Session, lead core.Le
 	return out
 }
 
+// orElse is the first non-empty of two strings.
+func orElse(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
 // replan asks the planner what to do next and queues the answer.
 func (e *Executor) replan(
 	ctx context.Context,
@@ -551,13 +561,37 @@ func (e *Executor) replan(
 	depth int,
 	res *Result,
 	leadQuestion map[string]string,
-) (added int, done bool, err error) {
+) (added int, done bool, reason string, err error) {
+	// Before reserving. The cap needs no model call, so paying for one — and
+	// misreporting the stop reason when the reservation is refused — is pure loss.
+	if e.Planner.DepthExhausted(depth) {
+		return 0, true, e.Planner.DepthCapReason(), nil
+	}
+
+	// Reload. The loop reloads the session at the TOP of an iteration, before the
+	// lead runs, so by the time a replan happens it is a lead behind — stale by
+	// exactly the spend, tool calls, and lead count the replan is meant to react
+	// to. Measured: a session one of four leads in reported 85% of its allowance
+	// left, from the dollar term, while the lead ceiling it was actually running
+	// out of said 75%.
+	//
+	// Cheap: §9.1 batches replans precisely so there are few of them.
+	if fresh, ferr := e.session(ctx, sess.ID); ferr == nil {
+		sess = fresh
+	} else {
+		e.logger().WarnContext(ctx, "replan: could not refresh session; planning against slightly stale budget", "err", ferr)
+	}
+
+	// §9.1 asks the planner whether the open sub-questions are worth more budget.
+	// Answering that needs the figure, and the digest carried nothing about it.
+	digest.BudgetRemaining = sess.RemainingFraction(e.now())
+
 	e.emit("replanning", fmt.Sprintf("%d open sub-question(s)", len(digest.Open())))
 	plan, perr := e.planWithBudget(ctx, sess, func() (*planner.Plan, error) {
 		return e.Planner.Replan(ctx, sess, digest, depth)
 	})
 	if perr != nil {
-		return 0, false, perr
+		return 0, false, "", perr
 	}
 	res.Replans++
 
@@ -565,7 +599,7 @@ func (e *Executor) replan(
 		digest.MarkAnswered(id)
 	}
 	if plan.Done {
-		return 0, true, nil
+		return 0, true, "planner reported done", nil
 	}
 
 	assigned := digest.AddQuestions(plan.Questions)
@@ -578,12 +612,12 @@ func (e *Executor) replan(
 		}
 	}
 	if len(plan.Leads) == 0 {
-		return 0, false, nil
+		return 0, false, "", nil
 	}
 	if err := e.Queue.Push(ctx, plan.Leads); err != nil {
-		return 0, false, err
+		return 0, false, "", err
 	}
-	return len(plan.Leads), false, nil
+	return len(plan.Leads), false, "", nil
 }
 
 // planWithBudget reserves, runs a planning call, and settles it.

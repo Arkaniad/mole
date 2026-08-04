@@ -201,6 +201,37 @@ func (s *Session) HitCeiling(now time.Time) (bool, string) {
 	return false, ""
 }
 
+// RemainingFraction is how much of the session's allowance is left, in [0,1].
+//
+// HitCeiling's continuous twin, and it takes the minimum over the same limits
+// for the same reason HitCeiling checks all of them: a session two minutes from
+// max_wallclock with 90% of its dollars unspent has 10% left, not 90%. Reporting
+// spend alone would promise room that cannot be used.
+//
+// Exists because §9.1's replan prompt asks the planner to judge whether the open
+// sub-questions are "worth more budget" while the digest reported nothing about
+// budget — an instruction the planner had no way to answer.
+//
+// Available() rather than Budget-Spent, so escrow is excluded: tokens held back
+// for the report are not spendable on more research, and counting them would
+// overstate what is left at exactly the moment the answer matters.
+func (s *Session) RemainingFraction(now time.Time) float64 {
+	frac := 1.0
+	if s.Budget > 0 {
+		frac = min(frac, float64(s.Available())/float64(s.Budget))
+	}
+	if s.MaxToolCalls > 0 {
+		frac = min(frac, float64(s.MaxToolCalls-s.ToolCallCount)/float64(s.MaxToolCalls))
+	}
+	if s.MaxLeads > 0 {
+		frac = min(frac, float64(s.MaxLeads-s.LeadCount)/float64(s.MaxLeads))
+	}
+	if s.MaxWallClock > 0 {
+		frac = min(frac, float64(s.MaxWallClock-now.Sub(s.CreatedAt))/float64(s.MaxWallClock))
+	}
+	return max(0, frac)
+}
+
 func (s *Session) Validate() error {
 	if s.ID == "" {
 		return fmt.Errorf("session: empty id")

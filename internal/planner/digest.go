@@ -84,6 +84,16 @@ type Digest struct {
 	LeadsRun    int
 	ClaimsFound int
 
+	// BudgetRemaining is the fraction of the session's allowance still
+	// available, from core.Session.RemainingFraction.
+	//
+	// Set fresh before each replan rather than accumulated: it is current state,
+	// not history, and a stale figure is worse than none. Zero means "not
+	// reported" and is omitted from the serialized form — unambiguous in
+	// practice because a session with genuinely nothing left has already
+	// stopped and will not replan.
+	BudgetRemaining float64
+
 	// MaxChars bounds the serialized form. Zero uses DefaultDigestChars.
 	MaxChars int
 
@@ -322,6 +332,9 @@ func (d *Digest) String() string {
 
 	fmt.Fprintf(&b, "Research question: %s\n\n", d.Question)
 	fmt.Fprintf(&b, "Progress: %d lead(s) run, %d claim(s) found.\n", d.LeadsRun, d.ClaimsFound)
+	if d.BudgetRemaining > 0 {
+		fmt.Fprintf(&b, "Roughly %.0f%% of the session's allowance remains.\n", d.BudgetRemaining*100)
+	}
 
 	answered := 0
 	for _, q := range d.Questions {

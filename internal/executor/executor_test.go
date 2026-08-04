@@ -8,7 +8,9 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,6 +38,19 @@ type scriptedLLM struct {
 	replies  []string
 	calls    int
 	errAfter int // when >0, calls at or past this index fail
+	prompts  []string
+}
+
+func (s *scriptedLLM) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func (s *scriptedLLM) seen() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.prompts)
 }
 
 func (s *scriptedLLM) Name() string               { return "fake" }
@@ -45,6 +60,9 @@ func (s *scriptedLLM) Complete(ctx context.Context, req llm.Request) (*llm.Respo
 	defer s.mu.Unlock()
 	i := s.calls
 	s.calls++
+	for _, m := range req.Messages {
+		s.prompts = append(s.prompts, m.Text)
+	}
 	resp := &llm.Response{
 		Model: "fake-model",
 		Usage: llm.Usage{InputTokens: 400, OutputTokens: 60},
@@ -1167,5 +1185,101 @@ func TestProgressIsOptional(t *testing.T) {
 
 	if _, err := r.exec.Run(context.Background(), r.sess.ID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The depth cap is a free decision, and it says so
+// ---------------------------------------------------------------------------
+
+// TestDepthCapIsReportedAsTheDepthCap checks the cap is taken before budget is
+// reserved.
+//
+// Replan's own depth check runs INSIDE the call the executor has already
+// reserved for. It returns before reaching the provider, so no tokens are wasted
+// — but the reservation is, and that is not the expensive part. When a ceiling
+// fires in the same moment, the reserve is REFUSED, replan returns an error, and
+// the session reports "final replan failed" or the ceiling as its stop reason
+// rather than the cap that actually ended the research. Wrong explanation for the
+// right outcome, in a field §14.3 reports on.
+func TestDepthCapIsReportedAsTheDepthCap(t *testing.T) {
+	// Two rounds of one lead each: the initial plan, one replan that adds work
+	// and takes depth to the cap, then a third replan that must short-circuit.
+	r := newRig(t, 2_000_000, []string{
+		planJSON("first question"),
+		planJSON("second question"),
+	}, func(int, core.Lead) (*actors.Result, error) {
+		return okResult(1, 10_000), nil
+	})
+	r.exec.Planner = &planner.Planner{LLM: r.llm, MaxInitialLeads: 1, ReplanEvery: 1, MaxDepth: 1}
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if want := "lead tree reached the depth cap of 1"; res.StoppedBecause != want {
+		t.Errorf("StoppedBecause = %q, want %q", res.StoppedBecause, want)
+	}
+	// One decomposition plus one replan, and no reservation taken for a third.
+	if got := r.llm.count(); got != 2 {
+		t.Errorf("model calls = %d, want 2 (decompose + one replan)", got)
+	}
+	// And the cap really is what stopped it, not an exhausted budget.
+	if res.Status == core.StatusExhausted {
+		t.Errorf("status = %v: budget ran out, so this proves nothing about the cap", res.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The planner is told how much allowance is left
+// ---------------------------------------------------------------------------
+
+// TestReplanIsToldWhatIsLeft is the wiring half of the budget signal.
+//
+// §9.1's replan prompt instructs the planner to set done when the open
+// sub-questions are "not worth more budget", and the digest reported nothing
+// whatsoever about budget — an instruction with no answerable input. A digest
+// that CAN carry the figure is worth nothing if the executor never sets it, so
+// this asserts on the prompt the provider actually received.
+//
+// MaxLeads is the tightest limit here rather than spend, which also pins
+// RemainingFraction taking the minimum: 4 leads allowed means 75% left after
+// one, whatever the dollars say.
+func TestReplanIsToldWhatIsLeft(t *testing.T) {
+	r := newRigWithCeilings(t, 2_000_000, 4, 200, []string{
+		planJSON("first question"),
+		planJSON("second question"),
+		planJSON("third question"),
+	}, func(int, core.Lead) (*actors.Result, error) {
+		return okResult(1, 10_000), nil
+	})
+	r.exec.Planner = &planner.Planner{LLM: r.llm, MaxInitialLeads: 1, ReplanEvery: 1, MaxDepth: 2}
+
+	if _, err := r.exec.Run(context.Background(), r.sess.ID); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	pct := regexp.MustCompile(`Roughly (\d+)% of the session's allowance remains`)
+	var reported []int
+	for _, p := range r.llm.seen() {
+		if !strings.Contains(p, "Decide what to research next") {
+			continue // the initial decomposition carries no digest
+		}
+		m := pct.FindStringSubmatch(p)
+		if m == nil {
+			t.Fatalf("replan prompt carries no budget figure:\n%s", p)
+		}
+		n, _ := strconv.Atoi(m[1])
+		reported = append(reported, n)
+	}
+
+	// Exact, because "it decreased" is satisfied by a stale figure too: with the
+	// reload removed this reports [85 75] — one lead behind throughout, and the
+	// first entry falls back to the dollar term because a stale LeadCount of 0
+	// makes the lead ceiling look untouched. 3/4 then 2/4 leads left is the truth.
+	if len(reported) != 2 || reported[0] != 75 || reported[1] != 50 {
+		t.Errorf("allowance reported as %v across replans, want [75 50]: either the "+
+			"figure is stale, or it is not the minimum over every limit", reported)
 	}
 }

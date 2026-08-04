@@ -163,6 +163,23 @@ func (p *Planner) ShouldReplan(completedSinceLastReplan int, queueEmpty bool) bo
 	return completedSinceLastReplan >= pl.ReplanEvery
 }
 
+// DepthExhausted reports whether the lead tree has reached the depth cap.
+//
+// Exported so the caller can take that decision for free. Replan checks it too,
+// but only after the caller has reserved budget for a model call it turns out
+// not to make — and when a ceiling has just fired, the reservation is refused
+// and the session reports the ceiling as its stop reason instead of the cap that
+// actually ended it. Same outcome, wrong explanation, and the stop reason is an
+// eval metric (§14.3).
+func (p *Planner) DepthExhausted(depth int) bool {
+	return depth >= p.withDefaults().MaxDepth
+}
+
+// DepthCapReason describes the cap for a trace, without a model call.
+func (p *Planner) DepthCapReason() string {
+	return fmt.Sprintf("lead tree reached the depth cap of %d", p.withDefaults().MaxDepth)
+}
+
 // Replan proposes follow-up leads from the digest.
 //
 // The digest carries counts and the planner's own prior wording — no page text
@@ -178,8 +195,12 @@ func (p *Planner) Replan(ctx context.Context, sess *core.Session, d *Digest, dep
 	if depth >= pl.MaxDepth {
 		// The cap binds independently of budget (§9.1): a follow-up of a
 		// follow-up of a follow-up is usually drift, not depth.
+		//
+		// Kept as a backstop even though the executor now checks DepthExhausted
+		// before reserving: this is exported, and a caller that forgets must not
+		// get an unbounded lead tree.
 		out.Done = true
-		out.Rationale = fmt.Sprintf("lead tree reached the depth cap of %d", pl.MaxDepth)
+		out.Rationale = pl.DepthCapReason()
 		return out, nil
 	}
 

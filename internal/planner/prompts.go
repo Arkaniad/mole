@@ -67,6 +67,10 @@ Rules:
 - Set "done": true when the remaining open sub-questions are not worth more
   budget. Repeated dead ends on the same cause mean that route is closed, not
   that it needs another attempt.
+- The state below reports how much of the session's allowance is left. When it
+  is low, prefer stopping with what has been found over opening threads that
+  cannot finish: an unanswered sub-question costs nothing, while a half-researched
+  one spends the allowance that would have written up the rest.
 - Do NOT re-propose a sub-question that is already open. It is already queued.
 - You cannot see what was found, only how much. Do not invent findings.
 
