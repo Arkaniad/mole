@@ -170,16 +170,90 @@ type mineResponse struct {
 // not to — but strict about the contents. Being forgiving here costs nothing,
 // because a malformed claim still has to survive quote verification.
 func parseMined(raw string) ([]minedClaim, error) {
-	body := extractJSONObject(raw)
-	if body == "" {
-		return nil, fmt.Errorf("actors: no JSON object in model response (%.80q)", raw)
+	if body := extractJSONObject(raw); body != "" {
+		var parsed mineResponse
+		if err := json.Unmarshal([]byte(body), &parsed); err == nil {
+			return parsed.Claims, nil
+		}
 	}
 
-	var parsed mineResponse
-	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
-		return nil, fmt.Errorf("actors: parse claims: %w", err)
+	// Salvage what completed. A small model asked for several claims routinely
+	// hits its output ceiling mid-JSON:
+	//
+	//	{"claims":[{"text":"MambaByte provides a viable token-free alternative to subwor
+	//
+	// The strict path returns nothing for that — extractJSONObject finds no
+	// matching brace — so every claim in the response is discarded, including
+	// the ones that arrived whole. Observed costing three of four mining calls
+	// on a live 3B model.
+	//
+	// Salvaging is safe precisely because of §11.5: a recovered claim still has
+	// to carry a quote that appears verbatim in the chunk, so a half-parsed or
+	// hallucinated one dies at the boundary anyway. The only thing this changes
+	// is whether complete claims are thrown away alongside the incomplete one.
+	if claims := salvageClaims(raw); len(claims) > 0 {
+		return claims, nil
 	}
-	return parsed.Claims, nil
+	return nil, fmt.Errorf("actors: no usable claims in model response (%.120q)", raw)
+}
+
+// salvageClaims pulls every complete claim object out of a possibly-truncated
+// response.
+//
+// Scans for balanced {...} objects and unmarshals each on its own, so a
+// malformed or cut-off object costs only itself. Deliberately ignores the
+// surrounding structure: models wrap the array in an object, in a bare array, in
+// a code fence, and occasionally in all three.
+func salvageClaims(raw string) []minedClaim {
+	var out []minedClaim
+
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '{' {
+			continue
+		}
+		end, ok := matchBrace(raw, i)
+		if !ok {
+			// Unterminated. Do NOT stop here: the outer {"claims": ...} wrapper
+			// is itself unterminated in a truncated response, and breaking on it
+			// meant the inner claim objects were never reached at all — which
+			// made the whole salvage path a no-op.
+			continue
+		}
+		var c minedClaim
+		if err := json.Unmarshal([]byte(raw[i:end]), &c); err == nil && c.Text != "" && c.Quote != "" {
+			out = append(out, c)
+			i = end - 1
+			continue
+		}
+		// Not a claim object — most likely the outer {"claims": ...} wrapper.
+		// Step inside rather than past it, so its contents are still scanned.
+	}
+	return out
+}
+
+// matchBrace returns the index just past the object starting at start.
+func matchBrace(s string, start int) (int, bool) {
+	depth, inString, escaped := 0, false, false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case escaped:
+			escaped = false
+		case c == '\\' && inString:
+			escaped = true
+		case c == '"':
+			inString = !inString
+		case inString:
+		case c == '{':
+			depth++
+		case c == '}':
+			depth--
+			if depth == 0 {
+				return i + 1, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // extractJSONObject finds the outermost JSON object in a string, tolerating
