@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1128,4 +1129,43 @@ func (c *cancellingLLM) Complete(ctx context.Context, req llm.Request) (*llm.Res
 	c.cancel()
 	return &llm.Response{Model: "m", Usage: llm.Usage{InputTokens: 100}},
 		fmt.Errorf("Post \"http://127.0.0.1:11434/v1/chat/completions\": %w", context.Canceled)
+}
+
+// TestProgressReportsEachPhase. Planning is a single model call with no output
+// until it returns, and on a local model that is minutes of silence — three real
+// runs were killed by hand because the CLI printed a header and then nothing.
+func TestProgressReportsEachPhase(t *testing.T) {
+	var phases []string
+
+	replies := []string{planJSON("a", "b", "c"), planJSON("d"), `{"done":true}`}
+	r := newRig(t, 50*core.MicrosPerUSD, replies,
+		func(int, core.Lead) (*actors.Result, error) { return okResult(2, 5_000), nil })
+	r.exec.Progress = func(ev executor.Event) { phases = append(phases, ev.Phase) }
+
+	if _, err := r.exec.Run(context.Background(), r.sess.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Planning must be announced BEFORE anything else, because it is the phase
+	// with no output of its own.
+	if len(phases) == 0 || phases[0] != "planning" {
+		t.Fatalf("first event = %v, want planning first", phases)
+	}
+	for _, want := range []string{"planning", "executing", "lead", "lead-done", "replanning"} {
+		if !slices.Contains(phases, want) {
+			t.Errorf("no %q event was reported: %v", want, phases)
+		}
+	}
+}
+
+// TestProgressIsOptional: a nil callback must not panic, since every non-CLI
+// caller leaves it unset.
+func TestProgressIsOptional(t *testing.T) {
+	r := newRig(t, 20*core.MicrosPerUSD, []string{planJSON("a"), `{"done":true}`},
+		func(int, core.Lead) (*actors.Result, error) { return okResult(1, 1_000), nil })
+	r.exec.Progress = nil
+
+	if _, err := r.exec.Run(context.Background(), r.sess.ID); err != nil {
+		t.Fatal(err)
+	}
 }

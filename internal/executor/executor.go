@@ -44,6 +44,14 @@ type Executor struct {
 	// Owner identifies this worker in a lease. M5 gives each worker its own.
 	Owner string
 
+	// Progress reports phase transitions as they happen. Optional.
+	//
+	// Not decoration. Planning is a single model call with no output until it
+	// returns, and on a local model that is minutes of silence — three runs were
+	// killed by hand because the CLI printed a header and then nothing, which
+	// reads as a hang rather than as work.
+	Progress func(Event)
+
 	// Cache holds artifacts already researched in this session (§9.3). Shared
 	// with the actor, so a lead-level hit and a URL-level hit are the same
 	// cache and one lead's fetches serve another's.
@@ -67,6 +75,19 @@ type Executor struct {
 	// Sleep waits between retries. Injectable so a test does not spend the
 	// backoff in real time.
 	Sleep func(context.Context, time.Duration) error
+}
+
+// Event is a step the caller may want to show.
+type Event struct {
+	Phase string // "planning", "executing", "replanning", "lead", "cached"
+	// Detail is a short human-readable note, already formatted.
+	Detail string
+}
+
+func (e *Executor) emit(phase, detail string) {
+	if e.Progress != nil {
+		e.Progress(Event{Phase: phase, Detail: detail})
+	}
 }
 
 // Result is what a session produced.
@@ -164,6 +185,7 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 	leadQuestion := map[string]string{}
 
 	// 1. Decompose.
+	e.emit("planning", "decomposing the question")
 	plan, err := e.planWithBudget(ctx, sess, func() (*planner.Plan, error) {
 		return e.Planner.InitialLeads(ctx, sess)
 	})
@@ -196,6 +218,7 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 	if err := e.Queue.Push(ctx, plan.Leads); err != nil {
 		return res, err
 	}
+	e.emit("executing", fmt.Sprintf("%d sub-question(s) queued", len(plan.Leads)))
 
 	// 2. Work the queue.
 	completedSinceReplan := 0
@@ -260,13 +283,17 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 		// nothing back — and the next replan spawned an equivalent lead,
 		// forever. Recording the coverage is what closes that loop.
 		if e.completeFromCache(ctx, lease, digest, leadQuestion) {
+			e.emit("cached", truncateQuery(lease.Lead.Query))
 			res.LeadsCached++
 			completedSinceReplan++
 			continue
 		}
 
+		e.emit("lead", truncateQuery(lease.Lead.Query))
 		outcome := e.runLead(ctx, sess, lease, digest, leadQuestion)
 		res.LeadsRun++
+		e.emit("lead-done", fmt.Sprintf("%d claim(s)%s",
+			len(outcome.claims), leadNote(outcome)))
 
 		// Count the lead AFTER it runs, not before. Nothing else counts them:
 		// BudgetDelta.LeadCount and the SQL applying it existed since M0, but
@@ -525,6 +552,7 @@ func (e *Executor) replan(
 	res *Result,
 	leadQuestion map[string]string,
 ) (added int, done bool, err error) {
+	e.emit("replanning", fmt.Sprintf("%d open sub-question(s)", len(digest.Open())))
 	plan, perr := e.planWithBudget(ctx, sess, func() (*planner.Plan, error) {
 		return e.Planner.Replan(ctx, sess, digest, depth)
 	})
@@ -755,6 +783,21 @@ func ceilingReason(err error) string {
 		}
 	}
 	return "budget exhausted"
+}
+
+func truncateQuery(q string) string {
+	q = strings.Join(strings.Fields(q), " ")
+	if len(q) <= 52 {
+		return q
+	}
+	return q[:51] + "…"
+}
+
+func leadNote(o leadOutcome) string {
+	if o.err == nil {
+		return ""
+	}
+	return ", " + o.class.String() + ": " + truncateQuery(o.err.Error())
 }
 
 func statusForContext(err error) core.SessionStatus {
