@@ -238,8 +238,13 @@ func claimIntegrity(claims []*core.Claim) Metric {
 		if u, err := url.Parse(c.Source); err != nil || u.Host == "" {
 			why = append(why, "unresolvable source")
 		}
+		// Both are 0-1. Confidence is 0 on an unverified claim, which is correct
+		// rather than malformed, so only the range is checked here.
 		if c.Confidence < 0 || c.Confidence > 1 {
-			why = append(why, "confidence outside 0-1")
+			why = append(why, "derived confidence outside 0-1")
+		}
+		if c.AssertionStrength < 0 || c.AssertionStrength > 1 {
+			why = append(why, "assertion strength outside 0-1")
 		}
 		if len(why) > 0 {
 			bad++

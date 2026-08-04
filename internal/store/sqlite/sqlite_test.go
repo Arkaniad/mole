@@ -459,3 +459,55 @@ func TestFetchOutcomeSurvivesWithoutSession(t *testing.T) {
 		t.Fatalf("record without session: %v", err)
 	}
 }
+
+// TestAssertionStrengthAndConfidenceAreDistinctColumns guards the split §11.3
+// requires, at the layer where it can silently collapse.
+//
+// Both fields are float64 in the 0-1 range and adjacent in the struct, the
+// INSERT, and the SELECT. Bind them to one column and everything still compiles,
+// every range check still passes, and the only symptom is that the extractor's
+// self-report is back to ordering the report — the bug this split exists to
+// remove. Distinct values in, distinct values out.
+func TestAssertionStrengthAndConfidenceAreDistinctColumns(t *testing.T) {
+	ctx := context.Background()
+	db, _ := open(t)
+	insertSession(t, db, "s_claims", 1_000_000)
+
+	// Deliberately opposite ends of the range: a swap or a shared column shows up
+	// as one value in both fields.
+	want := core.Claim{
+		SessionID: "s_claims",
+		LeadID:    "l_1",
+		Text:      "A claim.",
+		Source:    "https://a.example/x",
+		Quote:     "a quote long enough to constitute real evidence",
+
+		AssertionStrength: 0.9,
+		Confidence:        0.1,
+	}
+
+	if err := db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.InsertClaims(ctx, []core.Claim{want})
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	var got []*core.Claim
+	if err := db.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		got, err = q.ListClaims(ctx, "s_claims", 10)
+		return err
+	}); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d claims, want 1", len(got))
+	}
+
+	if got[0].AssertionStrength != want.AssertionStrength {
+		t.Errorf("AssertionStrength = %v, want %v", got[0].AssertionStrength, want.AssertionStrength)
+	}
+	if got[0].Confidence != want.Confidence {
+		t.Errorf("Confidence = %v, want %v", got[0].Confidence, want.Confidence)
+	}
+}

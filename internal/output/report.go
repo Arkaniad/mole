@@ -187,14 +187,38 @@ func (g *Generator) Generate(ctx context.Context, st store.Store, sessionID stri
 	return rep, nil
 }
 
-// mostConfident keeps the n highest-confidence claims.
+// mostConfident keeps the n claims most worth putting in front of the model.
+//
+// Ordered by DERIVED confidence (§11.3), never by the extractor's self-report.
+// This function used to sort by the latter, under the same field name, so an
+// uncalibrated number — one §11.3 describes as "mostly encoding fluency" —
+// decided which claims led the answer and which were dropped at the cap. A
+// fluently-worded claim from one anonymous page outranked a claim corroborated
+// by three independent publishers.
+//
+// Until the Verifier scores a session, every derived confidence is 0 and this
+// sort has nothing to work with. Assertion strength is the wrong tie-break —
+// preferring it is the exact behaviour being removed — so ties fall back to
+// source breadth: a claim from a source that also supports others is more likely
+// load-bearing than one from a page mentioned once. Mechanical, and it does not
+// pretend to be a confidence judgment.
 //
 // Sorts a copy: Generate used to sort the slice it was handed, which aliases the
 // caller's backing array. Harmless while it comes straight from a store read,
 // and invisible at the call site if that ever changes.
 func mostConfident(claims []*core.Claim, n int) []*core.Claim {
+	perSource := map[string]int{}
+	for _, c := range claims {
+		perSource[c.Source]++
+	}
+
 	out := append([]*core.Claim(nil), claims...)
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Confidence > out[j].Confidence })
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Confidence != out[j].Confidence {
+			return out[i].Confidence > out[j].Confidence
+		}
+		return perSource[out[i].Source] > perSource[out[j].Source]
+	})
 	if n > 0 && len(out) > n {
 		out = out[:n]
 	}

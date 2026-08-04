@@ -750,3 +750,46 @@ func hasType(kinds []core.CallType, want core.CallType) bool {
 }
 
 var _ = url.Parse
+
+// TestExtractorNumberLandsInAssertionStrength is the wiring half of §11.3.
+//
+// The mine prompt asks for "how clearly the document states this, NOT how true
+// you believe it is" — a property of the document. That answer was being written
+// to Claim.Confidence, where §11.3 requires a figure derived from graph structure,
+// and the report was ordered by it.
+//
+// Separating the two fields is worth nothing if the actor still fills the wrong
+// one, so this asserts on the claim the actor actually emits: the extractor's 0.9
+// must appear as assertion strength, and confidence must be 0 because nothing has
+// verified anything yet.
+func TestExtractorNumberLandsInAssertionStrength(t *testing.T) {
+	const pageURL = "https://arxiv.example/abs/2401.13660"
+
+	h := newHarness(t,
+		[]search.Result{{URL: pageURL, Title: "MambaByte results", Rank: 1}},
+		map[string]*fetch.Result{
+			pageURL: {
+				URL: pageURL, Outcome: fetch.OutcomeOK, StatusCode: 200,
+				ContentType: "text/html", Content: []byte(articleHTML()),
+			},
+		}, nil)
+
+	res, err := h.actor.Run(context.Background(), h.lead)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(res.Claims) == 0 {
+		t.Fatal("no claims produced")
+	}
+	c := res.Claims[0]
+
+	// mineFromSource reports 0.9.
+	if c.AssertionStrength != 0.9 {
+		t.Errorf("AssertionStrength = %v, want 0.9 (the extractor's own number)", c.AssertionStrength)
+	}
+	if c.Confidence != 0 {
+		t.Errorf("Confidence = %v, want 0: nothing has verified this claim, and a "+
+			"non-zero value here is the self-report leaking back into the field "+
+			"§11.3 reserves for derived confidence", c.Confidence)
+	}
+}

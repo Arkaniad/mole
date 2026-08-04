@@ -529,3 +529,86 @@ func TestOneClaimCannotInflateTheSynthesisCall(t *testing.T) {
 		t.Error("the oversized claim was dropped rather than clamped")
 	}
 }
+
+// TestSelfReportedConfidenceDoesNotOrderTheReport is why §11.3 exists.
+//
+// The extractor's own number rode in `Claim.Confidence` from M1 until M4, and
+// this function is what made it harmful rather than merely wrong: the report is
+// ordered and truncated by confidence, so an uncalibrated self-report — §11.3
+// calls it "mostly encoding fluency" — chose which claims led the answer and
+// which were dropped at the cap.
+//
+// The claim that must win here is the one three independent publishers support
+// while the extractor rated it lowest.
+func TestSelfReportedConfidenceDoesNotOrderTheReport(t *testing.T) {
+	var claims []core.Claim
+
+	// One fluent-sounding claim from a single page, rated maximally by the model.
+	loud := claim("A bold assertion nobody else makes.",
+		"https://blog.example/hot-take", "a quote supporting the bold assertion")
+	loud.AssertionStrength = 1.0
+	loud.Confidence = 0
+	claims = append(claims, loud)
+
+	// The same finding from three publishers, each rated low by the model, all
+	// scored by the Verifier as corroborated.
+	for i, host := range []string{"nature.example", "science.example", "nih.example"} {
+		c := claim("The corroborated finding.",
+			fmt.Sprintf("https://%s/paper%d", host, i),
+			fmt.Sprintf("a quote supporting the corroborated finding %d", i))
+		c.AssertionStrength = 0.1
+		c.Confidence = 0.9
+		claims = append(claims, c)
+	}
+
+	st, sid := newStore(t, claims)
+	f := &fakeLLM{reply: func(string) string { return "Summary [1]." }}
+	// A cap of 1 forces the ordering to decide, rather than including everything.
+	if _, err := (&output.Generator{LLM: f, MaxClaims: 1}).Generate(context.Background(), st, sid); err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(f.prompt, "A bold assertion nobody else makes.") {
+		t.Errorf("the model's own 1.0 outranked a corroborated claim:\n%s", f.prompt)
+	}
+	if !strings.Contains(f.prompt, "The corroborated finding.") {
+		t.Errorf("the corroborated claim was dropped:\n%s", f.prompt)
+	}
+}
+
+// TestUnverifiedClaimsFallBackToSourceBreadth covers the pre-Verifier state,
+// which is every session until the Verifier runs on it.
+//
+// With all derived confidences at 0 the sort has nothing to rank by, and the
+// tempting tie-break — assertion strength — is the exact behaviour being
+// removed. Source breadth is mechanical and makes no claim to be a confidence
+// judgment: a source that also supports other claims is more likely load-bearing
+// than a page mentioned once.
+func TestUnverifiedClaimsFallBackToSourceBreadth(t *testing.T) {
+	var claims []core.Claim
+
+	// Rated 1.0, but its source supports nothing else.
+	lonely := claim("A claim from a page mentioned once.",
+		"https://onceoff.example/a", "a quote supporting the once-off claim")
+	lonely.AssertionStrength = 1.0
+	claims = append(claims, lonely)
+
+	// Rated 0.1, from a source that supports three claims.
+	for i := 0; i < 3; i++ {
+		c := claim(fmt.Sprintf("A claim from the broad source %d.", i),
+			"https://broad.example/a",
+			fmt.Sprintf("a quote supporting the broad-source claim %d", i))
+		c.AssertionStrength = 0.1
+		claims = append(claims, c)
+	}
+
+	st, sid := newStore(t, claims)
+	f := &fakeLLM{reply: func(string) string { return "Summary [1]." }}
+	if _, err := (&output.Generator{LLM: f, MaxClaims: 1}).Generate(context.Background(), st, sid); err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(f.prompt, "A claim from a page mentioned once.") {
+		t.Errorf("assertion strength is still breaking ties:\n%s", f.prompt)
+	}
+}

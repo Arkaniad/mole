@@ -970,7 +970,7 @@ func (t *queries) CountLeadsByStatus(ctx context.Context, sessionID string) (map
 
 const claimCols = `id, session_id, lead_id, text, source, tool_call_id, quote,
 	quote_offset, published_at, retrieved_at, root_claim_id, verify_depth,
-	confidence, grounded, created_at`
+	assertion_strength, confidence, grounded, created_at`
 
 // InsertClaims writes a batch.
 //
@@ -1003,10 +1003,11 @@ func (t *queries) InsertClaims(ctx context.Context, claims []core.Claim) error {
 		}
 
 		_, err := t.q.ExecContext(ctx, `
-			INSERT INTO claims (`+claimCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			INSERT INTO claims (`+claimCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			c.ID, c.SessionID, c.LeadID, c.Text, c.Source, c.ToolCallID, c.Quote,
 			c.QuoteOffset, nullMicros(c.PublishedAt), toMicros(c.RetrievedAt),
-			c.RootClaimID, c.VerifyDepth, c.Confidence, grounded, toMicros(c.CreatedAt))
+			c.RootClaimID, c.VerifyDepth, c.AssertionStrength, c.Confidence, grounded,
+			toMicros(c.CreatedAt))
 		if err != nil {
 			return fmt.Errorf("sqlite: insert claim %d/%d: %w", i+1, len(claims), err)
 		}
@@ -1037,7 +1038,8 @@ func (t *queries) ListClaims(ctx context.Context, sessionID string, limit int) (
 		)
 		if err := rows.Scan(&c.ID, &c.SessionID, &c.LeadID, &c.Text, &c.Source,
 			&c.ToolCallID, &c.Quote, &c.QuoteOffset, &published, &retrieved,
-			&c.RootClaimID, &c.VerifyDepth, &c.Confidence, &grounded, &created); err != nil {
+			&c.RootClaimID, &c.VerifyDepth, &c.AssertionStrength, &c.Confidence,
+			&grounded, &created); err != nil {
 			return nil, err
 		}
 		c.PublishedAt = micrasPtr(published)

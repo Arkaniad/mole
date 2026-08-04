@@ -337,6 +337,21 @@ type Claim struct {
 	RootClaimID string
 	VerifyDepth int
 
+	// AssertionStrength is how clearly the SOURCE states this, as reported by
+	// the extracting model. A property of the document, not of the world, and
+	// that is all the mine prompt asks for.
+	//
+	// Not confidence, and kept separate from it because it was serving as
+	// confidence: §11.3 rejects self-reported confidence as uncalibrated and
+	// "mostly encoding fluency", and the report was ordered by it.
+	AssertionStrength float64
+
+	// Confidence is derived from graph structure (§11.3) — independent
+	// corroborating publishers, source class, contradicting edges, grounding,
+	// recency. Never asked of a model.
+	//
+	// Zero until the Verifier has scored the claim, which is the honest value:
+	// nothing corroborates a claim that has not been compared to anything.
 	Confidence float64
 	Grounded   *bool
 

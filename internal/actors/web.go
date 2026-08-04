@@ -394,7 +394,11 @@ func (a *WebActor) mineChunk(
 			QuoteOffset: int64(chunk.Start + match.Offset),
 			PublishedAt: doc.PublishedAt,
 			RetrievedAt: now,
-			Confidence:  clamp01(m.Confidence),
+			// The extractor reports how clearly the DOCUMENT states this, which
+			// is all the mine prompt asks for. Writing it to Confidence made an
+			// uncalibrated self-report decide which claims led the report
+			// (§11.3); the Verifier derives confidence from the graph.
+			AssertionStrength: clamp01(m.Confidence),
 		})
 
 		if len(claims) >= maxClaims {
