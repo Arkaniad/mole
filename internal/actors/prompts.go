@@ -170,6 +170,15 @@ type mineResponse struct {
 // not to — but strict about the contents. Being forgiving here costs nothing,
 // because a malformed claim still has to survive quote verification.
 func parseMined(raw string) ([]minedClaim, error) {
+	// "no claims" is a legitimate answer, and the prompt asks for it explicitly.
+	// A model that says so as a bare `[]` rather than `{"claims":[]}` was being
+	// reported as a parse failure, which turned a correct response into a failed
+	// chunk — seen on a live run against arxiv.org, where the model had simply
+	// found nothing in that chunk.
+	if empty, ok := emptyClaimSet(raw); ok {
+		return empty, nil
+	}
+
 	if body := extractJSONObject(raw); body != "" {
 		var parsed mineResponse
 		if err := json.Unmarshal([]byte(body), &parsed); err == nil {
@@ -195,6 +204,22 @@ func parseMined(raw string) ([]minedClaim, error) {
 		return claims, nil
 	}
 	return nil, fmt.Errorf("actors: no usable claims in model response (%.120q)", raw)
+}
+
+// emptyClaimSet recognizes a well-formed response that reports no claims, in any
+// of the shapes models use for it.
+func emptyClaimSet(raw string) ([]minedClaim, bool) {
+	body := strings.TrimSpace(stripFence(raw))
+
+	var asObject mineResponse
+	if err := json.Unmarshal([]byte(body), &asObject); err == nil && len(asObject.Claims) == 0 {
+		return nil, true
+	}
+	var asArray []minedClaim
+	if err := json.Unmarshal([]byte(body), &asArray); err == nil && len(asArray) == 0 {
+		return nil, true
+	}
+	return nil, false
 }
 
 // salvageClaims pulls every complete claim object out of a possibly-truncated
@@ -256,22 +281,28 @@ func matchBrace(s string, start int) (int, bool) {
 	return 0, false
 }
 
+// stripFence removes a markdown code fence, which models add despite being told
+// to return JSON only.
+func stripFence(s string) string {
+	s = strings.TrimSpace(s)
+	i := strings.Index(s, "```")
+	if i < 0 {
+		return s
+	}
+	rest := s[i+3:]
+	if j := strings.IndexByte(rest, '\n'); j >= 0 {
+		rest = rest[j+1:]
+	}
+	if k := strings.Index(rest, "```"); k >= 0 {
+		rest = rest[:k]
+	}
+	return strings.TrimSpace(rest)
+}
+
 // extractJSONObject finds the outermost JSON object in a string, tolerating
 // code fences and surrounding prose.
 func extractJSONObject(s string) string {
-	s = strings.TrimSpace(s)
-
-	// Strip a fenced block if present.
-	if i := strings.Index(s, "```"); i >= 0 {
-		rest := s[i+3:]
-		if j := strings.IndexByte(rest, '\n'); j >= 0 {
-			rest = rest[j+1:]
-		}
-		if k := strings.Index(rest, "```"); k >= 0 {
-			rest = rest[:k]
-		}
-		s = strings.TrimSpace(rest)
-	}
+	s = stripFence(s)
 
 	start := strings.IndexByte(s, '{')
 	if start < 0 {

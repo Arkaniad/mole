@@ -124,3 +124,36 @@ func TestSalvageIgnoresTheWrapperObject(t *testing.T) {
 		t.Errorf("recovered %+v", claims[0])
 	}
 }
+
+// TestNoClaimsIsAValidAnswer. The prompt asks explicitly for {"claims":[]} when a
+// document says nothing relevant, and models express that as a bare array, a
+// wrapped object, or either inside a code fence. Reporting any of those as a
+// parse failure turns a correct response into a failed chunk — observed on a live
+// run against arxiv.org, where the model had simply found nothing in that chunk.
+func TestNoClaimsIsAValidAnswer(t *testing.T) {
+	for _, raw := range []string{
+		`[]`,
+		`{"claims":[]}`,
+		"```json\n[]\n```",
+		"```\n{\"claims\": []}\n```",
+		"  [ ]  ",
+	} {
+		claims, err := parseMined(raw)
+		if err != nil {
+			t.Errorf("%q was rejected: %v", raw, err)
+		}
+		if len(claims) != 0 {
+			t.Errorf("%q produced %d claims", raw, len(claims))
+		}
+	}
+}
+
+// TestEmptyIsNotConfusedWithGarbage: an empty answer and an unparseable one call
+// for different responses, and only the second is a failed chunk.
+func TestEmptyIsNotConfusedWithGarbage(t *testing.T) {
+	for _, raw := range []string{"", "I cannot help with that.", "{{{{", "not json"} {
+		if _, err := parseMined(raw); err == nil {
+			t.Errorf("%q was accepted as an empty claim set", raw)
+		}
+	}
+}
