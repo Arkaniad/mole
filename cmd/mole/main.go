@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -386,6 +387,8 @@ func cmdTrace(ctx context.Context, path, sessionID string) error {
 		sess   *core.Session
 		byRole map[core.Role]core.Cost
 		spans  []*core.Span
+		claims []*core.Claim
+		edges  []*core.ClaimEdge
 	)
 	if err := db.Read(ctx, func(ctx context.Context, q store.Queries) error {
 		var err error
@@ -393,6 +396,12 @@ func cmdTrace(ctx context.Context, path, sessionID string) error {
 			return err
 		}
 		if byRole, err = q.SumCostsByRole(ctx, sessionID); err != nil {
+			return err
+		}
+		if claims, err = q.ListClaims(ctx, sessionID, 0); err != nil {
+			return err
+		}
+		if edges, err = q.ListEdges(ctx, sessionID, 0); err != nil {
 			return err
 		}
 		spans, err = q.ListSpans(ctx, sessionID)
@@ -456,6 +465,8 @@ func cmdTrace(ctx context.Context, path, sessionID string) error {
 		fmt.Printf("ledger: DRIFT — spent recorded=%d ledger=%d, held recorded=%d rows=%d, calls recorded=%d rows=%d\n",
 			v.SpentRecorded, v.SpentFromLedger, v.HeldRecorded, v.HeldFromRows, v.CallsRecorded, v.CallsFromRows)
 	}
+
+	printClaimGraph(os.Stdout, claims, edges)
 
 	if len(spans) > 0 {
 		fmt.Printf("\nspans (%d):\n", len(spans))
@@ -1039,4 +1050,82 @@ func cmdConfigTestLLM(ctx context.Context) error {
 		fmt.Printf("  cost:  %s\n", core.FormatUSD(cost.USDMicros))
 	}
 	return nil
+}
+
+// printClaimGraph shows the §11 graph: how many claims, how many are scored, and
+// what the edges say.
+//
+// The unverified count is the load-bearing number. §11.3's derived confidence is
+// 0 until the Verifier scores a claim, and a reader who saw only confidences would
+// read a whole session of unscored claims as a session of worthless ones.
+func printClaimGraph(w io.Writer, claims []*core.Claim, edges []*core.ClaimEdge) {
+	if len(claims) == 0 {
+		return
+	}
+
+	verified := 0
+	for _, c := range claims {
+		if c.VerifiedAt != nil {
+			verified++
+		}
+	}
+
+	fmt.Fprintf(w, "\nclaims: %d", len(claims))
+	switch {
+	case verified == 0:
+		fmt.Fprint(w, " · none verified — derived confidence is 0 until the Verifier runs")
+	case verified < len(claims):
+		fmt.Fprintf(w, " · %d verified, %d not", verified, len(claims)-verified)
+	default:
+		fmt.Fprint(w, " · all verified")
+	}
+	fmt.Fprintln(w)
+
+	if len(edges) == 0 {
+		return
+	}
+
+	byKind := map[core.EdgeKind]int{}
+	for _, e := range edges {
+		byKind[e.Kind]++
+	}
+	// Fixed order, so two traces of the same session read the same way.
+	order := []core.EdgeKind{core.EdgeDuplicateOf, core.EdgeSupports,
+		core.EdgeContradicts, core.EdgeSupersedes, core.EdgeRefines}
+
+	fmt.Fprintf(w, "graph: %d edge(s)\n", len(edges))
+	gw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(gw, "  KIND\tCOUNT")
+	for _, k := range order {
+		if n := byKind[k]; n > 0 {
+			fmt.Fprintf(gw, "  %s\t%d\n", k, n)
+		}
+	}
+	if err := gw.Flush(); err != nil {
+		return
+	}
+
+	// Contradictions are the one kind worth naming individually: they are what a
+	// reader most needs to see, and §11.3 penalizes confidence for them.
+	text := map[string]string{}
+	for _, c := range claims {
+		text[c.ID] = c.Text
+	}
+	shown := 0
+	for _, e := range edges {
+		if e.Kind != core.EdgeContradicts || shown >= 5 {
+			continue
+		}
+		if shown == 0 {
+			fmt.Fprintln(w, "\ncontradictions:")
+		}
+		shown++
+		fmt.Fprintf(w, "  %.60q\n  ⚡ %.60q\n", text[e.FromID], text[e.ToID])
+		if e.Rationale != "" {
+			fmt.Fprintf(w, "     %.100s\n", e.Rationale)
+		}
+	}
+	if n := byKind[core.EdgeContradicts]; n > shown {
+		fmt.Fprintf(w, "  (%d more)\n", n-shown)
+	}
 }

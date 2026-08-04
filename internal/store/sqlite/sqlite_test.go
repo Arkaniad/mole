@@ -511,3 +511,249 @@ func TestAssertionStrengthAndConfidenceAreDistinctColumns(t *testing.T) {
 		t.Errorf("Confidence = %v, want %v", got[0].Confidence, want.Confidence)
 	}
 }
+
+// insertClaim writes one claim and returns its assigned ID.
+func insertClaim(t *testing.T, db *sqlite.DB, sessionID, text, source string) string {
+	t.Helper()
+	batch := []core.Claim{{
+		SessionID: sessionID, LeadID: "l_1", Text: text, Source: source,
+		Quote: "a quote long enough to constitute real evidence",
+	}}
+	if err := db.WithTx(context.Background(), func(ctx context.Context, tx store.Tx) error {
+		return tx.InsertClaims(ctx, batch)
+	}); err != nil {
+		t.Fatalf("insert claim: %v", err)
+	}
+	return batch[0].ID
+}
+
+func listEdges(t *testing.T, db *sqlite.DB, sessionID string) []*core.ClaimEdge {
+	t.Helper()
+	var out []*core.ClaimEdge
+	if err := db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		var err error
+		out, err = q.ListEdges(ctx, sessionID, 100)
+		return err
+	}); err != nil {
+		t.Fatalf("list edges: %v", err)
+	}
+	return out
+}
+
+// TestSymmetricEdgesAreStoredOnce is what stops §11.3 counting one disagreement
+// twice.
+//
+// The UNIQUE constraint is on (from_id, to_id, kind), so "A contradicts B" and "B
+// contradicts A" are two distinct rows as far as the schema is concerned — and
+// they will both be produced, because clustering reaches the same pair from either
+// end. Confidence is penalized per contradicting edge, so an unconstrained pair
+// docks both claims twice for one disagreement.
+func TestSymmetricEdgesAreStoredOnce(t *testing.T) {
+	ctx := context.Background()
+	db, _ := open(t)
+	insertSession(t, db, "s_graph", 1_000_000)
+
+	a := insertClaim(t, db, "s_graph", "Claim A.", "https://a.example/1")
+	b := insertClaim(t, db, "s_graph", "Claim B.", "https://b.example/1")
+
+	// The same disagreement, discovered from both ends, plus a duplicate_of pair
+	// for good measure.
+	err := db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.InsertEdges(ctx, []core.ClaimEdge{
+			{SessionID: "s_graph", FromID: a, ToID: b, Kind: core.EdgeContradicts, Weight: 0.5},
+			{SessionID: "s_graph", FromID: b, ToID: a, Kind: core.EdgeContradicts, Weight: 0.9},
+			{SessionID: "s_graph", FromID: b, ToID: a, Kind: core.EdgeDuplicateOf},
+			{SessionID: "s_graph", FromID: a, ToID: b, Kind: core.EdgeDuplicateOf},
+		})
+	})
+	if err != nil {
+		t.Fatalf("insert edges: %v", err)
+	}
+
+	edges := listEdges(t, db, "s_graph")
+	if len(edges) != 2 {
+		for _, e := range edges {
+			t.Logf("  %s -%s-> %s w=%v", e.FromID, e.Kind, e.ToID, e.Weight)
+		}
+		t.Fatalf("%d edges stored, want 2: one contradiction and one duplicate, "+
+			"each discovered from both ends", len(edges))
+	}
+
+	for _, e := range edges {
+		if e.FromID > e.ToID {
+			t.Errorf("%s edge is not canonically ordered: %s -> %s", e.Kind, e.FromID, e.ToID)
+		}
+		// The later judgement wins on conflict, so the contradiction carries 0.9.
+		if e.Kind == core.EdgeContradicts && e.Weight != 0.9 {
+			t.Errorf("contradiction weight = %v, want 0.9 (the later judgement)", e.Weight)
+		}
+	}
+}
+
+// TestDirectionalEdgesKeepTheirDirection is the other half: canonicalizing
+// everything would erase the arrow that makes an edge mean something.
+//
+// `supersedes` is decided from PublishedAt, so reversing it turns "the 2025 paper
+// supersedes the 2019 one" into staleness pointing backwards. `refines` and
+// `supports` are equally directional — a specific finding supporting a general
+// conclusion is not the same statement reversed.
+//
+// Both ID orderings are exercised deliberately. The first version of this test
+// sorted the pair and skipped when the ordering came out the other way; IDs are
+// crypto/rand, so it silently ran half the time and reported a pass the rest.
+func TestDirectionalEdgesKeepTheirDirection(t *testing.T) {
+	ctx := context.Background()
+	db, _ := open(t)
+	insertSession(t, db, "s_dir", 1_000_000)
+
+	x := insertClaim(t, db, "s_dir", "One finding.", "https://one.example/1")
+	y := insertClaim(t, db, "s_dir", "Another finding.", "https://two.example/1")
+	lo, hi := x, y
+	if hi < lo {
+		lo, hi = hi, lo
+	}
+
+	// One edge with the endpoints already ordered, one against the ordering, so
+	// neither outcome can be reached by canonicalizing in a fixed direction.
+	want := []core.ClaimEdge{
+		{SessionID: "s_dir", FromID: hi, ToID: lo, Kind: core.EdgeSupersedes},
+		{SessionID: "s_dir", FromID: lo, ToID: hi, Kind: core.EdgeRefines},
+	}
+	if err := db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.InsertEdges(ctx, want)
+	}); err != nil {
+		t.Fatalf("insert edges: %v", err)
+	}
+
+	got := map[core.EdgeKind][2]string{}
+	for _, e := range listEdges(t, db, "s_dir") {
+		got[e.Kind] = [2]string{e.FromID, e.ToID}
+	}
+	if len(got) != 2 {
+		t.Fatalf("%d distinct edge kinds stored, want 2", len(got))
+	}
+	for _, w := range want {
+		if g := got[w.Kind]; g != [2]string{w.FromID, w.ToID} {
+			t.Errorf("%s edge stored as %s -> %s, want %s -> %s; the arrow is the meaning",
+				w.Kind, g[0], g[1], w.FromID, w.ToID)
+		}
+	}
+}
+
+// TestSelfEdgesAndUnknownKindsAreRejected covers what the schema lets through.
+//
+// claim_edges has no foreign key to claims and no CHECK against from_id = to_id,
+// so a self-edge persists silently — and a claim that corroborates itself inflates
+// its own confidence, which is the one number §11.3 exists to make trustworthy.
+func TestSelfEdgesAndUnknownKindsAreRejected(t *testing.T) {
+	ctx := context.Background()
+	db, _ := open(t)
+	insertSession(t, db, "s_bad", 1_000_000)
+	a := insertClaim(t, db, "s_bad", "Claim A.", "https://a.example/1")
+	b := insertClaim(t, db, "s_bad", "Claim B.", "https://b.example/1")
+
+	cases := map[string]core.ClaimEdge{
+		"self-edge":    {SessionID: "s_bad", FromID: a, ToID: a, Kind: core.EdgeSupports},
+		"unknown kind": {SessionID: "s_bad", FromID: a, ToID: b, Kind: core.EdgeKind("agrees_vaguely")},
+		"empty target": {SessionID: "s_bad", FromID: a, ToID: "", Kind: core.EdgeSupports},
+	}
+
+	for name, edge := range cases {
+		err := db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+			return tx.InsertEdges(ctx, []core.ClaimEdge{edge})
+		})
+		if err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+	if n := len(listEdges(t, db, "s_bad")); n != 0 {
+		t.Errorf("%d edges stored, want 0", n)
+	}
+}
+
+// TestScoringMarksVerifiedWithoutTouchingEvidence covers both halves of
+// ScoreClaims.
+//
+// verified_at exists because confidence cannot answer "has this been scored":
+// §11.3 returns 0 for an uncorroborated claim carrying a contradiction, so a
+// zero-confidence claim is scored as often as it is unexamined, and the Verifier
+// would rescore it on every pass.
+//
+// And a scoring pass must not be able to rewrite the claim's text, quote or
+// source. The quote is what §11.5 checks a citation against; a verifier that
+// could edit it would be grading its own homework.
+func TestScoringMarksVerifiedWithoutTouchingEvidence(t *testing.T) {
+	ctx := context.Background()
+	db, _ := open(t)
+	insertSession(t, db, "s_score", 1_000_000)
+
+	kept := insertClaim(t, db, "s_score", "Claim A.", "https://a.example/1")
+	untouched := insertClaim(t, db, "s_score", "Claim B.", "https://b.example/1")
+
+	unverified := func() []*core.Claim {
+		var out []*core.Claim
+		if err := db.Read(ctx, func(ctx context.Context, q store.Queries) error {
+			var err error
+			out, err = q.ListUnverifiedClaims(ctx, "s_score", 100)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	if n := len(unverified()); n != 2 {
+		t.Fatalf("%d unverified claims before scoring, want 2", n)
+	}
+
+	// Score to exactly 0 — the value that is indistinguishable from "unscored"
+	// without verified_at, and the value §11.3 gives a contradicted claim.
+	grounded := false
+	if err := db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.ScoreClaims(ctx, []store.ClaimScore{
+			{ClaimID: kept, Confidence: 0, Grounded: &grounded},
+		})
+	}); err != nil {
+		t.Fatalf("score: %v", err)
+	}
+
+	left := unverified()
+	if len(left) != 1 || left[0].ID != untouched {
+		t.Fatalf("unverified set = %v, want only the unscored claim", left)
+	}
+
+	var all []*core.Claim
+	if err := db.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		all, err = q.ListClaims(ctx, "s_score", 100)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range all {
+		if c.ID != kept {
+			continue
+		}
+		if c.VerifiedAt == nil {
+			t.Error("scored claim has no verified_at, so it will be rescored forever")
+		}
+		if c.Grounded == nil || *c.Grounded {
+			t.Errorf("Grounded = %v, want false", c.Grounded)
+		}
+		// Evidence intact.
+		if c.Text != "Claim A." || c.Source != "https://a.example/1" ||
+			c.Quote != "a quote long enough to constitute real evidence" {
+			t.Errorf("scoring altered evidence: text=%q source=%q quote=%q",
+				c.Text, c.Source, c.Quote)
+		}
+	}
+
+	// A score for a claim the store never had is a Verifier reasoning over
+	// nothing; affecting zero rows silently would report success.
+	err := db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.ScoreClaims(ctx, []store.ClaimScore{{ClaimID: "c_nope", Confidence: 1}})
+	})
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("scoring a missing claim: err = %v, want ErrNotFound", err)
+	}
+}

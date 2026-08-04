@@ -143,6 +143,29 @@ const (
 	EdgeRefines     EdgeKind = "refines"
 )
 
+func (k EdgeKind) Valid() bool {
+	switch k {
+	case EdgeSupports, EdgeContradicts, EdgeDuplicateOf, EdgeSupersedes, EdgeRefines:
+		return true
+	}
+	return false
+}
+
+// Symmetric reports whether the edge asserts the same thing in both directions.
+//
+// A storage constraint, not just semantics. `UNIQUE (from_id, to_id, kind)`
+// treats A→B and B→A as different rows, so one disagreement discovered from both
+// ends is stored twice — and §11.3 penalizes confidence per contradicting edge,
+// which would count that disagreement twice. InsertEdges orders the endpoints of
+// a symmetric edge so the UNIQUE constraint can see the duplicate.
+//
+// `supports`, `supersedes` and `refines` stay directional: a specific finding
+// supporting a general conclusion is not the same statement reversed, and
+// supersedes is decided from PublishedAt, which has an arrow in it.
+func (k EdgeKind) Symmetric() bool {
+	return k == EdgeContradicts || k == EdgeDuplicateOf
+}
+
 // ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
@@ -354,6 +377,12 @@ type Claim struct {
 	// nothing corroborates a claim that has not been compared to anything.
 	Confidence float64
 	Grounded   *bool
+
+	// VerifiedAt records that the Verifier has scored this claim. Nil means it
+	// has not, which Confidence cannot express on its own: §11.3's formula
+	// legitimately returns 0 for an uncorroborated claim carrying a contradiction,
+	// so a zero there means "scored badly" as often as "never examined".
+	VerifiedAt *time.Time
 
 	CreatedAt time.Time
 }

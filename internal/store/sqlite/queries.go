@@ -970,7 +970,7 @@ func (t *queries) CountLeadsByStatus(ctx context.Context, sessionID string) (map
 
 const claimCols = `id, session_id, lead_id, text, source, tool_call_id, quote,
 	quote_offset, published_at, retrieved_at, root_claim_id, verify_depth,
-	assertion_strength, confidence, grounded, created_at`
+	assertion_strength, confidence, grounded, verified_at, created_at`
 
 // InsertClaims writes a batch.
 //
@@ -1003,11 +1003,11 @@ func (t *queries) InsertClaims(ctx context.Context, claims []core.Claim) error {
 		}
 
 		_, err := t.q.ExecContext(ctx, `
-			INSERT INTO claims (`+claimCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			INSERT INTO claims (`+claimCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			c.ID, c.SessionID, c.LeadID, c.Text, c.Source, c.ToolCallID, c.Quote,
 			c.QuoteOffset, nullMicros(c.PublishedAt), toMicros(c.RetrievedAt),
 			c.RootClaimID, c.VerifyDepth, c.AssertionStrength, c.Confidence, grounded,
-			toMicros(c.CreatedAt))
+			nullMicros(c.VerifiedAt), toMicros(c.CreatedAt))
 		if err != nil {
 			return fmt.Errorf("sqlite: insert claim %d/%d: %w", i+1, len(claims), err)
 		}
@@ -1025,6 +1025,35 @@ func (t *queries) ListClaims(ctx context.Context, sessionID string, limit int) (
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list claims: %w", err)
 	}
+	return scanClaims(rows)
+}
+
+// ListUnverifiedClaims returns what the Verifier has not scored yet.
+//
+// `verified_at IS NULL`, not `confidence = 0`: §11.3's formula returns 0 for an
+// uncorroborated claim carrying a contradiction, so the zero would make a
+// correctly-scored claim look unexamined and get rescored on every pass.
+func (t *queries) ListUnverifiedClaims(ctx context.Context, sessionID string, limit int) ([]*core.Claim, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := t.q.QueryContext(ctx,
+		`SELECT `+claimCols+` FROM claims
+		 WHERE session_id = ? AND verified_at IS NULL
+		 ORDER BY created_at LIMIT ?`,
+		sessionID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list unverified claims: %w", err)
+	}
+	return scanClaims(rows)
+}
+
+// scanClaims is shared by every claim reader.
+//
+// Extracted rather than duplicated: the column list is sixteen wide and the scan
+// order has to match it exactly, so a second hand-written copy is a second place
+// for two adjacent float64 fields to silently swap.
+func scanClaims(rows *sql.Rows) ([]*core.Claim, error) {
 	defer rows.Close()
 
 	var out []*core.Claim
@@ -1034,16 +1063,18 @@ func (t *queries) ListClaims(ctx context.Context, sessionID string, limit int) (
 			published sql.NullInt64
 			retrieved int64
 			grounded  sql.NullInt64
+			verified  sql.NullInt64
 			created   int64
 		)
 		if err := rows.Scan(&c.ID, &c.SessionID, &c.LeadID, &c.Text, &c.Source,
 			&c.ToolCallID, &c.Quote, &c.QuoteOffset, &published, &retrieved,
 			&c.RootClaimID, &c.VerifyDepth, &c.AssertionStrength, &c.Confidence,
-			&grounded, &created); err != nil {
+			&grounded, &verified, &created); err != nil {
 			return nil, err
 		}
 		c.PublishedAt = micrasPtr(published)
 		c.RetrievedAt = fromMicros(retrieved)
+		c.VerifiedAt = micrasPtr(verified)
 		c.CreatedAt = fromMicros(created)
 		if grounded.Valid {
 			v := grounded.Int64 != 0
@@ -1052,6 +1083,134 @@ func (t *queries) ListClaims(ctx context.Context, sessionID string, limit int) (
 		out = append(out, &c)
 	}
 	return out, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
+// Claim graph (§11.2)
+// ---------------------------------------------------------------------------
+
+const edgeCols = `id, session_id, from_id, to_id, kind, weight, created_by,
+	rationale, created_at`
+
+// InsertEdges upserts a batch of graph edges.
+//
+// Two things happen here that the schema cannot do on its own.
+//
+// Symmetric kinds get their endpoints ordered (§core.EdgeKind.Symmetric). The
+// UNIQUE constraint is on (from_id, to_id, kind), so "A contradicts B" and "B
+// contradicts A" are two rows describing one disagreement — and §11.3 penalizes
+// confidence per contradicting edge, so the same disagreement would be counted
+// twice against both claims. Ordering the pair lets the constraint see them as
+// one fact.
+//
+// Self-edges are rejected. A claim cannot corroborate or contradict itself, the
+// UNIQUE constraint does not stop it, and one would inflate its own corroboration
+// count. The edge table also carries no foreign key to claims, so a mistyped ID
+// would otherwise persist as a dangling edge with no error.
+func (t *queries) InsertEdges(ctx context.Context, edges []core.ClaimEdge) error {
+	now := time.Now().UTC()
+	for i := range edges {
+		e := edges[i]
+		if e.FromID == "" || e.ToID == "" {
+			return fmt.Errorf("sqlite: edge %d/%d has an empty endpoint", i+1, len(edges))
+		}
+		if e.FromID == e.ToID {
+			return fmt.Errorf("sqlite: edge %d/%d is a self-edge on %s", i+1, len(edges), e.FromID)
+		}
+		if !e.Kind.Valid() {
+			return fmt.Errorf("sqlite: edge %d/%d has unknown kind %q", i+1, len(edges), e.Kind)
+		}
+		if e.Kind.Symmetric() && e.FromID > e.ToID {
+			e.FromID, e.ToID = e.ToID, e.FromID
+		}
+		if e.ID == "" {
+			e.ID = core.NewEdgeID()
+		}
+		if e.CreatedAt.IsZero() {
+			e.CreatedAt = now
+		}
+		if e.Weight == 0 {
+			e.Weight = 1.0
+		}
+
+		// On conflict the newer judgement wins, but created_at is left alone:
+		// when the edge was first discovered is history, and re-verification is
+		// not a new discovery.
+		_, err := t.q.ExecContext(ctx, `
+			INSERT INTO claim_edges (`+edgeCols+`) VALUES (?,?,?,?,?,?,?,?,?)
+			ON CONFLICT (from_id, to_id, kind) DO UPDATE SET
+				weight = excluded.weight,
+				created_by = excluded.created_by,
+				rationale = excluded.rationale`,
+			e.ID, e.SessionID, e.FromID, e.ToID, e.Kind, e.Weight, e.CreatedBy,
+			e.Rationale, toMicros(e.CreatedAt))
+		if err != nil {
+			return fmt.Errorf("sqlite: insert edge %d/%d: %w", i+1, len(edges), err)
+		}
+	}
+	return nil
+}
+
+func (t *queries) ListEdges(ctx context.Context, sessionID string, limit int) ([]*core.ClaimEdge, error) {
+	if limit <= 0 {
+		limit = 5000
+	}
+	rows, err := t.q.QueryContext(ctx,
+		`SELECT `+edgeCols+` FROM claim_edges WHERE session_id = ? ORDER BY created_at LIMIT ?`,
+		sessionID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list edges: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*core.ClaimEdge
+	for rows.Next() {
+		var (
+			e       core.ClaimEdge
+			created int64
+		)
+		if err := rows.Scan(&e.ID, &e.SessionID, &e.FromID, &e.ToID, &e.Kind,
+			&e.Weight, &e.CreatedBy, &e.Rationale, &created); err != nil {
+			return nil, err
+		}
+		e.CreatedAt = fromMicros(created)
+		out = append(out, &e)
+	}
+	return out, rows.Err()
+}
+
+// ScoreClaims writes the Verifier's verdicts.
+//
+// Touches confidence, grounded, and verified_at only. The claim's text, quote and
+// source are evidence — the quote is what §11.5 checks a citation against — and a
+// verification pass able to rewrite them would make its own grounding check
+// circular.
+func (t *queries) ScoreClaims(ctx context.Context, scores []store.ClaimScore) error {
+	now := toMicros(time.Now().UTC())
+	for i, s := range scores {
+		if s.ClaimID == "" {
+			return fmt.Errorf("sqlite: score %d/%d has no claim id", i+1, len(scores))
+		}
+
+		var grounded sql.NullInt64
+		if s.Grounded != nil {
+			grounded = sql.NullInt64{Int64: b2i(*s.Grounded), Valid: true}
+		}
+
+		res, err := t.q.ExecContext(ctx, `
+			UPDATE claims SET confidence = ?, grounded = ?, verified_at = ?
+			WHERE id = ?`, s.Confidence, grounded, now, s.ClaimID)
+		if err != nil {
+			return fmt.Errorf("sqlite: score claim %d/%d: %w", i+1, len(scores), err)
+		}
+		// A score for a claim that does not exist means the Verifier is reasoning
+		// over something the store never had. Silently affecting zero rows would
+		// leave the claim unverified forever and the pass reporting success.
+		if n, err := res.RowsAffected(); err == nil && n == 0 {
+			return fmt.Errorf("sqlite: score claim %s: %w", s.ClaimID, store.ErrNotFound)
+		}
+	}
+	return nil
 }
 
 func (t *queries) CountClaims(ctx context.Context, sessionID string) (int64, error) {

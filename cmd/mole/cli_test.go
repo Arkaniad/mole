@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/lajosdeme/mole/internal/core"
 )
 
 // exec runs the real command tree against captured output, so these assert what
@@ -214,5 +217,70 @@ func TestCLITestsCannotReachTheRealEnvironment(t *testing.T) {
 	if _, err := exec(t, "research", "a question", "--usd", "1.00"); err == nil ||
 		!strings.Contains(err.Error(), "search provider") {
 		t.Errorf("research got past the provider check with an isolated config: %v", err)
+	}
+}
+
+// TestTraceSaysWhenNothingIsVerified is display honesty, not cosmetics.
+//
+// §11.3's derived confidence is 0 until the Verifier scores a claim, so every
+// session before M4 — and every session where the Verifier was skipped — has
+// thirteen claims all reading 0.00. A trace that showed the number without saying
+// why invites exactly one conclusion, that the research found nothing worth
+// trusting, when the truth is that nothing has been assessed.
+func TestTraceSaysWhenNothingIsVerified(t *testing.T) {
+	verified := time.Unix(1_700_000_000, 0).UTC()
+	claims := []*core.Claim{
+		{ID: "c_1", Text: "Claim one."},
+		{ID: "c_2", Text: "Claim two."},
+	}
+
+	var buf bytes.Buffer
+	printClaimGraph(&buf, claims, nil)
+	if got := buf.String(); !strings.Contains(got, "none verified") {
+		t.Errorf("unscored claims reported without explanation:\n%s", got)
+	}
+
+	// Partially scored says which, rather than implying the rest are worthless.
+	claims[0].VerifiedAt = &verified
+	buf.Reset()
+	printClaimGraph(&buf, claims, nil)
+	if got := buf.String(); !strings.Contains(got, "1 verified, 1 not") {
+		t.Errorf("partial verification not distinguished:\n%s", got)
+	}
+
+	claims[1].VerifiedAt = &verified
+	buf.Reset()
+	printClaimGraph(&buf, claims, nil)
+	if got := buf.String(); !strings.Contains(got, "all verified") {
+		t.Errorf("fully verified session not reported as such:\n%s", got)
+	}
+}
+
+// TestTraceNamesContradictions: a contradiction is the finding a reader most needs
+// and the one an edge-count summary hides. "contradicts 2" says a disagreement
+// exists somewhere; it does not say between what.
+func TestTraceNamesContradictions(t *testing.T) {
+	claims := []*core.Claim{
+		{ID: "c_1", Text: "The effect is large and well established."},
+		{ID: "c_2", Text: "No such effect was found in replication."},
+	}
+	edges := []*core.ClaimEdge{{
+		FromID: "c_1", ToID: "c_2", Kind: core.EdgeContradicts,
+		Rationale: "one reports an effect the other failed to replicate",
+	}}
+
+	var buf bytes.Buffer
+	printClaimGraph(&buf, claims, edges)
+	got := buf.String()
+
+	for _, want := range []string{
+		"contradictions:",
+		"The effect is large",
+		"No such effect was found",
+		"failed to replicate",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("trace omits %q:\n%s", want, got)
+		}
 	}
 }

@@ -39,6 +39,23 @@ type Store interface {
 	Close() error
 }
 
+// ClaimScore is the Verifier's verdict on one claim (§11.3).
+//
+// A separate type from core.Claim so a scoring write cannot touch the claim's
+// text, quote, or source. Those are evidence: the quote is what §11.5 checks a
+// citation against, and a verification pass that could rewrite it would make the
+// grounding check circular.
+type ClaimScore struct {
+	ClaimID string
+
+	// Confidence is derived from graph structure. Never a model's self-report.
+	Confidence float64
+
+	// Grounded is three-state: nil where no grounding check ran, which is most
+	// claims — §11.5's re-fetch is budgeted and reserved for load-bearing ones.
+	Grounded *bool
+}
+
 // BudgetDelta is an atomic adjustment to a session's counters. Every field is
 // a delta, never an absolute, so concurrent settles compose correctly.
 type BudgetDelta struct {
@@ -112,6 +129,17 @@ type Queries interface {
 
 	ListClaims(ctx context.Context, sessionID string, limit int) ([]*core.Claim, error)
 	CountClaims(ctx context.Context, sessionID string) (int64, error)
+
+	// ListUnverifiedClaims returns claims the Verifier has not scored, oldest
+	// first. §11.1 runs it incrementally over the session's whole claim set
+	// rather than the batch one lead produced, so it has to be able to ask what
+	// it has not seen.
+	ListUnverifiedClaims(ctx context.Context, sessionID string, limit int) ([]*core.Claim, error)
+
+	// ListEdges returns the session's whole graph. Not paged by claim: deriving
+	// one claim's confidence needs every edge touching it in either direction,
+	// and a session's graph is hundreds of edges, not millions.
+	ListEdges(ctx context.Context, sessionID string, limit int) ([]*core.ClaimEdge, error)
 }
 
 // Tx is the write surface. It embeds Queries so a transaction can read its own
@@ -179,6 +207,16 @@ type Tx interface {
 	// run land together or not at all: a partial batch would leave the graph
 	// citing a lead that reported failure.
 	InsertClaims(ctx context.Context, claims []core.Claim) error
+
+	// InsertEdges writes graph edges, upserting on (from_id, to_id, kind).
+	//
+	// Upsert rather than insert because §11.1 re-verifies: a pair judged again
+	// with better context should update its weight and rationale, not fail on the
+	// UNIQUE constraint or accumulate a second row saying the same thing.
+	InsertEdges(ctx context.Context, edges []core.ClaimEdge) error
+
+	// ScoreClaims writes the Verifier's output for a batch of claims.
+	ScoreClaims(ctx context.Context, scores []ClaimScore) error
 
 	StartSpan(ctx context.Context, s *core.Span) error
 	EndSpan(ctx context.Context, id string, endedAt time.Time, status string) error
