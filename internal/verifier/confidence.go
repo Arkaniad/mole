@@ -259,8 +259,8 @@ func DeriveConfidence(claims []*core.Claim, edges []*core.ClaimEdge) ([]store.Cl
 
 	scores := make([]Score, 0, len(clusters))
 	out := make([]store.ClaimScore, 0, len(claims))
-	for i, cl := range clusters {
-		s := scoreCluster(cl, i, clusterOf, edges)
+	for _, cl := range clusters {
+		s := scoreCluster(cl, clusterOf, edges)
 		scores = append(scores, s)
 		for _, c := range cl.Claims {
 			out = append(out, store.ClaimScore{
@@ -274,7 +274,7 @@ func DeriveConfidence(claims []*core.Claim, edges []*core.ClaimEdge) ([]store.Cl
 	return out, scores
 }
 
-func scoreCluster(cl Cluster, idx int, clusterOf map[string]int, edges []*core.ClaimEdge) Score {
+func scoreCluster(cl Cluster, clusterOf map[string]int, edges []*core.ClaimEdge) Score {
 	member := map[string]bool{}
 	for _, c := range cl.Claims {
 		member[c.ID] = true

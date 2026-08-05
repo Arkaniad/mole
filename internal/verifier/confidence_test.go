@@ -118,7 +118,7 @@ func TestPreprintsAreNotPeerReviewed(t *testing.T) {
 	}
 }
 
-// TestManyURLsOnOneSiteIsOnePublisher is §1275's corroboration-inflation risk,
+// TestManyURLsOnOneSiteIsOnePublisher is §11.3's corroboration-inflation risk,
 // stated as a test. Five pages of one site agreeing is one site agreeing.
 func TestManyURLsOnOneSiteIsOnePublisher(t *testing.T) {
 	// Five claims, all duplicates of each other, all from one publisher.

@@ -511,7 +511,7 @@ func estimateBatch(unit core.BudgetUnit, pairs int) int64 {
 	// USD mode: price it as cheap-tier work. A coarse rate rather than a pricing
 	// lookup, because this is a reservation and the settle carries the truth.
 	const microsPerKTokenCheap = 2
-	return maxInt64(1, tokens*microsPerKTokenCheap/1000)
+	return max(1, tokens*microsPerKTokenCheap/1000)
 }
 
 // maxTokensForBatch leaves room for a verdict per pair plus a reasoning model's
@@ -523,13 +523,6 @@ func estimateBatch(unit core.BudgetUnit, pairs int) int64 {
 // billed, so there is no reason to be tight.
 func maxTokensForBatch(pairs int) int {
 	return 1500 + pairs*120
-}
-
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // newPairKey is Pair.Key for two bare IDs, used to index existing edges.

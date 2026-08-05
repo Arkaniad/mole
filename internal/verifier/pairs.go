@@ -31,11 +31,6 @@ const (
 	RelUnrelated   Relation = "unrelated"
 )
 
-// Relations is what the prompt offers, in a fixed order.
-func Relations() []Relation {
-	return []Relation{RelSupports, RelContradicts, RelDuplicate, RelRefines, RelUnrelated}
-}
-
 func (r Relation) Valid() bool {
 	switch r {
 	case RelSupports, RelContradicts, RelDuplicate, RelRefines, RelUnrelated:

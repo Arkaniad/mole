@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/llm/jsonish"
 )
 
 // Prompts and response parsing.
@@ -173,7 +174,7 @@ func parseMined(raw string) ([]minedClaim, error) {
 		return empty, nil
 	}
 
-	if body := extractJSONObject(raw); body != "" {
+	if body := jsonish.ExtractObject(raw); body != "" {
 		var parsed mineResponse
 		if err := json.Unmarshal([]byte(body), &parsed); err == nil {
 			return parsed.Claims, nil
@@ -203,7 +204,7 @@ func parseMined(raw string) ([]minedClaim, error) {
 // emptyClaimSet recognizes a well-formed response that reports no claims, in any
 // of the shapes models use for it.
 func emptyClaimSet(raw string) ([]minedClaim, bool) {
-	body := strings.TrimSpace(stripFence(raw))
+	body := strings.TrimSpace(jsonish.StripFence(raw))
 
 	var asObject mineResponse
 	if err := json.Unmarshal([]byte(body), &asObject); err == nil && len(asObject.Claims) == 0 {
@@ -225,108 +226,14 @@ func emptyClaimSet(raw string) ([]minedClaim, bool) {
 // a code fence, and occasionally in all three.
 func salvageClaims(raw string) []minedClaim {
 	var out []minedClaim
-
-	for i := 0; i < len(raw); i++ {
-		if raw[i] != '{' {
-			continue
-		}
-		end, ok := matchBrace(raw, i)
-		if !ok {
-			// Unterminated. Do NOT stop here: the outer {"claims": ...} wrapper
-			// is itself unterminated in a truncated response, and breaking on it
-			// meant the inner claim objects were never reached at all — which
-			// made the whole salvage path a no-op.
-			continue
-		}
+	// jsonish.Objects continues past an unterminated wrapper rather than stopping at it,
+	// which is what reaches the complete claims inside a truncated response. Breaking
+	// there made this whole path a silent no-op.
+	for _, obj := range jsonish.Objects(raw) {
 		var c minedClaim
-		if err := json.Unmarshal([]byte(raw[i:end]), &c); err == nil && c.Text != "" && c.Quote != "" {
+		if err := json.Unmarshal([]byte(obj), &c); err == nil && c.Text != "" && c.Quote != "" {
 			out = append(out, c)
-			i = end - 1
-			continue
 		}
-		// Not a claim object — most likely the outer {"claims": ...} wrapper.
-		// Step inside rather than past it, so its contents are still scanned.
 	}
 	return out
-}
-
-// matchBrace returns the index just past the object starting at start.
-func matchBrace(s string, start int) (int, bool) {
-	depth, inString, escaped := 0, false, false
-	for i := start; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case escaped:
-			escaped = false
-		case c == '\\' && inString:
-			escaped = true
-		case c == '"':
-			inString = !inString
-		case inString:
-		case c == '{':
-			depth++
-		case c == '}':
-			depth--
-			if depth == 0 {
-				return i + 1, true
-			}
-		}
-	}
-	return 0, false
-}
-
-// stripFence removes a markdown code fence, which models add despite being told
-// to return JSON only.
-func stripFence(s string) string {
-	s = strings.TrimSpace(s)
-	i := strings.Index(s, "```")
-	if i < 0 {
-		return s
-	}
-	rest := s[i+3:]
-	if j := strings.IndexByte(rest, '\n'); j >= 0 {
-		rest = rest[j+1:]
-	}
-	if k := strings.Index(rest, "```"); k >= 0 {
-		rest = rest[:k]
-	}
-	return strings.TrimSpace(rest)
-}
-
-// extractJSONObject finds the outermost JSON object in a string, tolerating
-// code fences and surrounding prose.
-func extractJSONObject(s string) string {
-	s = stripFence(s)
-
-	start := strings.IndexByte(s, '{')
-	if start < 0 {
-		return ""
-	}
-
-	// Walk to the matching brace, respecting string literals so a '}' inside a
-	// quote does not end the scan early.
-	depth := 0
-	inString := false
-	escaped := false
-	for i := start; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case escaped:
-			escaped = false
-		case c == '\\' && inString:
-			escaped = true
-		case c == '"':
-			inString = !inString
-		case inString:
-			// nothing
-		case c == '{':
-			depth++
-		case c == '}':
-			depth--
-			if depth == 0 {
-				return s[start : i+1]
-			}
-		}
-	}
-	return ""
 }

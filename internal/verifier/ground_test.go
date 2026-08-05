@@ -570,3 +570,83 @@ func TestProviderSuppliedSourcesAreNotReRead(t *testing.T) {
 		t.Error("the fetched claim was not checked")
 	}
 }
+
+// TestTheReFetchIsRecordedAsAToolCall.
+//
+// §8.1 requires every tool call to write a cost row, and §8.5's MaxToolCalls is what
+// stops an unbounded fetch loop being free in token mode — a fetch spends no tokens, so
+// the ROW is the only thing the ceiling can count. reread's own comment claimed the fetch
+// was "recorded against RoleVerifier so `mole trace` can show what grounding cost", and
+// it only incremented an in-memory counter.
+func TestTheReFetchIsRecordedAsAToolCall(t *testing.T) {
+	ctx := context.Background()
+	const src = "https://arxiv.example/abs/1"
+	claims := []core.Claim{
+		{Text: "First distinct finding about scaling behaviour.", Source: src, Quote: groundedQuote},
+		{Text: "Second distinct finding about throughput limits.", Source: src, Quote: groundedQuote},
+	}
+	r := groundRig(t, claims, map[string]string{src: pageContaining(groundedQuote)}, alwaysSupported())
+	r.v.MaxGroundChecks = 2
+
+	before := countCalls(t, r, core.CallFetch)
+	rep, err := r.v.Ground(ctx, r.sess.ID, 4_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Fetches != 1 {
+		t.Fatalf("Fetches = %d, want 1", rep.Fetches)
+	}
+	if got := countCalls(t, r, core.CallFetch) - before; got != 1 {
+		t.Errorf("%d fetch rows written for 1 re-fetch; MaxToolCalls cannot see it and "+
+			"the trace cannot attribute it", got)
+	}
+
+	// A fetch that FAILS still consumed a request against the rate limiter.
+	r2 := groundRig(t, []core.Claim{
+		{Text: "A claim from an unreachable page.", Source: src, Quote: groundedQuote},
+	}, nil, alwaysSupported())
+	r2.v.Grounder = &verifier.Grounder{
+		Fetch:   &fakeFetch{err: errors.New("dial tcp: connection refused")},
+		Extract: passthroughExtract{},
+	}
+	if _, err := r2.v.Ground(ctx, r2.sess.ID, 4_000_000); err != nil {
+		t.Fatal(err)
+	}
+	if got := countCalls(t, r2, core.CallFetch); got != 1 {
+		t.Errorf("%d fetch rows for a failed re-fetch, want 1", got)
+	}
+
+	// And nothing is left held on either path.
+	for name, rig := range map[string]*rig{"ok": r, "failed": r2} {
+		if after := rig.reload(t); after.Held != 0 {
+			t.Errorf("%s: %d still held", name, after.Held)
+		}
+		v, err := rig.led.Verify(ctx, rig.sess.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !v.Consistent() {
+			t.Errorf("%s: ledger drift after recording the fetch", name)
+		}
+	}
+}
+
+func countCalls(t *testing.T, r *rig, kind core.CallType) int {
+	t.Helper()
+	n := 0
+	if err := r.db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		list, err := q.ListToolCalls(ctx, r.sess.ID, 10_000)
+		if err != nil {
+			return err
+		}
+		for _, c := range list {
+			if c.Type == kind {
+				n++
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}

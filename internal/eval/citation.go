@@ -9,7 +9,6 @@ import (
 
 	"github.com/lajosdeme/mole/internal/actors"
 	"github.com/lajosdeme/mole/internal/core"
-	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/tools/extract"
 	"github.com/lajosdeme/mole/internal/tools/fetch"
 )
@@ -226,18 +225,6 @@ func (p *PipelineReader) Text(ctx context.Context, rawURL string) (string, error
 		return "", err
 	}
 	return doc.Text, nil
-}
-
-// providerSupplied lists URLs whose text came from the search provider rather
-// than a fetch, read from the outcome rows the actor wrote.
-func providerSupplied(outcomes []*store.FetchOutcome) map[string]bool {
-	skip := map[string]bool{}
-	for _, o := range outcomes {
-		if fetch.Outcome(o.Outcome) == fetch.OutcomeProviderContent {
-			skip[o.URL] = true
-		}
-	}
-	return skip
 }
 
 func truncate(s string, max int) string {

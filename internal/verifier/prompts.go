@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/llm/jsonish"
 )
 
 // Adjudication prompt and parsing.
@@ -204,7 +205,7 @@ func parseVerdicts(raw string, batch []Pair) (judged []Judged, unjudged []Pair, 
 // discards the six that arrived whole. Recovering them is safe because every
 // verdict is validated against the batch afterwards.
 func extractVerdicts(raw string) []wireVerdict {
-	body := stripFence(raw)
+	body := jsonish.StripFence(raw)
 
 	var obj wireResponse
 	if err := json.Unmarshal([]byte(body), &obj); err == nil && anyUsable(obj.Verdicts) {
@@ -220,7 +221,7 @@ func extractVerdicts(raw string) []wireVerdict {
 	if err := json.Unmarshal([]byte(body), &arr); err == nil && anyUsable(arr) {
 		return arr
 	}
-	if body := extractJSONObject(raw); body != "" {
+	if body := jsonish.ExtractObject(raw); body != "" {
 		var obj wireResponse
 		if err := json.Unmarshal([]byte(body), &obj); err == nil && anyUsable(obj.Verdicts) {
 			return obj.Verdicts
@@ -248,73 +249,13 @@ func anyUsable(vs []wireVerdict) bool {
 // equivalent a silent no-op.
 func salvageVerdicts(raw string) []wireVerdict {
 	var out []wireVerdict
-	for i := 0; i < len(raw); i++ {
-		if raw[i] != '{' {
-			continue
-		}
-		end, ok := matchBrace(raw, i)
-		if !ok {
-			continue
-		}
+	for _, obj := range jsonish.Objects(raw) {
 		var v wireVerdict
-		if err := json.Unmarshal([]byte(raw[i:end]), &v); err == nil && v.Pair > 0 && v.Relation != "" {
+		if err := json.Unmarshal([]byte(obj), &v); err == nil && v.Pair > 0 && v.Relation != "" {
 			out = append(out, v)
-			i = end - 1
 		}
 	}
 	return out
-}
-
-func matchBrace(s string, start int) (int, bool) {
-	depth, inString, escaped := 0, false, false
-	for i := start; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case escaped:
-			escaped = false
-		case c == '\\' && inString:
-			escaped = true
-		case c == '"':
-			inString = !inString
-		case inString:
-		case c == '{':
-			depth++
-		case c == '}':
-			depth--
-			if depth == 0 {
-				return i + 1, true
-			}
-		}
-	}
-	return 0, false
-}
-
-func stripFence(s string) string {
-	s = strings.TrimSpace(s)
-	i := strings.Index(s, "```")
-	if i < 0 {
-		return s
-	}
-	rest := s[i+3:]
-	if j := strings.IndexByte(rest, '\n'); j >= 0 {
-		rest = rest[j+1:]
-	}
-	if k := strings.Index(rest, "```"); k >= 0 {
-		rest = rest[:k]
-	}
-	return strings.TrimSpace(rest)
-}
-
-func extractJSONObject(s string) string {
-	s = stripFence(s)
-	start := strings.IndexByte(s, '{')
-	if start < 0 {
-		return ""
-	}
-	if end, ok := matchBrace(s, start); ok {
-		return s[start:end]
-	}
-	return ""
 }
 
 func clamp01(f float64) float64 {

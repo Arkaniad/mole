@@ -22,6 +22,7 @@ import (
 	"github.com/lajosdeme/mole/internal/budget"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/store"
+	"github.com/lajosdeme/mole/internal/tools/fetch"
 	"github.com/lajosdeme/mole/internal/verifier"
 )
 
@@ -135,7 +136,7 @@ func Score(ctx context.Context, st store.Store, sessionID string, opts Options) 
 		toolCallCount(calls),
 	)
 	if opts.Citations != nil {
-		rep := VerifyCitations(ctx, claims, providerSupplied(outcomes), opts.Citations)
+		rep := VerifyCitations(ctx, claims, fetch.ProviderSupplied(outcomes), opts.Citations)
 		card.Citations = &rep
 		card.Metrics = append(card.Metrics, citationAccuracy(rep))
 	}

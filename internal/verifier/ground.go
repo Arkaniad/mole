@@ -2,6 +2,7 @@ package verifier
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -64,15 +65,9 @@ const (
 	GroundUndecided GroundOutcome = "undecided"
 )
 
-// Decisive reports whether the outcome says anything about the claim itself.
-func (o GroundOutcome) Decisive() bool {
-	return o == GroundConfirmed || o == GroundUnsupported
-}
-
 // GroundResult is one claim's check.
 type GroundResult struct {
 	ClaimID string
-	Source  string
 	Outcome GroundOutcome
 	// Note is one line for the trace. Model prose about page text, flattened, never
 	// the page text itself.
@@ -188,7 +183,7 @@ func (v *Verifier) Ground(ctx context.Context, sessionID string, allowance int64
 	// eval's citation accuracy already skips these for exactly this reason. Grounding
 	// did not, and a manufactured mismatch is worse here than there: it is a claim
 	// telling a reader its own source has changed when nothing has.
-	skip := providerSupplied(outcomes)
+	skip := fetch.ProviderSupplied(outcomes)
 
 	candidates := groundingCandidates(claims, edges, v.maxGroundChecks(), skip)
 	rep.Skipped = countGroundable(claims, skip) - len(candidates)
@@ -222,10 +217,13 @@ exhausted:
 			break exhausted
 		}
 
-		text, ferr := v.reread(ctx, sessionID, src, rep)
+		text, fetchCall, ferr := v.reread(ctx, sessionID, src, rep)
 		if ferr != nil {
+			// Still has to reach the ledger. A source that could not be re-read
+			// consumed a request, and the row is what MaxToolCalls counts.
+			v.settleFetchAlone(ctx, sessionID, fetchCall)
 			for _, c := range bySource[src] {
-				res := GroundResult{ClaimID: c.ID, Source: src, Outcome: GroundUnreachable,
+				res := GroundResult{ClaimID: c.ID, Outcome: GroundUnreachable,
 					Note: "source could not be re-read: " + oneLine(ferr.Error())}
 				verdicts = append(verdicts, groundingOf(res))
 				rep.Results = append(rep.Results, res)
@@ -243,7 +241,8 @@ exhausted:
 				break exhausted
 			}
 
-			res, cost := v.checkOne(ctx, sessionID, c, text, rep)
+			res, cost := v.checkOne(ctx, sessionID, c, text, fetchCall, rep)
+			fetchCall = nil // attached to the first claim's settle only
 			spent += cost
 			verdicts = append(verdicts, groundingOf(res))
 			rep.Results = append(rep.Results, res)
@@ -331,47 +330,65 @@ func (v *Verifier) rescore(ctx context.Context, sessionID string) error {
 
 // reread fetches and extracts one source.
 //
-// The fetch cost is recorded against RoleVerifier, so `mole trace` can show what
-// grounding cost separately from the research that produced the claims.
-func (v *Verifier) reread(ctx context.Context, sessionID, src string, rep *GroundReport) (string, error) {
+// The fetch is recorded as a tool call against RoleVerifier. §8.1 requires every tool
+// call to write a cost row, and §8.5's MaxToolCalls is the ceiling that stops an
+// unbounded fetch loop being free in token mode — neither of which worked here, because
+// this only incremented an in-memory counter while the comment claimed otherwise.
+func (v *Verifier) reread(ctx context.Context, sessionID, src string, rep *GroundReport) (string, *core.ToolCall, error) {
 	u, err := url.Parse(src)
 	if err != nil || u.Host == "" {
 		// A DOI or a connector source has no page to re-read. Not a failure of the
 		// claim; there is simply nothing to fetch.
-		return "", fmt.Errorf("not a fetchable source")
+		return "", nil, errors.New("not a fetchable source")
 	}
 
 	res, err := v.Grounder.Fetch.Fetch(ctx, src)
 	rep.Fetches++
+
+	// The row exists even when the fetch failed: a refused request still consumed one
+	// against the rate limiter, and §8.5's MaxToolCalls is the ceiling that stops an
+	// unbounded fetch loop being free in token mode. Zero cost in both units — mole pays
+	// nothing per request — but Settle counts rows, not money.
+	call := &core.ToolCall{
+		SessionID: sessionID,
+		Role:      core.RoleVerifier,
+		Type:      core.CallFetch,
+		Input:     src,
+	}
 	if err != nil {
-		return "", err
+		call.Err = err.Error()
+		return "", call, err
 	}
 	if res == nil || res.Outcome != fetch.OutcomeOK || len(res.Content) == 0 {
 		outcome := "no content"
 		if res != nil {
 			outcome = string(res.Outcome)
 		}
-		return "", fmt.Errorf("%s", outcome)
+		call.Err = outcome
+		return "", call, errors.New(outcome)
 	}
 
 	doc, err := v.Grounder.Extract.Extract(ctx, res.Content, res.ContentType, u)
 	if err != nil {
-		return "", err
+		call.Err = err.Error()
+		return "", call, err
 	}
 	if doc == nil || strings.TrimSpace(doc.Text) == "" {
-		return "", fmt.Errorf("nothing extractable")
+		call.Err = "nothing extractable"
+		return "", call, errors.New("nothing extractable")
 	}
-	return doc.Text, nil
+	return doc.Text, call, nil
 }
 
 // checkOne grounds a single claim against freshly-read source text.
-func (v *Verifier) checkOne(ctx context.Context, sessionID string, c *core.Claim, text string, rep *GroundReport) (GroundResult, int64) {
-	out := GroundResult{ClaimID: c.ID, Source: c.Source}
+func (v *Verifier) checkOne(ctx context.Context, sessionID string, c *core.Claim, text string, fetchCall *core.ToolCall, rep *GroundReport) (GroundResult, int64) {
+	out := GroundResult{ClaimID: c.ID}
 
 	// Mechanical first, and free. §11.5's mechanism 1 verified this quote against
 	// the text at extraction time, so its absence now means the page changed.
 	match, ok := actors.FindQuote(text, c.Quote)
 	if !ok {
+		v.settleFetchAlone(ctx, sessionID, fetchCall)
 		out.Outcome = GroundVanished
 		out.Note = "the quote is no longer present in the source; the page has changed since it was read"
 		return out, 0
@@ -395,6 +412,9 @@ func (v *Verifier) checkOne(ctx context.Context, sessionID string, c *core.Claim
 	})
 
 	var calls []core.ToolCall
+	if fetchCall != nil {
+		calls = append(calls, *fetchCall)
+	}
 	if resp != nil && !resp.Usage.IsZero() {
 		calls = append(calls, core.ToolCall{
 			SessionID: sessionID,
@@ -421,7 +441,7 @@ func (v *Verifier) checkOne(ctx context.Context, sessionID string, c *core.Claim
 				"reservation", reservation.ID, "err", rerr)
 		}
 	} else {
-		charged = settled.Cost.BudgetAmount(unitOf(ctx, v, sessionID))
+		charged = settled.Cost.BudgetAmount(v.unit(ctx, sessionID))
 		rep.Calls++
 	}
 
@@ -449,11 +469,34 @@ func (v *Verifier) checkOne(ctx context.Context, sessionID string, c *core.Claim
 	return out, charged
 }
 
-// unitOf reads the session's budget unit.
+// settleFetchAlone writes a fetch row on a path that makes no model call.
+//
+// Settle is the only way a tool call reaches the ledger, and it needs a reservation, so
+// a zero-amount one is taken and immediately settled against the row. Ugly, and the
+// alternative is a fetch that MaxToolCalls cannot see.
+func (v *Verifier) settleFetchAlone(ctx context.Context, sessionID string, call *core.ToolCall) {
+	if call == nil {
+		return
+	}
+	sctx := context.WithoutCancel(ctx)
+	r, err := v.Ledger.Reserve(sctx, sessionID, 1)
+	if err != nil {
+		v.logger().WarnContext(sctx, "grounding: could not record the re-fetch", "err", err)
+		return
+	}
+	if _, err := v.Ledger.Settle(sctx, r, []core.ToolCall{*call}); err != nil {
+		v.logger().WarnContext(sctx, "grounding: could not record the re-fetch", "err", err)
+		if rerr := v.Ledger.Release(sctx, r); rerr != nil {
+			v.logger().WarnContext(sctx, "grounding: release failed; budget is stranded", "err", rerr)
+		}
+	}
+}
+
+// unit reads the session's budget unit.
 //
 // Looked up rather than cached: a Verifier outlives no session, but reading it here
 // keeps Cost conversion honest if a caller reuses one across sessions.
-func unitOf(ctx context.Context, v *Verifier, sessionID string) core.BudgetUnit {
+func (v *Verifier) unit(ctx context.Context, sessionID string) core.BudgetUnit {
 	if s, err := v.session(ctx, sessionID); err == nil && s != nil {
 		return s.BudgetUnit
 	}
@@ -590,19 +633,6 @@ func countProviderSupplied(claims []*core.Claim, skip map[string]bool) int {
 		}
 	}
 	return n
-}
-
-// providerSupplied is the set of URLs whose text came from the search provider rather
-// than a fetch (§10.4). Re-reading one compares two different extractions of the same
-// page and manufactures a mismatch.
-func providerSupplied(outcomes []*store.FetchOutcome) map[string]bool {
-	out := map[string]bool{}
-	for _, o := range outcomes {
-		if o != nil && fetch.Outcome(o.Outcome) == fetch.OutcomeProviderContent {
-			out[o.URL] = true
-		}
-	}
-	return out
 }
 
 // contextAround returns the quote plus surrounding text.

@@ -13,8 +13,6 @@ package output
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -383,8 +381,4 @@ func truncate(s string, max int) string {
 	return cut + "…"
 }
 
-func fenceToken() string {
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
-}
+func fenceToken() string { return core.PromptFence() }

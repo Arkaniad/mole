@@ -218,7 +218,7 @@ func material(prompt string) string {
 	return prompt[i:]
 }
 
-// TestManyPagesFromOnePublisherIsNotCorroboration. §1275's inflation risk, made
+// TestManyPagesFromOnePublisherIsNotCorroboration. §11.3's inflation risk, made
 // visible: a finding backed by five URLs on one site must say so rather than looking
 // like five publishers agreeing.
 func TestManyPagesFromOnePublisherIsNotCorroboration(t *testing.T) {

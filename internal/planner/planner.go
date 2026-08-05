@@ -8,6 +8,7 @@ import (
 
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/llm"
+	"github.com/lajosdeme/mole/internal/llm/jsonish"
 )
 
 // Planner decomposes a question and decides what to research next.
@@ -294,7 +295,7 @@ type planResponse struct {
 }
 
 func parsePlan(raw string) (planResponse, error) {
-	body := extractJSONObject(raw)
+	body := jsonish.ExtractObject(raw)
 	if body == "" {
 		return planResponse{}, fmt.Errorf("planner: no JSON object in model response (%.80q)", raw)
 	}

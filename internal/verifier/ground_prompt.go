@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/llm/jsonish"
 )
 
 // The grounding judge (§11.5.2).
@@ -119,7 +120,7 @@ type groundWire struct {
 // support this claim" and take §11.3's near-fatal penalty on the claim, punishing it
 // for the judge's failure.
 func parseGroundVerdict(raw string) (supported bool, why string, ok bool) {
-	body := extractJSONObject(raw)
+	body := jsonish.ExtractObject(raw)
 	if body == "" {
 		return false, "", false
 	}

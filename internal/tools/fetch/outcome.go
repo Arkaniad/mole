@@ -1,6 +1,7 @@
 package fetch
 
 import (
+	"github.com/lajosdeme/mole/internal/store"
 	"regexp"
 	"strings"
 	"time"
@@ -229,4 +230,22 @@ func containsAny(haystack string, needles []string) bool {
 		}
 	}
 	return false
+}
+
+// ProviderSupplied is the set of URLs whose text came from the search provider rather
+// than a fetch (§10.4).
+//
+// Shared because re-reading one is a mistake two callers independently have to avoid:
+// the text was extracted by the provider, so a fresh HTML extraction of the same URL
+// produces different bytes and any comparison against it manufactures a mismatch. Both
+// eval's citation accuracy and §11.5's grounding check need exactly this set, and the
+// verifier's copy was written citing eval's reasoning without sharing its code.
+func ProviderSupplied(outcomes []*store.FetchOutcome) map[string]bool {
+	out := map[string]bool{}
+	for _, o := range outcomes {
+		if o != nil && Outcome(o.Outcome) == OutcomeProviderContent {
+			out[o.URL] = true
+		}
+	}
+	return out
 }
