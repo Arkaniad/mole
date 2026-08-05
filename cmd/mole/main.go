@@ -948,6 +948,7 @@ func buildLLMWithClient(cfg *config.Config, client *http.Client) (provider llm.P
 			BaseURL:     cfg.LLM.BaseURL,
 			StrongModel: cfg.LLM.Model,
 			CheapModel:  cfg.LLM.CheapModel,
+			Timeout:     cfg.LLM.Timeout,
 		}, client)
 		if err != nil {
 			return nil, "", err

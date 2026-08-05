@@ -261,8 +261,12 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 		Log:    actor.Log,
 		// Empty leaves the cheap model in place; set it when the cheap model cannot
 		// tell a contradiction from two unrelated statements.
-		Model:    cfg.LLM.VerifierModel,
-		Grounder: &verifier.Grounder{Fetch: actor.Fetch, Extract: actor.Extract},
+		Model: cfg.LLM.VerifierModel,
+		// Zero takes the default. Lower it when a slow model cannot finish eight pair
+		// judgements inside one call: batching is what makes verification affordable,
+		// but the batch is also the unit that has to fit in the client timeout.
+		BatchSize: cfg.LLM.VerifierBatchSize,
+		Grounder:  &verifier.Grounder{Fetch: actor.Fetch, Extract: actor.Extract},
 	}
 
 	exec := &executor.Executor{

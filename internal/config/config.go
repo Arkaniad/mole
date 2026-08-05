@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config is the on-disk settings file.
@@ -75,6 +76,22 @@ type LLMConfig struct {
 	// CheapModel handles chunk mining and extraction, where the strong model
 	// is not worth its price (§10.1).
 	CheapModel string `json:"cheap_model,omitempty"`
+
+	// Timeout bounds a single model call. Zero takes the provider default.
+	//
+	// Ten minutes was hardcoded, which is generous for an API and reachable for a local
+	// one: a 12B model on an integrated GPU, adjudicating eight claim pairs in one call
+	// after ollama has just reloaded 8.4GB of weights, exceeded it and the whole batch
+	// was skipped. A ceiling that cannot be raised turns a slow model into a broken one.
+	Timeout time.Duration `json:"timeout,omitempty"`
+
+	// VerifierBatchSize is how many claim pairs go into one adjudication call. Zero takes
+	// the Verifier's default.
+	//
+	// The other half of the same problem. Batching is what makes verification affordable
+	// — one call per pair costs a third of a session — but a batch is also the unit that
+	// has to finish inside Timeout, and a slow model wants a smaller one.
+	VerifierBatchSize int `json:"verifier_batch_size,omitempty"`
 
 	// VerifierModel judges claim pairs and grounding (§11). Empty uses CheapModel.
 	//
@@ -304,6 +321,55 @@ func Fields() []Field {
 			get:  func(c *Config) string { return c.LLM.VerifierModel },
 			set: func(c *Config, v string) error {
 				c.LLM.VerifierModel = strings.TrimSpace(v)
+				return nil
+			},
+		},
+		{
+			Name: "llm.timeout",
+			Help: "ceiling on a single model call, e.g. 20m; local models on modest hardware need more than the 10m default",
+			get: func(c *Config) string {
+				if c.LLM.Timeout == 0 {
+					return ""
+				}
+				return c.LLM.Timeout.String()
+			},
+			set: func(c *Config, v string) error {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					c.LLM.Timeout = 0
+					return nil
+				}
+				d, err := time.ParseDuration(v)
+				if err != nil {
+					return fmt.Errorf("not a duration (try 20m): %w", err)
+				}
+				if d < 0 {
+					return errors.New("timeout cannot be negative")
+				}
+				c.LLM.Timeout = d
+				return nil
+			},
+		},
+		{
+			Name: "llm.verifier-batch-size",
+			Help: "claim pairs per adjudication call; lower it if a slow model times out",
+			get: func(c *Config) string {
+				if c.LLM.VerifierBatchSize == 0 {
+					return ""
+				}
+				return strconv.Itoa(c.LLM.VerifierBatchSize)
+			},
+			set: func(c *Config, v string) error {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					c.LLM.VerifierBatchSize = 0
+					return nil
+				}
+				n, err := strconv.Atoi(v)
+				if err != nil || n < 1 {
+					return errors.New("must be a positive number of pairs")
+				}
+				c.LLM.VerifierBatchSize = n
 				return nil
 			},
 		},

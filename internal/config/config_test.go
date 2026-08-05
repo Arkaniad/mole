@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"time"
+
 	"github.com/lajosdeme/mole/internal/config"
 )
 
@@ -251,5 +253,72 @@ func TestEnvAloneIsEnoughToBeConfigured(t *testing.T) {
 	}
 	if cfg.Search.ActiveKey() != "tvly-env" {
 		t.Errorf("active key = %q", cfg.Search.ActiveKey())
+	}
+}
+
+// TestTheSlowModelKnobsRoundTrip.
+//
+// Both exist because a live run needed them and neither was reachable: a 12B model on an
+// integrated GPU, adjudicating eight claim pairs in one call after ollama reloaded 8.4GB
+// of weights, exceeded the hardcoded ten-minute ceiling and the whole batch was skipped.
+// A ceiling that cannot be raised turns a slow model into a broken one.
+func TestTheSlowModelKnobsRoundTrip(t *testing.T) {
+	isolate(t)
+
+	cfg, err := config.Load()
+	if err != nil && !errors.Is(err, config.ErrNotConfigured) {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ key, val string }{
+		{"llm.timeout", "25m"},
+		{"llm.verifier-batch-size", "3"},
+	} {
+		if err := cfg.Set(tc.key, tc.val); err != nil {
+			t.Fatalf("set %s: %v", tc.key, err)
+		}
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLM.Timeout != 25*time.Minute {
+		t.Errorf("timeout = %v, want 25m", cfg.LLM.Timeout)
+	}
+	if cfg.LLM.VerifierBatchSize != 3 {
+		t.Errorf("batch size = %d, want 3", cfg.LLM.VerifierBatchSize)
+	}
+
+	// Both clear back to "use the default", or a value set once can never be undone.
+	for _, key := range []string{"llm.timeout", "llm.verifier-batch-size"} {
+		if err := cfg.Set(key, ""); err != nil {
+			t.Fatalf("clear %s: %v", key, err)
+		}
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLM.Timeout != 0 || cfg.LLM.VerifierBatchSize != 0 {
+		t.Errorf("not cleared: timeout=%v batch=%d", cfg.LLM.Timeout, cfg.LLM.VerifierBatchSize)
+	}
+
+	// Nonsense is refused rather than silently becoming zero, which would read as
+	// "default" and hide the typo.
+	for _, tc := range []struct{ key, val string }{
+		{"llm.timeout", "twenty minutes"},
+		{"llm.timeout", "-5m"},
+		{"llm.verifier-batch-size", "0"},
+		{"llm.verifier-batch-size", "-2"},
+		{"llm.verifier-batch-size", "lots"},
+	} {
+		if err := cfg.Set(tc.key, tc.val); err == nil {
+			t.Errorf("%s=%q was accepted", tc.key, tc.val)
+		}
 	}
 }
