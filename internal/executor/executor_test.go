@@ -27,6 +27,7 @@ import (
 	"github.com/lajosdeme/mole/internal/queue"
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/store/sqlite"
+	"github.com/lajosdeme/mole/internal/verifier"
 )
 
 // ---------------------------------------------------------------------------
@@ -87,9 +88,15 @@ func planJSON(questions ...string) string {
 }
 
 // scriptedActor returns a scripted outcome per lead, in order.
+//
+// It persists the claims it returns, because the real WebActor does (its step 7) and
+// the Verifier reads the store rather than a batch (§11.1). Without this the rig
+// looked correct and verification had nothing to verify — a fake that diverged from
+// the thing it stands for on exactly the property under test.
 type scriptedActor struct {
 	mu      sync.Mutex
 	runs    int
+	db      store.Store
 	outcome func(n int, lead core.Lead) (*actors.Result, error)
 }
 
@@ -99,7 +106,20 @@ func (a *scriptedActor) Run(ctx context.Context, lead core.Lead) (*actors.Result
 	n := a.runs
 	a.runs++
 	a.mu.Unlock()
-	return a.outcome(n, lead)
+
+	res, err := a.outcome(n, lead)
+	if res != nil && len(res.Claims) > 0 && a.db != nil {
+		for i := range res.Claims {
+			res.Claims[i].SessionID = lead.SessionID
+			res.Claims[i].LeadID = lead.ID
+		}
+		if ierr := a.db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+			return tx.InsertClaims(ctx, res.Claims)
+		}); ierr != nil && err == nil {
+			return res, ierr
+		}
+	}
+	return res, err
 }
 
 func (a *scriptedActor) count() int {
@@ -169,7 +189,7 @@ func newRigWithCeilings(t *testing.T, budgetAmount int64, maxLeads, maxCalls int
 	}
 
 	fl := &scriptedLLM{replies: replies}
-	act := &scriptedActor{outcome: outcome}
+	act := &scriptedActor{outcome: outcome, db: db}
 	q := queue.New(db, time.Minute)
 
 	return &rig{
@@ -1281,5 +1301,381 @@ func TestReplanIsToldWhatIsLeft(t *testing.T) {
 	if len(reported) != 2 || reported[0] != 75 || reported[1] != 50 {
 		t.Errorf("allowance reported as %v across replans, want [75 50]: either the "+
 			"figure is stale, or it is not the minimum over every limit", reported)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Verification as a loop stage (§11.1, §11.4)
+// ---------------------------------------------------------------------------
+
+// verifierLLM answers planning calls from a script and adjudication calls with one
+// relation, so a test can drive both halves of the loop from one provider.
+type verifierLLM struct {
+	mu       sync.Mutex
+	calls    int
+	plans    []string
+	relation string
+	adjudged int
+}
+
+func (v *verifierLLM) Name() string               { return "fake" }
+func (v *verifierLLM) ModelFor(t llm.Tier) string { return "fake-model" }
+func (v *verifierLLM) Complete(_ context.Context, req llm.Request) (*llm.Response, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	var prompt string
+	if len(req.Messages) > 0 {
+		prompt = req.Messages[0].Text
+	}
+	resp := &llm.Response{Model: "fake-model", Usage: llm.Usage{InputTokens: 300, OutputTokens: 60}}
+
+	// Adjudication prompts are the ones carrying a pairs block.
+	if strings.Contains(prompt, "how claim A relates to claim B") {
+		v.adjudged++
+		var b strings.Builder
+		b.WriteString(`{"verdicts":[`)
+		n := strings.Count(prompt, `"b":`)
+		for i := 1; i <= n; i++ {
+			if i > 1 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, `{"pair":%d,"relation":%q,"confidence":0.9,"why":"because"}`, i, v.relation)
+		}
+		b.WriteString("]}")
+		resp.Text = b.String()
+		return resp, nil
+	}
+
+	i := v.calls
+	v.calls++
+	resp.Text = `{"done":true}`
+	if i < len(v.plans) {
+		resp.Text = v.plans[i]
+	}
+	return resp, nil
+}
+
+func (v *verifierLLM) adjudications() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.adjudged
+}
+
+// withVerifier attaches a Verifier driven by the same provider.
+func (r *rig) withVerifier(fl llm.Provider) *verifier.Verifier {
+	v := &verifier.Verifier{
+		Store: r.db, Ledger: r.led, LLM: fl,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	r.exec.Verifier = v
+	return v
+}
+
+// claimsFrom makes an actor outcome producing two claims that contradict each other
+// on their face, from two different publishers — the cross-lead case §11.1 says rev
+// 1 structurally could not see.
+func opposingClaims(n int, lead core.Lead) (*actors.Result, error) {
+	root := ""
+	if lead.RootClaimID != nil {
+		root = *lead.RootClaimID
+	}
+	return &actors.Result{
+		Summary: "a summary",
+		Costs: []core.ToolCall{{
+			Role: core.RoleExecutor, Type: core.CallLLM, Model: "fake-model",
+			Cost: core.Cost{USDMicros: 8_000, InputTokens: 800, OutputTokens: 80},
+		}},
+		Claims: []core.Claim{
+			{
+				Text:        fmt.Sprintf("Subword tokenization improves accuracy, reading %d.", n),
+				Source:      fmt.Sprintf("https://pro%d.example/p", n),
+				Quote:       "a quote long enough to constitute real evidence",
+				RootClaimID: root, VerifyDepth: lead.VerifyDepth,
+			},
+			{
+				Text:        fmt.Sprintf("Subword tokenization does not improve accuracy, reading %d.", n),
+				Source:      fmt.Sprintf("https://con%d.example/p", n),
+				Quote:       "another quote long enough to constitute real evidence",
+				RootClaimID: root, VerifyDepth: lead.VerifyDepth,
+			},
+		},
+	}, nil
+}
+
+// distinctClaims produces claims whose wording differs per lead.
+//
+// okResult reuses "claim 0"/"claim 1" for every lead, so every cross-lead pair is
+// byte-identical and decideMechanically settles it without a model call. Correct
+// behaviour, and useless for testing adjudication.
+func distinctClaims(n int, lead core.Lead) (*actors.Result, error) {
+	return &actors.Result{
+		Summary: "a summary",
+		Costs: []core.ToolCall{{
+			Role: core.RoleExecutor, Type: core.CallLLM, Model: "fake-model",
+			Cost: core.Cost{USDMicros: 10_000, InputTokens: 800, OutputTokens: 80},
+		}},
+		Claims: []core.Claim{
+			{
+				Text:   fmt.Sprintf("Subword tokenization affects scaling, finding %d.", n),
+				Source: fmt.Sprintf("https://s%da.example/p", n),
+				Quote:  "a quote long enough to constitute real evidence",
+			},
+			{
+				Text:   fmt.Sprintf("Byte-level modelling changes throughput, finding %d.", n),
+				Source: fmt.Sprintf("https://s%db.example/p", n),
+				Quote:  "another quote long enough to constitute real evidence",
+			},
+		},
+	}, nil
+}
+
+// TestVerificationRunsInTheLoopAndScoresClaims. Slice 4 could derive confidence and
+// nothing called it; this is the wiring.
+func TestVerificationRunsInTheLoopAndScoresClaims(t *testing.T) {
+	fl := &verifierLLM{plans: []string{planJSON("a", "b", "c")}, relation: "duplicate_of"}
+	r := newRig(t, 5*core.MicrosPerUSD, nil, distinctClaims)
+	r.exec.Planner = &planner.Planner{LLM: fl, MaxInitialLeads: 3, ReplanEvery: 3, MaxDepth: 1}
+	r.withVerifier(fl)
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.VerifyPasses == 0 {
+		t.Fatal("no verification pass ran in the loop")
+	}
+	if res.ClaimsVerified == 0 {
+		t.Error("no claims were verified")
+	}
+	if fl.adjudications() == 0 {
+		t.Error("the verifier never made an adjudication call")
+	}
+
+	// Every claim scored, and none left at the unverified sentinel.
+	var unverified int
+	var zeroConfidence int
+	if err := r.db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		list, err := q.ListClaims(ctx, r.sess.ID, 0)
+		if err != nil {
+			return err
+		}
+		for _, c := range list {
+			if c.VerifiedAt == nil {
+				unverified++
+			}
+			if c.Confidence == 0 {
+				zeroConfidence++
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if unverified != 0 {
+		t.Errorf("%d claims left unverified after the loop finished", unverified)
+	}
+	if zeroConfidence != 0 {
+		t.Errorf("%d claims still carry confidence 0 — the derivation did not reach them",
+			zeroConfidence)
+	}
+}
+
+// TestAContradictionQueuesAFollowUpWhoseClaimsInheritTheChain is the whole point of
+// slice 5, and the reason the cap could not ship before the mechanism.
+//
+// §11.4's argument is that a per-row counter cannot bind, because a follow-up
+// produces a NEW claim whose counter starts at zero. So the chain has to be carried
+// on the lead and stamped onto the claims — and if it is not, the depth cap reads a
+// number nothing increments. M1 shipped exactly that shape once: MaxLeads was
+// checked, tested, and inert.
+func TestAContradictionQueuesAFollowUpWhoseClaimsInheritTheChain(t *testing.T) {
+	// Enough plan replies that the loop does not stop at the first replan — the
+	// follow-up has to actually RUN for its claims to inherit anything.
+	fl := &verifierLLM{
+		plans: []string{
+			planJSON("the question"),
+			planJSON("another question"),
+			planJSON("a third question"),
+		},
+		relation: "contradicts",
+	}
+	r := newRig(t, 20*core.MicrosPerUSD, nil, opposingClaims)
+	r.exec.Planner = &planner.Planner{LLM: fl, MaxInitialLeads: 1, ReplanEvery: 1, MaxDepth: 3}
+	v := r.withVerifier(fl)
+	v.MaxFollowUpsPerRoot = 5
+	v.MaxVerifyDepth = 4
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Contradictions == 0 {
+		t.Fatal("no contradiction found between claims from different sources")
+	}
+	if res.FollowUpsQueued == 0 {
+		t.Fatal("a contradiction queued no follow-up lead")
+	}
+
+	// The lineage must actually advance, or §11.4's cap is decoration.
+	var leads []*core.Lead
+	var claims []*core.Claim
+	if err := r.db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		var err error
+		if leads, err = q.ListLeads(ctx, r.sess.ID, 0); err != nil {
+			return err
+		}
+		claims, err = q.ListClaims(ctx, r.sess.ID, 0)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deepestLead := 0
+	rooted := 0
+	for _, l := range leads {
+		if l.VerifyDepth > deepestLead {
+			deepestLead = l.VerifyDepth
+		}
+		if l.RootClaimID != nil {
+			rooted++
+		}
+	}
+	if rooted == 0 {
+		t.Error("no lead carries a root claim; the chain cannot advance")
+	}
+	if deepestLead == 0 {
+		t.Error("every lead sits at verify depth 0; the cap reads a counter nothing increments")
+	}
+
+	deepestClaim := 0
+	inherited := 0
+	for _, c := range claims {
+		if c.VerifyDepth > deepestClaim {
+			deepestClaim = c.VerifyDepth
+		}
+		// A claim on a chain has a root that is not itself.
+		if c.RootClaimID != "" && c.RootClaimID != c.ID {
+			inherited++
+		}
+	}
+	if deepestClaim == 0 {
+		t.Errorf("no claim inherited a verify depth from its lead (deepest lead was %d)",
+			deepestLead)
+	}
+	if inherited == 0 {
+		t.Error("no claim inherited a root claim from its lead")
+	}
+}
+
+// TestVerificationFailureDoesNotFailTheSession. Verification improves an answer; it
+// does not produce one. A provider that will not compare claims must degrade the run
+// rather than end it — the claims still carry quotes checked verbatim against source.
+func TestVerificationFailureDoesNotFailTheSession(t *testing.T) {
+	fl := &verifierLLM{plans: []string{planJSON("a", "b")}, relation: "not-a-relation"}
+	r := newRig(t, 5*core.MicrosPerUSD, nil, func(int, core.Lead) (*actors.Result, error) {
+		return okResult(2, 10_000), nil
+	})
+	r.exec.Planner = &planner.Planner{LLM: fl, MaxInitialLeads: 2, ReplanEvery: 2, MaxDepth: 1}
+	r.withVerifier(fl)
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Status == core.StatusFailed {
+		t.Errorf("a useless verifier failed the session: %s", res.StoppedBecause)
+	}
+	if len(res.Claims) == 0 {
+		t.Error("no claims survived")
+	}
+
+	// A Verifier that errors outright, not merely one that answers badly. Run
+	// returns ErrNoProvider with no LLM, which is the store-or-ledger-failure branch
+	// — and it must warn rather than fail the session for the same reason.
+	broken := newRig(t, 5*core.MicrosPerUSD, []string{planJSON("a", "b")},
+		func(int, core.Lead) (*actors.Result, error) { return okResult(2, 10_000), nil })
+	broken.exec.Verifier = &verifier.Verifier{
+		Store: broken.db, Ledger: broken.led, LLM: nil,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	bres, err := broken.exec.Run(context.Background(), broken.sess.ID)
+	if err != nil {
+		t.Fatalf("run with a broken verifier: %v", err)
+	}
+	if bres.Status == core.StatusFailed {
+		t.Errorf("a verifier that errors failed the session: %s", bres.StoppedBecause)
+	}
+	if len(bres.Claims) == 0 {
+		t.Error("no claims survived a broken verifier")
+	}
+	// And the claims are still marked verified: we asked, and got nothing usable.
+	// Leaving them unverified would make every later pass pay for the same pairs.
+	if err := r.db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		left, err := q.ListUnverifiedClaims(ctx, r.sess.ID, 0)
+		if err != nil {
+			return err
+		}
+		if len(left) != 0 {
+			t.Errorf("%d claims left unverified after a degraded pass", len(left))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestNoVerifierIsASupportedConfiguration. The research still runs, and confidence
+// stays 0 rather than being invented.
+func TestNoVerifierIsASupportedConfiguration(t *testing.T) {
+	r := newRig(t, 5*core.MicrosPerUSD, []string{planJSON("a", "b")},
+		func(int, core.Lead) (*actors.Result, error) { return okResult(2, 10_000), nil })
+	r.exec.Verifier = nil
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.VerifyPasses != 0 {
+		t.Errorf("%d verification passes with no verifier configured", res.VerifyPasses)
+	}
+	if len(res.Claims) == 0 {
+		t.Error("no claims produced")
+	}
+	if res.Status == core.StatusFailed {
+		t.Errorf("session failed without a verifier: %s", res.StoppedBecause)
+	}
+}
+
+// TestThePlannerLearnsAboutContradictions. §9.1 keeps page text out of the planner,
+// so the disagreement reaches it as a COUNT — but it has to reach it. A planner told
+// only the claim count cannot tell "this sub-question has evidence" from "this
+// sub-question has an argument".
+func TestThePlannerLearnsAboutContradictions(t *testing.T) {
+	fl := &verifierLLM{
+		plans:    []string{planJSON("the question"), planJSON("a follow-up question")},
+		relation: "contradicts",
+	}
+	r := newRig(t, 20*core.MicrosPerUSD, nil, opposingClaims)
+	r.exec.Planner = &planner.Planner{LLM: fl, MaxInitialLeads: 1, ReplanEvery: 1, MaxDepth: 2}
+	r.withVerifier(fl)
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Contradictions == 0 {
+		t.Fatal("no contradiction found")
+	}
+	if res.Digest.Contradictions == 0 {
+		t.Error("the digest carries no contradiction count, so the planner never saw it")
+	}
+	if res.Digest.Contradictions != res.Contradictions {
+		t.Errorf("digest reports %d contradictions, the run found %d",
+			res.Digest.Contradictions, res.Contradictions)
+	}
+	// And the serialized form the planner actually reads must say so.
+	if !strings.Contains(res.Digest.String(), "contradiction") {
+		t.Errorf("the planner's view does not mention contradictions:\n%s", res.Digest.String())
 	}
 }

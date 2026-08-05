@@ -706,7 +706,8 @@ func isUniqueViolation(err error) bool {
 // ---------------------------------------------------------------------------
 
 const leadCols = `id, session_id, actor_type, query, parent_id, depth, priority,
-	status, lease_owner, lease_expires, created_at, updated_at`
+	status, lease_owner, lease_expires, root_claim_id, verify_depth,
+	created_at, updated_at`
 
 func (t *queries) InsertLead(ctx context.Context, l *core.Lead) error {
 	if l.ID == "" {
@@ -722,10 +723,11 @@ func (t *queries) InsertLead(ctx context.Context, l *core.Lead) error {
 	}
 
 	_, err := t.q.ExecContext(ctx, `
-		INSERT INTO leads (`+leadCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		INSERT INTO leads (`+leadCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		l.ID, l.SessionID, string(l.ActorType), l.Query, nullStr(l.ParentID),
 		l.Depth, l.Priority, string(l.Status),
 		nullStr(l.LeaseOwner), nullMicros(l.LeaseExpires),
+		nullStr(l.RootClaimID), l.VerifyDepth,
 		toMicros(l.CreatedAt), toMicros(l.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("sqlite: insert lead: %w", err)
@@ -741,11 +743,13 @@ func scanLead(sc interface{ Scan(...any) error }) (*core.Lead, error) {
 		status    string
 		owner     sql.NullString
 		expires   sql.NullInt64
+		rootClaim sql.NullString
 		created   int64
 		updated   int64
 	)
 	err := sc.Scan(&l.ID, &l.SessionID, &actorType, &l.Query, &parentID,
-		&l.Depth, &l.Priority, &status, &owner, &expires, &created, &updated)
+		&l.Depth, &l.Priority, &status, &owner, &expires,
+		&rootClaim, &l.VerifyDepth, &created, &updated)
 	if err != nil {
 		return nil, err
 	}
@@ -754,6 +758,7 @@ func scanLead(sc interface{ Scan(...any) error }) (*core.Lead, error) {
 	l.Status = core.LeadStatus(status)
 	l.LeaseOwner = strPtr(owner)
 	l.LeaseExpires = micrasPtr(expires)
+	l.RootClaimID = strPtr(rootClaim)
 	l.CreatedAt = fromMicros(created)
 	l.UpdatedAt = fromMicros(updated)
 	return &l, nil

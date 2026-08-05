@@ -399,6 +399,14 @@ func (a *WebActor) mineChunk(
 			// uncalibrated self-report decide which claims led the report
 			// (§11.3); the Verifier derives confidence from the graph.
 			AssertionStrength: clamp01(m.Confidence),
+
+			// §11.4's lineage, inherited from the lead. A follow-up lead spawned
+			// to resolve a contradiction carries the root claim it is about, and
+			// its claims carry it onward — which is what makes the depth cap bind.
+			// Without this the cap would read a counter nothing increments, the
+			// shape that left MaxLeads inert from M0 to M3.
+			RootClaimID: rootClaimOf(lead),
+			VerifyDepth: lead.VerifyDepth,
 		})
 
 		if len(claims) >= maxClaims {
@@ -533,4 +541,17 @@ func truncateForLog(s string) string {
 		return s
 	}
 	return s[:60] + "…"
+}
+
+// rootClaimOf returns the claim lineage a lead's output should inherit.
+//
+// Empty for an ordinary planner lead, so InsertClaims falls back to "this claim is
+// its own root" (§11.4). A follow-up lead carries the claim under investigation, and
+// every claim it produces joins that chain rather than starting a new one — which is
+// exactly what a per-row counter could not express.
+func rootClaimOf(lead core.Lead) string {
+	if lead.RootClaimID == nil {
+		return ""
+	}
+	return *lead.RootClaimID
 }

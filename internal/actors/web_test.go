@@ -793,3 +793,75 @@ func TestExtractorNumberLandsInAssertionStrength(t *testing.T) {
 			"§11.3 reserves for derived confidence", c.Confidence)
 	}
 }
+
+// TestClaimsInheritTheLeadsVerificationLineage is where §11.4's cap gets its input.
+//
+// The cap reads a chain depth. A follow-up lead spawned to settle a contradiction
+// carries the claim under investigation, and the claims it produces have to join
+// that chain — otherwise every follow-up's output starts at depth 0 and the cap
+// reads a counter nothing increments. That is not hypothetical: MaxLeads shipped in
+// exactly that shape and stayed inert from M0 to M3, checked and tested, with no
+// caller setting the number it read.
+//
+// Asserted on the real actor, because the executor's fake stamps lineage itself and
+// so cannot tell whether this code does.
+func TestClaimsInheritTheLeadsVerificationLineage(t *testing.T) {
+	const pageURL = "https://arxiv.example/abs/2401.13660"
+	pages := map[string]*fetch.Result{
+		pageURL: {
+			URL: pageURL, Outcome: fetch.OutcomeOK, StatusCode: 200,
+			ContentType: "text/html", Content: []byte(articleHTML()),
+		},
+	}
+
+	t.Run("follow-up lead", func(t *testing.T) {
+		h := newHarness(t, []search.Result{{URL: pageURL, Title: "MambaByte results", Rank: 1}}, pages, nil)
+		root := "c_theroot"
+		lead := h.lead
+		lead.RootClaimID = &root
+		lead.VerifyDepth = 2
+
+		res, err := h.actor.Run(context.Background(), lead)
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if len(res.Claims) == 0 {
+			t.Fatal("no claims produced")
+		}
+		for _, c := range res.Claims {
+			if c.RootClaimID != root {
+				t.Errorf("RootClaimID = %q, want %q — the claim starts a new chain and "+
+					"the depth cap can never bind", c.RootClaimID, root)
+			}
+			if c.VerifyDepth != 2 {
+				t.Errorf("VerifyDepth = %d, want 2 (inherited from the lead)", c.VerifyDepth)
+			}
+		}
+	})
+
+	t.Run("ordinary planner lead", func(t *testing.T) {
+		h := newHarness(t, []search.Result{{URL: pageURL, Title: "MambaByte results", Rank: 1}}, pages, nil)
+		res, err := h.actor.Run(context.Background(), h.lead)
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if len(res.Claims) == 0 {
+			t.Fatal("no claims produced")
+		}
+		for _, c := range res.Claims {
+			// The actor leaves it empty, and InsertClaims resolves that to "this
+			// claim is its own root" (§11.4) — writing it back through the shared
+			// slice, so the caller sees the root that was actually stored. What
+			// must never happen is a claim inheriting a root it has no ancestry
+			// for: that would put an ordinary planner lead's output on some other
+			// claim's verification chain and consume its per-root allowance.
+			if c.RootClaimID != c.ID {
+				t.Errorf("RootClaimID = %q, want its own ID %q on a lead with no "+
+					"claim ancestry", c.RootClaimID, c.ID)
+			}
+			if c.VerifyDepth != 0 {
+				t.Errorf("VerifyDepth = %d on an ordinary lead", c.VerifyDepth)
+			}
+		}
+	})
+}

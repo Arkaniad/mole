@@ -51,6 +51,14 @@ type Verifier struct {
 	// whole session.
 	MaxShareOfBudget float64
 
+	// MaxVerifyDepth and MaxFollowUpsPerRoot are §11.4's caps. Zero takes the
+	// defaults.
+	MaxVerifyDepth      int
+	MaxFollowUpsPerRoot int
+	// MaxFollowUpsPerPass bounds how much work one pass may queue. Zero takes
+	// DefaultMaxFollowUpsPerPass.
+	MaxFollowUpsPerPass int
+
 	Log *slog.Logger
 
 	// spent accumulates this Verifier's charges, so the share cap binds across
@@ -89,6 +97,14 @@ type Result struct {
 	// be explainable, and a bare 0.62 is exactly the figure people either trust
 	// blindly or dismiss.
 	Scores []Score
+
+	// Contradictions is how many live disagreements this pass found. The number the
+	// planner most needs: a sub-question whose evidence is disputed is not answered.
+	Contradictions int
+	// FollowUps are leads the Verifier wants run to settle them (§11.4). The caller
+	// queues them — the Verifier does not own the lead queue, and one that did
+	// could not be replayed against a cassette.
+	FollowUps []FollowUp
 
 	// priorEdges is the graph as it stood before this pass, kept so confidence is
 	// derived over the whole of it rather than only what this pass added.
@@ -191,8 +207,77 @@ func (v *Verifier) Run(ctx context.Context, sessionID string) (*Result, error) {
 	if err := v.persist(ctx, sessionID, pool, targets, verdicts, res); err != nil {
 		return res, err
 	}
+
+	for _, vd := range verdicts {
+		if vd.Relation == RelContradicts {
+			res.Contradictions++
+		}
+	}
+
+	// Follow-ups are proposed, not queued. The Verifier does not own the lead
+	// queue, and one that wrote to it could not be replayed against a cassette or
+	// dry-run by the caller.
+	existing, err := v.followUpsPerRoot(ctx, sessionID)
+	if err != nil {
+		// Not fatal, but it must not silently become "no follow-ups exist" — that
+		// would make the per-root cap count this pass alone and reset every time.
+		v.logger().WarnContext(ctx, "verifier: could not count existing follow-ups; "+
+			"skipping lead generation rather than uncapping it", "err", err)
+		return res, nil
+	}
+	res.FollowUps = FollowUps(verdicts, FollowUpOptions{
+		SessionID:       sessionID,
+		ActorType:       followUpActor(),
+		MaxDepth:        v.MaxVerifyDepth,
+		MaxPerRoot:      v.MaxFollowUpsPerRoot,
+		MaxTotal:        v.maxFollowUpsPerPass(),
+		ExistingPerRoot: existing,
+	})
 	return res, nil
 }
+
+// DefaultMaxFollowUpsPerPass bounds how many leads one verification pass may
+// propose.
+//
+// Small on purpose. A pass runs on the replan cadence, so follow-ups accumulate
+// across passes anyway, and a graph full of disagreement could otherwise queue more
+// verification work in one go than the session has budget to run.
+const DefaultMaxFollowUpsPerPass = 2
+
+func (v *Verifier) maxFollowUpsPerPass() int {
+	if v.MaxFollowUpsPerPass > 0 {
+		return v.MaxFollowUpsPerPass
+	}
+	return DefaultMaxFollowUpsPerPass
+}
+
+// followUpsPerRoot counts the follow-up leads each root claim already has, so
+// §11.4's per-root cap counts the session rather than one pass.
+func (v *Verifier) followUpsPerRoot(ctx context.Context, sessionID string) (map[string]int, error) {
+	var leads []*core.Lead
+	if err := v.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		leads, err = q.ListLeads(ctx, sessionID, 0)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	out := map[string]int{}
+	for _, l := range leads {
+		if l.RootClaimID != nil {
+			out[*l.RootClaimID]++
+		}
+	}
+	return out, nil
+}
+
+// followUpActor is which actor settles a disagreement.
+//
+// One choice today because WebActor is the only one built. When AcademicActor lands
+// in M6 this should read the disputed claims' sources — a contradiction between two
+// journals is settled by looking at journals — but taking a parameter it ignores
+// would only look like it already did.
+func followUpActor() core.ActorType { return core.ActorWeb }
 
 // adjudicate reserves, calls, settles, and parses one batch.
 //

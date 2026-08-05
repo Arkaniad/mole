@@ -30,6 +30,7 @@ import (
 	"github.com/lajosdeme/mole/internal/pricing"
 	"github.com/lajosdeme/mole/internal/queue"
 	"github.com/lajosdeme/mole/internal/store"
+	"github.com/lajosdeme/mole/internal/verifier"
 )
 
 // Executor runs one session to completion.
@@ -38,8 +39,14 @@ type Executor struct {
 	Ledger  *budget.Ledger
 	Queue   *queue.Queue
 	Planner *planner.Planner
-	Actors  map[core.ActorType]actors.Actor
-	Log     *slog.Logger
+
+	// Verifier builds the claim graph (§11). Nil skips verification entirely,
+	// which is a supported configuration: the research still runs, claims still
+	// carry verified quotes, and derived confidence stays 0 rather than being
+	// invented.
+	Verifier *verifier.Verifier
+	Actors   map[core.ActorType]actors.Actor
+	Log      *slog.Logger
 
 	// Owner identifies this worker in a lease. M5 gives each worker its own.
 	Owner string
@@ -106,6 +113,15 @@ type Result struct {
 	// CacheStats reports whether the cache earned its keep. An unmeasured
 	// cache is an assumption.
 	CacheStats cache.Stats
+
+	// Verification totals across every pass (§11).
+	VerifyPasses    int
+	ClaimsVerified  int
+	EdgesWritten    int
+	Contradictions  int
+	FollowUpsQueued int
+	// VerifyDegraded is the last reason a pass could not finish, if any.
+	VerifyDegraded string
 
 	// Spent is the settled total in the session's budget unit.
 	Spent int64
@@ -257,6 +273,12 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 			if !e.Planner.ShouldReplan(completedSinceReplan, true) {
 				break
 			}
+			// Last chance to verify: after this the queue is empty and, if the
+			// planner adds nothing, the loop ends. Skipping it here would leave the
+			// final batch of claims unverified and unscored — every one of them
+			// reaching the report with confidence 0.
+			e.verify(ctx, digest, res)
+
 			added, done, reason, err := e.replan(ctx, sess, digest, depth, res, leadQuestion)
 			if err != nil {
 				// A failed replan at drain time is the END of the research, not
@@ -333,6 +355,12 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 		}
 
 		if e.Planner.ShouldReplan(completedSinceReplan, false) {
+			// Verify BEFORE replanning, so the planner sees the disagreements this
+			// batch of leads turned up. A sub-question whose evidence is
+			// contradicted is not answered, and a planner told only the claim count
+			// has no way to know the difference.
+			e.verify(ctx, digest, res)
+
 			added, done, reason, err := e.replan(ctx, sess, digest, depth, res, leadQuestion)
 			if err != nil {
 				e.logger().WarnContext(ctx, "replan failed; continuing with the current queue", "err", err)
@@ -839,4 +867,87 @@ func statusForContext(err error) core.SessionStatus {
 		return core.StatusExhausted
 	}
 	return core.StatusCancelled
+}
+
+// verify runs one incremental verification pass (§11.1) and folds the result into
+// the loop.
+//
+// Never fails the session. Verification improves an answer; it does not produce
+// one, so a provider that will not compare claims degrades the run rather than
+// ending it — the claims still carry quotes checked verbatim against their source.
+//
+// Runs on the replan cadence rather than per lead. Two reasons, one of each kind.
+// Batches fill better: a single lead's two or three claims produce a handful of
+// pairs and a mostly-empty call, while several leads' claims fill one. And the
+// planner needs the answer: this is the only point in the loop where a
+// contradiction can still change what gets researched next.
+func (e *Executor) verify(ctx context.Context, digest *planner.Digest, res *Result) {
+	if e.Verifier == nil {
+		return
+	}
+
+	e.emit("verifying", fmt.Sprintf("%d claim(s) gathered", digest.ClaimsFound))
+	out, err := e.Verifier.Run(ctx, res.SessionID)
+	if err != nil {
+		// A store or ledger failure. Worth a warning and nothing more: the research
+		// is still valid and the report can still be written.
+		e.logger().WarnContext(ctx, "verification pass failed; continuing unverified", "err", err)
+		return
+	}
+	if out == nil {
+		return
+	}
+
+	res.VerifyPasses++
+	res.ClaimsVerified += out.ClaimsVerified
+	res.EdgesWritten += out.EdgesWritten
+	res.Contradictions += out.Contradictions
+	if out.Degraded != "" {
+		res.VerifyDegraded = out.Degraded
+	}
+
+	// The planner sees a COUNT, never the claims (§9.1). That keeps page-derived
+	// text out of the planner entirely, which is stronger than fencing it.
+	digest.Contradictions = res.Contradictions
+
+	if out.ClaimsVerified > 0 || out.EdgesWritten > 0 {
+		e.emit("verified", fmt.Sprintf("%d claim(s), %d edge(s), %d contradiction(s)",
+			out.ClaimsVerified, out.EdgesWritten, out.Contradictions))
+	}
+
+	e.queueFollowUps(ctx, out.FollowUps, res)
+}
+
+// queueFollowUps pushes the Verifier's proposed leads (§11.4).
+//
+// Queued here rather than by the Verifier because the executor owns the queue —
+// and because a Verifier that wrote to it could not be replayed against a cassette
+// or inspected before its work ran.
+//
+// The depth and per-root caps were applied upstream. This adds nothing to them: a
+// second ceiling here would be a place for the two to disagree.
+func (e *Executor) queueFollowUps(ctx context.Context, ups []verifier.FollowUp, res *Result) {
+	if len(ups) == 0 {
+		return
+	}
+	leads := make([]core.Lead, 0, len(ups))
+	for _, up := range ups {
+		lead := up.Lead
+		if lead.ID == "" {
+			lead.ID = core.NewLeadID()
+		}
+		leads = append(leads, lead)
+		e.logger().InfoContext(ctx, "queuing a follow-up lead to settle a contradiction",
+			"lead", lead.ID, "depth", lead.VerifyDepth, "because", up.Because)
+	}
+
+	if err := e.Queue.Push(ctx, leads); err != nil {
+		// Not fatal. The contradiction is already recorded in the graph and will be
+		// reported as a contradiction; failing to research it further is a worse
+		// answer, not a broken one.
+		e.logger().WarnContext(ctx, "could not queue follow-up leads", "err", err)
+		return
+	}
+	res.FollowUpsQueued += len(leads)
+	e.emit("follow-up", fmt.Sprintf("%d lead(s) to settle a contradiction", len(leads)))
 }

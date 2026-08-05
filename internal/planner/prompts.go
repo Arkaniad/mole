@@ -71,6 +71,9 @@ Rules:
   is low, prefer stopping with what has been found over opening threads that
   cannot finish: an unanswered sub-question costs nothing, while a half-researched
   one spends the allowance that would have written up the rest.
+- A sub-question whose evidence is contradicted is NOT answered. Where the state
+  reports contradictions, prefer a sub-question that would settle the disagreement
+  over one that opens new ground.
 - Do NOT re-propose a sub-question that is already open. It is already queued.
 - You cannot see what was found, only how much. Do not invent findings.
 

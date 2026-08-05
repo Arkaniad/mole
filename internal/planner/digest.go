@@ -79,6 +79,14 @@ type Digest struct {
 	Questions []SubQuestion
 	DeadEnds  []DeadEnd
 
+	// Contradictions is how many live disagreements the Verifier has found (§11).
+	//
+	// A count, so §9.1's rule holds: no page-derived text reaches the planner. It
+	// still changes the decision, and it is the one signal that separates "this
+	// sub-question has evidence" from "this sub-question has an argument" — a
+	// planner marking a disputed question answered is the failure this prevents.
+	Contradictions int
+
 	// LeadsRun and ClaimsFound are session totals, kept even when the
 	// per-question detail is compacted away.
 	LeadsRun    int
@@ -332,6 +340,10 @@ func (d *Digest) String() string {
 
 	fmt.Fprintf(&b, "Research question: %s\n\n", d.Question)
 	fmt.Fprintf(&b, "Progress: %d lead(s) run, %d claim(s) found.\n", d.LeadsRun, d.ClaimsFound)
+	if d.Contradictions > 0 {
+		fmt.Fprintf(&b, "%d contradiction(s) found between sources — evidence on at "+
+			"least one sub-question is disputed, not settled.\n", d.Contradictions)
+	}
 	if d.BudgetRemaining > 0 {
 		fmt.Fprintf(&b, "Roughly %.0f%% of the session's allowance remains.\n", d.BudgetRemaining*100)
 	}

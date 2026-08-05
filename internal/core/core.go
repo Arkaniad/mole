@@ -323,6 +323,17 @@ type Lead struct {
 	Priority  int
 	Status    LeadStatus
 
+	// RootClaimID marks a lead spawned to resolve something about a claim —
+	// §11.4's verification lineage. Nil on an ordinary planner lead.
+	//
+	// Claims the lead produces inherit it, so a chain of follow-ups all trace to
+	// the claim that started the investigation. §11.4's point is that this cannot
+	// be a per-claim counter: a follow-up produces a NEW claim, and a counter on
+	// the row would start over every time.
+	RootClaimID *string
+	// VerifyDepth is how many follow-ups deep this lead sits. Claims inherit it.
+	VerifyDepth int
+
 	LeaseOwner   *string
 	LeaseExpires *time.Time
 

@@ -26,6 +26,7 @@ import (
 	"github.com/lajosdeme/mole/internal/tools/extract"
 	"github.com/lajosdeme/mole/internal/tools/fetch"
 	"github.com/lajosdeme/mole/internal/tools/search"
+	"github.com/lajosdeme/mole/internal/verifier"
 	"github.com/spf13/cobra"
 )
 
@@ -237,9 +238,18 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 		Pricing:    actor.Pricing,
 		CheapModel: actor.LLM.ModelFor(llm.TierCheap),
 		Planner:    &planner.Planner{LLM: actor.LLM, MaxDepth: o.maxDepth},
-		Actors:     map[core.ActorType]actors.Actor{core.ActorWeb: actor},
-		Log:        actor.Log,
-		Owner:      "cli",
+		// The Verifier shares the actor's provider and store. §11.1 wants it over
+		// the session's whole claim set, which is why it reads the store rather
+		// than being handed each lead's batch.
+		Verifier: &verifier.Verifier{
+			Store:  db,
+			Ledger: led,
+			LLM:    actor.LLM,
+			Log:    actor.Log,
+		},
+		Actors: map[core.ActorType]actors.Actor{core.ActorWeb: actor},
+		Log:    actor.Log,
+		Owner:  "cli",
 	}
 	if !o.quiet && !o.asJSON {
 		exec.Progress = progressPrinter()
@@ -630,6 +640,12 @@ func progressPrinter() func(executor.Event) {
 			fmt.Printf(" [%6s]     %s\n", el, ev.Detail)
 		case "cached":
 			fmt.Printf(" [%6s]   ⤿ cached: %s\n", el, ev.Detail)
+		case "verifying":
+			fmt.Printf(" [%6s] verifying: %s…\n", el, ev.Detail)
+		case "verified":
+			fmt.Printf(" [%6s]     graph: %s\n", el, ev.Detail)
+		case "follow-up":
+			fmt.Printf(" [%6s]   ⚡ %s\n", el, ev.Detail)
 		}
 	}
 }
@@ -650,6 +666,22 @@ func printProgress(res *executor.Result) {
 	if res.LeadsCached > 0 || res.CacheStats.Hits > 0 {
 		fmt.Printf("   cache: %d lead(s) reused, %d source(s) served without a fetch\n",
 			res.LeadsCached, res.CacheStats.Hits)
+	}
+	if res.VerifyPasses > 0 {
+		fmt.Printf("   graph: %d claim(s) verified, %d edge(s), %d contradiction(s)",
+			res.ClaimsVerified, res.EdgesWritten, res.Contradictions)
+		if res.FollowUpsQueued > 0 {
+			fmt.Printf(", %d follow-up lead(s)", res.FollowUpsQueued)
+		}
+		fmt.Println()
+		if res.VerifyDegraded != "" {
+			// Said out loud. An unverified claim keeps confidence 0, and a reader
+			// who does not know verification was cut short reads that as "nothing
+			// here is trustworthy" rather than "nothing here was checked".
+			fmt.Printf("   verification incomplete: %s\n", res.VerifyDegraded)
+		}
+	} else if len(res.Claims) > 0 {
+		fmt.Println("   graph: not built — claims carry verified quotes but no derived confidence")
 	}
 	if res.StoppedBecause != "" {
 		fmt.Printf("   stopped: %s\n", res.StoppedBecause)
