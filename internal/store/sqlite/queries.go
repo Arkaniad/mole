@@ -975,7 +975,7 @@ func (t *queries) CountLeadsByStatus(ctx context.Context, sessionID string) (map
 
 const claimCols = `id, session_id, lead_id, text, source, tool_call_id, quote,
 	quote_offset, published_at, retrieved_at, root_claim_id, verify_depth,
-	assertion_strength, confidence, grounded, verified_at, created_at`
+	assertion_strength, confidence, grounded, grounding_note, verified_at, created_at`
 
 // InsertClaims writes a batch.
 //
@@ -1008,11 +1008,11 @@ func (t *queries) InsertClaims(ctx context.Context, claims []core.Claim) error {
 		}
 
 		_, err := t.q.ExecContext(ctx, `
-			INSERT INTO claims (`+claimCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			INSERT INTO claims (`+claimCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			c.ID, c.SessionID, c.LeadID, c.Text, c.Source, c.ToolCallID, c.Quote,
 			c.QuoteOffset, nullMicros(c.PublishedAt), toMicros(c.RetrievedAt),
 			c.RootClaimID, c.VerifyDepth, c.AssertionStrength, c.Confidence, grounded,
-			nullMicros(c.VerifiedAt), toMicros(c.CreatedAt))
+			c.GroundingNote, nullMicros(c.VerifiedAt), toMicros(c.CreatedAt))
 		if err != nil {
 			return fmt.Errorf("sqlite: insert claim %d/%d: %w", i+1, len(claims), err)
 		}
@@ -1074,7 +1074,7 @@ func scanClaims(rows *sql.Rows) ([]*core.Claim, error) {
 		if err := rows.Scan(&c.ID, &c.SessionID, &c.LeadID, &c.Text, &c.Source,
 			&c.ToolCallID, &c.Quote, &c.QuoteOffset, &published, &retrieved,
 			&c.RootClaimID, &c.VerifyDepth, &c.AssertionStrength, &c.Confidence,
-			&grounded, &verified, &created); err != nil {
+			&grounded, &c.GroundingNote, &verified, &created); err != nil {
 			return nil, err
 		}
 		c.PublishedAt = micrasPtr(published)
@@ -1182,6 +1182,34 @@ func (t *queries) ListEdges(ctx context.Context, sessionID string, limit int) ([
 		out = append(out, &e)
 	}
 	return out, rows.Err()
+}
+
+// SetClaimGrounding records §11.5 grounding verdicts.
+//
+// Touches grounded and grounding_note only. Confidence is NOT written here: the
+// grounding result is an input to §11.3's formula, so it has to land first and the
+// derivation has to run afterwards. Writing both at once would score the claim
+// against the grounding state it had before the check.
+func (t *queries) SetClaimGrounding(ctx context.Context, results []store.ClaimGrounding) error {
+	for i, g := range results {
+		if g.ClaimID == "" {
+			return fmt.Errorf("sqlite: grounding %d/%d has no claim id", i+1, len(results))
+		}
+		var grounded sql.NullInt64
+		if g.Grounded != nil {
+			grounded = sql.NullInt64{Int64: b2i(*g.Grounded), Valid: true}
+		}
+		res, err := t.q.ExecContext(ctx, `
+			UPDATE claims SET grounded = ?, grounding_note = ? WHERE id = ?`,
+			grounded, g.Note, g.ClaimID)
+		if err != nil {
+			return fmt.Errorf("sqlite: set grounding %d/%d: %w", i+1, len(results), err)
+		}
+		if n, err := res.RowsAffected(); err == nil && n == 0 {
+			return fmt.Errorf("sqlite: set grounding on %s: %w", g.ClaimID, store.ErrNotFound)
+		}
+	}
+	return nil
 }
 
 // ScoreClaims writes the Verifier's verdicts.

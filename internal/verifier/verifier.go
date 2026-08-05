@@ -59,6 +59,14 @@ type Verifier struct {
 	// DefaultMaxFollowUpsPerPass.
 	MaxFollowUpsPerPass int
 
+	// Grounder re-reads sources for §11.5.2. Nil disables grounding entirely,
+	// which is supported: claims keep the verbatim quote checked at extraction
+	// time, and Grounded stays nil rather than being guessed.
+	Grounder *Grounder
+	// MaxGroundChecks bounds how many claims one grounding pass re-reads. Zero
+	// takes DefaultMaxGroundChecks.
+	MaxGroundChecks int
+
 	Log *slog.Logger
 
 	// spent accumulates this Verifier's charges, so the share cap binds across

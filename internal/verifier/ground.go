@@ -1,0 +1,577 @@
+package verifier
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"sort"
+	"strings"
+
+	"github.com/lajosdeme/mole/internal/actors"
+	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/llm"
+	"github.com/lajosdeme/mole/internal/store"
+	"github.com/lajosdeme/mole/internal/tools/extract"
+	"github.com/lajosdeme/mole/internal/tools/fetch"
+)
+
+// Budgeted re-fetch grounding (§11.5.2).
+//
+// §11.5 names consistency checking's blind spot: it cannot catch a
+// hallucinated-but-self-consistent claim, which is the dominant failure mode. Two
+// mechanisms answer that. The first, a verbatim quote checked at the actor boundary,
+// has been in place since M1. This is the second.
+//
+// It is the ONLY path by which source text re-enters the pipeline, and that makes
+// two properties load-bearing rather than tidy:
+//
+//   - The text enters a verifier context and is discarded when this function
+//     returns. It is never written to the store, never returned to the caller, and
+//     never reaches the planner digest — which has no field for it, so §9.1's rule
+//     holds structurally rather than by discipline.
+//   - It is bounded twice, by a spend allowance and by a check count. An unbounded
+//     re-fetch loop is free in token mode (§8.5's hole) and the most expensive thing
+//     in the session in USD mode.
+//
+// Why "in context" matters more than "present". A quote can appear verbatim and
+// still not support the claim: the sentence before it may read "it is often
+// claimed that", or the claim may generalize a result the quote scopes narrowly.
+// That is quote-mining, it survives mechanism 1 completely, and it is what this
+// spends a model call on.
+
+// GroundOutcome is what one check learned.
+type GroundOutcome string
+
+const (
+	// GroundConfirmed: the quote is in the source and supports the claim.
+	GroundConfirmed GroundOutcome = "confirmed"
+	// GroundUnsupported: the quote is there, and does not support the claim. The
+	// serious verdict — this is quote-mining or a misreading, and §11.3 penalizes
+	// it near-fatally.
+	GroundUnsupported GroundOutcome = "unsupported"
+	// GroundVanished: the quote is no longer in the source.
+	//
+	// NOT evidence against the claim. The quote was checked verbatim against the
+	// fetched text at extraction time, so its absence now means the page changed,
+	// and scoring that as "the evidence does not support the claim" would penalize
+	// a claim for a publisher's edit. Leaves Grounded nil.
+	GroundVanished GroundOutcome = "vanished"
+	// GroundUnreachable: the source could not be re-read. Nothing was learned, so
+	// nothing is written about the claim beyond the note.
+	GroundUnreachable GroundOutcome = "unreachable"
+	// GroundUndecided: the judge could not answer. Same treatment as unreachable —
+	// a check that failed is not a claim that failed.
+	GroundUndecided GroundOutcome = "undecided"
+)
+
+// Decisive reports whether the outcome says anything about the claim itself.
+func (o GroundOutcome) Decisive() bool {
+	return o == GroundConfirmed || o == GroundUnsupported
+}
+
+// GroundResult is one claim's check.
+type GroundResult struct {
+	ClaimID string
+	Source  string
+	Outcome GroundOutcome
+	// Note is one line for the trace. Model prose about page text, flattened, never
+	// the page text itself.
+	Note string
+}
+
+// GroundReport is what a grounding pass did.
+type GroundReport struct {
+	Checked     int
+	Confirmed   int
+	Unsupported int
+	Vanished    int
+	Unreachable int
+	Undecided   int
+
+	// Fetches is how many sources were actually re-read. Lower than Checked when
+	// several claims cite one source: the document is fetched once and every claim
+	// on it is checked against the same text.
+	Fetches int
+	Calls   int
+	Spent   int64
+
+	Results []GroundResult
+
+	// Skipped is how many candidates the caps left unchecked.
+	Skipped int
+	// Degraded says what the pass could not finish (§9.5).
+	Degraded string
+}
+
+// DefaultMaxGroundChecks bounds how many claims one pass may re-read.
+//
+// Small, and the count is the point rather than the value. Grounding is the most
+// expensive check in the system — a fetch, an extraction and a model call per claim
+// — and it runs against the released escrow, which is the money the report needs.
+// A pass that grounds everything produces a well-checked set of claims and no
+// report to put them in.
+const DefaultMaxGroundChecks = 5
+
+// DefaultGroundShareOfEscrow is the fraction of released escrow grounding may spend.
+//
+// A guess, flagged as one, in the same family as the fan-out taper and the
+// verification share. What it protects is not a guess: the report must still be
+// affordable afterwards, and §8.3's whole argument for escrow is that research
+// otherwise leaves nothing to write the answer with. Grounding is research.
+const DefaultGroundShareOfEscrow = 0.3
+
+// Grounder re-reads sources. Split out so a pass can run without a network at all,
+// and so the fetcher the actor already configured — with its robots handling, its
+// rate limiter and its SSRF guard — is the one used here.
+type Grounder struct {
+	Fetch   fetch.Fetcher
+	Extract extract.Extractor
+}
+
+// Ground re-reads the sources behind the claims most worth checking (§11.5.2).
+//
+// allowance is the spend ceiling in the session's budget unit, normally a fraction
+// of the escrow the caller has just released. Zero or negative disables the pass:
+// an unbounded grounding run is exactly the failure this is designed around.
+//
+// Never returns an error for a fetch that failed, a page that changed, or a model
+// that would not answer. Those are outcomes, and recording them is the point. An
+// error means the store or the ledger failed.
+func (v *Verifier) Ground(ctx context.Context, sessionID string, allowance int64) (*GroundReport, error) {
+	rep := &GroundReport{}
+	if v.Grounder == nil || v.Grounder.Fetch == nil || v.Grounder.Extract == nil {
+		rep.Degraded = "no fetcher configured; grounding skipped"
+		return rep, nil
+	}
+	if v.LLM == nil {
+		return rep, ErrNoProvider
+	}
+	if allowance <= 0 {
+		rep.Degraded = "no allowance for grounding"
+		return rep, nil
+	}
+
+	var (
+		claims []*core.Claim
+		edges  []*core.ClaimEdge
+	)
+	if err := v.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		if claims, err = q.ListClaims(ctx, sessionID, 0); err != nil {
+			return err
+		}
+		edges, err = q.ListEdges(ctx, sessionID, 0)
+		return err
+	}); err != nil {
+		return rep, err
+	}
+	if len(claims) == 0 {
+		return rep, nil
+	}
+
+	candidates := groundingCandidates(claims, edges, v.maxGroundChecks())
+	rep.Skipped = countGroundable(claims) - len(candidates)
+
+	// Group by source, so several claims citing one page cost one fetch. The
+	// common case on a real run: a single arXiv page produced seven of thirteen
+	// claims.
+	bySource := map[string][]*core.Claim{}
+	var order []string
+	for _, c := range candidates {
+		if _, seen := bySource[c.Source]; !seen {
+			order = append(order, c.Source)
+		}
+		bySource[c.Source] = append(bySource[c.Source], c)
+	}
+
+	var spent int64
+	var verdicts []store.ClaimGrounding
+
+	// Claims the allowance could not cover are SKIPPED, not checked. Recording them
+	// as "undecided" would write a grounding note onto a claim nobody examined, and
+	// a note is what distinguishes a checked claim from an unchecked one — so an
+	// exhausted allowance would make every remaining claim look inspected.
+	remaining := func() int64 { return allowance - spent }
+
+exhausted:
+	for _, src := range order {
+		if remaining() < groundCallEstimate() {
+			rep.Degraded = fmt.Sprintf("grounding allowance exhausted after %d check(s)", rep.Checked)
+			break exhausted
+		}
+
+		text, ferr := v.reread(ctx, sessionID, src, rep)
+		if ferr != nil {
+			for _, c := range bySource[src] {
+				res := GroundResult{ClaimID: c.ID, Source: src, Outcome: GroundUnreachable,
+					Note: "source could not be re-read: " + oneLine(ferr.Error())}
+				verdicts = append(verdicts, groundingOf(res))
+				rep.Results = append(rep.Results, res)
+				rep.Checked++
+				rep.Unreachable++
+			}
+			continue
+		}
+
+		for _, c := range bySource[src] {
+			// Re-checked per claim, not per source: several claims share one fetch,
+			// and each still costs its own judge call.
+			if remaining() < groundCallEstimate() {
+				rep.Degraded = fmt.Sprintf("grounding allowance exhausted after %d check(s)", rep.Checked)
+				break exhausted
+			}
+
+			res, cost := v.checkOne(ctx, sessionID, c, text, rep)
+			spent += cost
+			verdicts = append(verdicts, groundingOf(res))
+			rep.Results = append(rep.Results, res)
+			rep.Checked++
+			switch res.Outcome {
+			case GroundConfirmed:
+				rep.Confirmed++
+			case GroundUnsupported:
+				rep.Unsupported++
+			case GroundVanished:
+				rep.Vanished++
+			case GroundUnreachable:
+				rep.Unreachable++
+			default:
+				rep.Undecided++
+			}
+		}
+		// The extracted document dies here, at the end of each source's iteration.
+		// Nothing above this line holds a reference to it.
+	}
+
+	// Everything the pass never reached.
+	if n := len(candidates) - rep.Checked; n > 0 {
+		rep.Skipped += n
+	}
+	rep.Spent = spent
+
+	if len(verdicts) == 0 {
+		return rep, nil
+	}
+
+	// Write the verdicts, then re-derive confidence over the whole graph. In that
+	// order: the grounding result is an input to §11.3's formula, so deriving first
+	// would score every claim against the state it had before the check.
+	if err := v.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.SetClaimGrounding(ctx, verdicts)
+	}); err != nil {
+		return rep, err
+	}
+	if err := v.rescore(ctx, sessionID); err != nil {
+		return rep, err
+	}
+	return rep, nil
+}
+
+func groundingOf(r GroundResult) store.ClaimGrounding {
+	g := store.ClaimGrounding{ClaimID: r.ClaimID, Note: r.Note}
+	switch r.Outcome {
+	case GroundConfirmed:
+		yes := true
+		g.Grounded = &yes
+	case GroundUnsupported:
+		no := false
+		g.Grounded = &no
+	}
+	// Everything else leaves Grounded nil: the check ran and learned nothing about
+	// the claim, which is not the same as learning the claim is unsupported.
+	return g
+}
+
+// rescore re-derives confidence for the whole session (§11.3).
+func (v *Verifier) rescore(ctx context.Context, sessionID string) error {
+	var (
+		claims []*core.Claim
+		edges  []*core.ClaimEdge
+	)
+	if err := v.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		if claims, err = q.ListClaims(ctx, sessionID, 0); err != nil {
+			return err
+		}
+		edges, err = q.ListEdges(ctx, sessionID, 0)
+		return err
+	}); err != nil {
+		return err
+	}
+	scores, _ := DeriveConfidence(claims, edges)
+	if len(scores) == 0 {
+		return nil
+	}
+	return v.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.ScoreClaims(ctx, scores)
+	})
+}
+
+// reread fetches and extracts one source.
+//
+// The fetch cost is recorded against RoleVerifier, so `mole trace` can show what
+// grounding cost separately from the research that produced the claims.
+func (v *Verifier) reread(ctx context.Context, sessionID, src string, rep *GroundReport) (string, error) {
+	u, err := url.Parse(src)
+	if err != nil || u.Host == "" {
+		// A DOI or a connector source has no page to re-read. Not a failure of the
+		// claim; there is simply nothing to fetch.
+		return "", fmt.Errorf("not a fetchable source")
+	}
+
+	res, err := v.Grounder.Fetch.Fetch(ctx, src)
+	rep.Fetches++
+	if err != nil {
+		return "", err
+	}
+	if res == nil || res.Outcome != fetch.OutcomeOK || len(res.Content) == 0 {
+		outcome := "no content"
+		if res != nil {
+			outcome = string(res.Outcome)
+		}
+		return "", fmt.Errorf("%s", outcome)
+	}
+
+	doc, err := v.Grounder.Extract.Extract(ctx, res.Content, res.ContentType, u)
+	if err != nil {
+		return "", err
+	}
+	if doc == nil || strings.TrimSpace(doc.Text) == "" {
+		return "", fmt.Errorf("nothing extractable")
+	}
+	return doc.Text, nil
+}
+
+// checkOne grounds a single claim against freshly-read source text.
+func (v *Verifier) checkOne(ctx context.Context, sessionID string, c *core.Claim, text string, rep *GroundReport) (GroundResult, int64) {
+	out := GroundResult{ClaimID: c.ID, Source: c.Source}
+
+	// Mechanical first, and free. §11.5's mechanism 1 verified this quote against
+	// the text at extraction time, so its absence now means the page changed.
+	match, ok := actors.FindQuote(text, c.Quote)
+	if !ok {
+		out.Outcome = GroundVanished
+		out.Note = "the quote is no longer present in the source; the page has changed since it was read"
+		return out, 0
+	}
+
+	window := contextAround(text, match.Offset, len(match.Text))
+
+	reservation, rerr := v.Ledger.Reserve(ctx, sessionID, groundCallEstimate())
+	if rerr != nil {
+		out.Outcome = GroundUndecided
+		out.Note = "could not reserve budget to judge the quote: " + oneLine(rerr.Error())
+		return out, 0
+	}
+
+	prompt := groundUserPrompt(c.Text, match.Text, window)
+	resp, callErr := v.LLM.Complete(ctx, llm.Request{
+		Tier:      llm.TierCheap,
+		System:    groundSystemPrompt,
+		Messages:  []llm.Message{llm.User(prompt)},
+		MaxTokens: groundMaxTokens,
+	})
+
+	var calls []core.ToolCall
+	if resp != nil && !resp.Usage.IsZero() {
+		calls = append(calls, core.ToolCall{
+			SessionID: sessionID,
+			Role:      core.RoleVerifier,
+			Type:      core.CallLLM,
+			Model:     resp.Model,
+			Cost: core.Cost{
+				InputTokens:  resp.Usage.InputTokens,
+				OutputTokens: resp.Usage.OutputTokens,
+			},
+		})
+	}
+	settled, serr := v.Ledger.Settle(ctx, reservation, calls)
+	var charged int64
+	if serr != nil {
+		v.logger().WarnContext(ctx, "grounding: settle failed", "err", serr)
+	} else {
+		charged = settled.Cost.BudgetAmount(unitOf(ctx, v, sessionID))
+		rep.Calls++
+	}
+
+	if callErr != nil || resp == nil || resp.Refused {
+		out.Outcome = GroundUndecided
+		out.Note = "the judge did not answer"
+		if callErr != nil {
+			out.Note += ": " + oneLine(callErr.Error())
+		}
+		return out, charged
+	}
+
+	verdict, why, ok := parseGroundVerdict(resp.Text)
+	if !ok {
+		out.Outcome = GroundUndecided
+		out.Note = "the judge's answer could not be read"
+		return out, charged
+	}
+	out.Note = why
+	if verdict {
+		out.Outcome = GroundConfirmed
+	} else {
+		out.Outcome = GroundUnsupported
+	}
+	return out, charged
+}
+
+// unitOf reads the session's budget unit.
+//
+// Looked up rather than cached: a Verifier outlives no session, but reading it here
+// keeps Cost conversion honest if a caller reuses one across sessions.
+func unitOf(ctx context.Context, v *Verifier, sessionID string) core.BudgetUnit {
+	if s, err := v.session(ctx, sessionID); err == nil && s != nil {
+		return s.BudgetUnit
+	}
+	return core.BudgetTokens
+}
+
+func (v *Verifier) maxGroundChecks() int {
+	if v.MaxGroundChecks > 0 {
+		return v.MaxGroundChecks
+	}
+	return DefaultMaxGroundChecks
+}
+
+// ---------------------------------------------------------------------------
+// Candidate selection
+// ---------------------------------------------------------------------------
+
+// groundingCandidates ranks claims by how much a re-read would tell us.
+//
+// §11.5's three categories, in priority order:
+//
+//  1. Contradicted. The report has to say something about a disagreement, and
+//     knowing which side is actually supported by its source is the cheapest way to
+//     resolve one.
+//  2. Low corroboration. A claim one publisher asserts has nothing but its own
+//     quote holding it up; re-reading that quote is the only check available.
+//  3. Load-bearing. High derived confidence with few sources means the report will
+//     lean on it.
+//
+// Ordered and truncated rather than filtered by a threshold: the cap is what bounds
+// cost, and a threshold would need a number nobody can justify.
+func groundingCandidates(claims []*core.Claim, edges []*core.ClaimEdge, max int) []*core.Claim {
+	if max <= 0 {
+		return nil
+	}
+
+	contradicted := map[string]bool{}
+	for _, e := range edges {
+		if e == nil || e.Kind != core.EdgeContradicts {
+			continue
+		}
+		contradicted[e.FromID] = true
+		contradicted[e.ToID] = true
+	}
+
+	clusters := Clusters(claims, edges)
+	publishers := map[string]int{}
+	for _, cl := range clusters {
+		pubs := map[string]bool{}
+		for _, c := range cl.Claims {
+			if p := PublisherOf(c.Source); p != "" {
+				pubs[p] = true
+			}
+		}
+		for _, c := range cl.Claims {
+			publishers[c.ID] = len(pubs)
+		}
+	}
+
+	type ranked struct {
+		claim *core.Claim
+		score int
+	}
+	var out []ranked
+	for _, c := range claims {
+		if !groundable(c) {
+			continue
+		}
+		score := 0
+		if contradicted[c.ID] {
+			score += 100
+		}
+		if publishers[c.ID] <= 1 {
+			score += 20
+		}
+		// A claim already checked is not worth checking again: the answer does not
+		// change, and the budget is better spent on one nobody has read.
+		if c.Grounded != nil || c.GroundingNote != "" {
+			continue
+		}
+		out = append(out, ranked{c, score})
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].score != out[j].score {
+			return out[i].score > out[j].score
+		}
+		// Higher confidence next: those are the claims a report leans on. Then ID,
+		// so the selection is deterministic and a cassette replays.
+		if out[i].claim.Confidence != out[j].claim.Confidence {
+			return out[i].claim.Confidence > out[j].claim.Confidence
+		}
+		return out[i].claim.ID < out[j].claim.ID
+	})
+
+	if len(out) > max {
+		out = out[:max]
+	}
+	res := make([]*core.Claim, 0, len(out))
+	for _, r := range out {
+		res = append(res, r.claim)
+	}
+	return res
+}
+
+// groundable reports whether a claim can be checked at all.
+func groundable(c *core.Claim) bool {
+	if c == nil || strings.TrimSpace(c.Quote) == "" {
+		return false
+	}
+	u, err := url.Parse(c.Source)
+	return err == nil && u.Host != ""
+}
+
+func countGroundable(claims []*core.Claim) int {
+	n := 0
+	for _, c := range claims {
+		if groundable(c) && c.Grounded == nil && c.GroundingNote == "" {
+			n++
+		}
+	}
+	return n
+}
+
+// contextAround returns the quote plus surrounding text.
+//
+// The window is the whole point of the check. A quote that appears verbatim can
+// still fail to support its claim because of what sits next to it — "it was once
+// believed that", or a scope the claim drops — and mechanism 1 cannot see any of
+// that. Bounded so one enormous page cannot set the size of the call.
+func contextAround(text string, offset, length int) string {
+	const window = 900
+
+	start := offset - window
+	if start < 0 {
+		start = 0
+	}
+	end := offset + length + window
+	if end > len(text) {
+		end = len(text)
+	}
+	// Do not split a rune.
+	for start > 0 && start < len(text) && !utf8Start(text[start]) {
+		start--
+	}
+	for end < len(text) && !utf8Start(text[end]) {
+		end++
+	}
+	return strings.Join(strings.Fields(text[start:end]), " ")
+}
+
+func utf8Start(b byte) bool { return b&0xC0 != 0x80 }

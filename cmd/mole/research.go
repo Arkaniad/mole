@@ -230,6 +230,19 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	sessionCache := cache.New()
 	actor.Cache = sessionCache
 
+	// The Verifier shares the actor's provider, store and fetcher. §11.1 wants it
+	// over the session's whole claim set, which is why it reads the store rather
+	// than being handed each lead's batch — and the fetcher is the actor's own, so
+	// §11.5's re-read goes through the same robots handling, rate limiter and SSRF
+	// guard as the fetch that produced the claim.
+	vf := &verifier.Verifier{
+		Store:    db,
+		Ledger:   led,
+		LLM:      actor.LLM,
+		Log:      actor.Log,
+		Grounder: &verifier.Grounder{Fetch: actor.Fetch, Extract: actor.Extract},
+	}
+
 	exec := &executor.Executor{
 		Store:      db,
 		Ledger:     led,
@@ -238,18 +251,10 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 		Pricing:    actor.Pricing,
 		CheapModel: actor.LLM.ModelFor(llm.TierCheap),
 		Planner:    &planner.Planner{LLM: actor.LLM, MaxDepth: o.maxDepth},
-		// The Verifier shares the actor's provider and store. §11.1 wants it over
-		// the session's whole claim set, which is why it reads the store rather
-		// than being handed each lead's batch.
-		Verifier: &verifier.Verifier{
-			Store:  db,
-			Ledger: led,
-			LLM:    actor.LLM,
-			Log:    actor.Log,
-		},
-		Actors: map[core.ActorType]actors.Actor{core.ActorWeb: actor},
-		Log:    actor.Log,
-		Owner:  "cli",
+		Verifier:   vf,
+		Actors:     map[core.ActorType]actors.Actor{core.ActorWeb: actor},
+		Log:        actor.Log,
+		Owner:      "cli",
 	}
 	if !o.quiet && !o.asJSON {
 		exec.Progress = progressPrinter()
@@ -257,6 +262,8 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 
 	runRes, runErr := exec.Run(ctx, sess.ID)
 	if runRes != nil {
+		out.ClaimsVerified = runRes.ClaimsVerified
+		out.Contradictions = runRes.Contradictions
 		out.LeadsRun = runRes.LeadsRun
 		out.LeadsFailed = runRes.LeadsFailed
 		out.LeadsCached = runRes.LeadsCached
@@ -279,7 +286,7 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	// the money set aside at session creation spendable — a run that produced
 	// good claims and could not afford to write them up would have wasted the
 	// whole budget, not just the last call.
-	report := generateReport(ctx, db, led, actor, sess, out, o)
+	report := generateReport(ctx, db, led, actor, vf, sess, out, o)
 
 	status := core.StatusDone
 	if runRes != nil {
@@ -328,6 +335,7 @@ func generateReport(
 	db store.Store,
 	led *budget.Ledger,
 	actor *actors.WebActor,
+	vf *verifier.Verifier,
 	sess *core.Session,
 	out *researchOutput,
 	o researchOpts,
@@ -339,6 +347,16 @@ func generateReport(
 		fmt.Fprintf(os.Stderr, "warning: could not release escrow: %v\n", err)
 	}
 
+	// §11.5.2's grounding pass, between the escrow release and the report.
+	//
+	// Here rather than inside the loop for two reasons. Its candidates are the
+	// claims the REPORT will lean on, which is only knowable once research has
+	// stopped and the graph is complete. And §11.5 puts its spend on the escrow —
+	// which is exactly the money just released, so it takes a bounded share and
+	// leaves the rest for the answer. A grounding pass that spent the escrow would
+	// produce a well-checked set of claims and no report to put them in.
+	groundReport := runGrounding(ctx, vf, sess.ID, released, out, o)
+
 	// Reserve BEFORE generating. The order used to be release → generate →
 	// reserve, which inverts §8.2 and had a concrete failure: after any research
 	// overshoot the reserve was refused, and the report tokens — already spent —
@@ -348,6 +366,9 @@ func generateReport(
 	// Bounded by what is actually available, not by what escrow nominally
 	// released: an overshoot may already have eaten into it.
 	amount := released
+	if groundReport != nil {
+		amount -= groundReport.Spent
+	}
 	if sess, err := loadSession(ctx, db, sess.ID); err == nil {
 		if avail := sess.Available(); amount > avail {
 			amount = avail
@@ -609,6 +630,13 @@ type researchOutput struct {
 	Replans       int `json:"replans"`
 	OpenQuestions int `json:"open_questions"`
 
+	// Verification and grounding (§11).
+	ClaimsVerified    int `json:"claims_verified"`
+	Contradictions    int `json:"contradictions"`
+	GroundChecked     int `json:"ground_checked"`
+	GroundConfirmed   int `json:"ground_confirmed"`
+	GroundUnsupported int `json:"ground_unsupported"`
+
 	Report string       `json:"report"`
 	Claims []core.Claim `json:"claims"`
 
@@ -723,4 +751,60 @@ func fmtAmount(unit core.BudgetUnit, amount int64) string {
 		return fmt.Sprintf("%d tok", amount)
 	}
 	return core.FormatUSD(amount)
+}
+
+// runGrounding performs §11.5.2's budgeted re-fetch pass and reports it.
+//
+// Bounded by a share of the released escrow, so the report stays affordable. Never
+// fails the run: a fetch that failed, a page that changed, or a judge that would not
+// answer are outcomes worth recording, not reasons to withhold a report.
+func runGrounding(
+	ctx context.Context,
+	vf *verifier.Verifier,
+	sessionID string,
+	releasedEscrow int64,
+	out *researchOutput,
+	o researchOpts,
+) *verifier.GroundReport {
+	if vf == nil || vf.Grounder == nil || releasedEscrow <= 0 {
+		return nil
+	}
+	allowance := int64(float64(releasedEscrow) * verifier.DefaultGroundShareOfEscrow)
+	if allowance <= 0 {
+		return nil
+	}
+
+	rep, err := vf.Ground(ctx, sessionID, allowance)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: grounding pass failed: %v\n", err)
+		return nil
+	}
+	if rep == nil || rep.Checked == 0 {
+		return rep
+	}
+
+	out.GroundChecked = rep.Checked
+	out.GroundConfirmed = rep.Confirmed
+	out.GroundUnsupported = rep.Unsupported
+
+	if !o.quiet && !o.asJSON {
+		fmt.Printf("   grounding: %d claim(s) re-read — %d confirmed, %d unsupported",
+			rep.Checked, rep.Confirmed, rep.Unsupported)
+		if n := rep.Vanished + rep.Unreachable + rep.Undecided; n > 0 {
+			// Said separately, because none of these is a verdict about a claim: the
+			// page changed, the host was down, or the judge would not answer. Folding
+			// them into "unsupported" would penalize a claim for someone else's edit.
+			fmt.Printf(", %d inconclusive", n)
+		}
+		fmt.Println()
+		for _, r := range rep.Results {
+			if r.Outcome == verifier.GroundUnsupported {
+				// The one outcome a reader must see. A claim whose own source does not
+				// support it is the failure mode §11.5 exists to catch, and it is
+				// invisible in a confidence number.
+				fmt.Printf("     ⚠ %.70s\n", r.Note)
+			}
+		}
+	}
+	return rep
 }

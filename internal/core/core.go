@@ -388,6 +388,11 @@ type Claim struct {
 	// nothing corroborates a claim that has not been compared to anything.
 	Confidence float64
 	Grounded   *bool
+	// GroundingNote says how a grounding check reached its verdict, including the
+	// two outcomes Grounded cannot express: the quote vanished from its source, or
+	// the source could not be reached. Both leave Grounded nil, because neither is
+	// evidence about the claim (§11.5).
+	GroundingNote string
 
 	// VerifiedAt records that the Verifier has scored this claim. Nil means it
 	// has not, which Confidence cannot express on its own: §11.3's formula

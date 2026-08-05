@@ -56,6 +56,20 @@ type ClaimScore struct {
 	Grounded *bool
 }
 
+// ClaimGrounding is one §11.5 grounding verdict.
+//
+// Separate from ClaimScore so a grounding write cannot touch confidence. The two
+// run at different times — edge inference during the loop, grounding once after it
+// — and confidence has to be re-derived AFTER grounding rather than alongside it,
+// since the grounding result is an input to the formula.
+type ClaimGrounding struct {
+	ClaimID string
+	// Grounded is nil when the check ran but learned nothing about the claim: the
+	// quote had vanished, or the source was unreachable. Note says which.
+	Grounded *bool
+	Note     string
+}
+
 // BudgetDelta is an atomic adjustment to a session's counters. Every field is
 // a delta, never an absolute, so concurrent settles compose correctly.
 type BudgetDelta struct {
@@ -217,6 +231,11 @@ type Tx interface {
 
 	// ScoreClaims writes the Verifier's output for a batch of claims.
 	ScoreClaims(ctx context.Context, scores []ClaimScore) error
+
+	// SetClaimGrounding records §11.5 grounding verdicts, leaving confidence
+	// alone. Confidence is re-derived afterwards, because the grounding result
+	// feeds the formula that produces it.
+	SetClaimGrounding(ctx context.Context, results []ClaimGrounding) error
 
 	StartSpan(ctx context.Context, s *core.Span) error
 	EndSpan(ctx context.Context, id string, endedAt time.Time, status string) error
