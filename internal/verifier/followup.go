@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/lajosdeme/mole/internal/core"
 )
@@ -48,6 +49,10 @@ type FollowUpOptions struct {
 	MaxDepth int
 	// MaxPerRoot bounds follow-ups per root claim. Zero takes the default.
 	MaxPerRoot int
+	// StalenessGap must match the one Edges uses, or a pair the graph resolved as
+	// staleness is still researched as a live disagreement. Zero takes the default.
+	StalenessGap time.Duration
+
 	// MaxTotal bounds one pass's output, so a graph full of disagreement cannot
 	// queue more work than the session can run. Zero means unbounded here — the
 	// budget ceiling still applies downstream.
@@ -75,6 +80,10 @@ func FollowUps(verdicts []Judged, opts FollowUpOptions) []FollowUp {
 	if actor == "" {
 		actor = core.ActorWeb
 	}
+	gap := opts.StalenessGap
+	if gap <= 0 {
+		gap = DefaultStalenessGap
+	}
 
 	perRoot := map[string]int{}
 	for k, v := range opts.ExistingPerRoot {
@@ -93,7 +102,7 @@ func FollowUps(verdicts []Judged, opts FollowUpOptions) []FollowUp {
 		// A superseded pair is not a live disagreement — §11.2 already resolved it
 		// as staleness, and researching it further buys a second answer to a
 		// question the dates settled.
-		if _, _, stale := stalePair(v.Pair, DefaultStalenessGap); stale {
+		if _, _, stale := stalePair(v.Pair, gap); stale {
 			continue
 		}
 

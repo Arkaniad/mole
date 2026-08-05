@@ -22,6 +22,7 @@ import (
 	"github.com/lajosdeme/mole/internal/budget"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/store"
+	"github.com/lajosdeme/mole/internal/verifier"
 )
 
 // Status says whether a metric was computed, and if not, why not.
@@ -468,20 +469,25 @@ func duplicateCollapse(claims []*core.Claim, edges []*core.ClaimEdge) Metric {
 		m.Detail = "no claims"
 		return m
 	}
-	dupes := 0
-	for _, e := range edges {
-		if e != nil && e.Kind == core.EdgeDuplicateOf {
-			dupes++
-		}
+
+	// Ask the clustering, do not count edges.
+	//
+	// The arithmetic here used to be `findings = claims - duplicateEdges`, on the stated
+	// reasoning that "each duplicate edge merges two nodes". That holds only for a
+	// forest, and the adjudicator judges EVERY pair in a cluster — so a k-member cluster
+	// carries k(k-1)/2 edges and performs k-1 merges. Measured on one 5-member cluster
+	// plus five singletons: reported 90%, truth 40%, and a `< 1` clamp turned the
+	// negative into the most flattering number available.
+	//
+	// verifier.Clusters already computes the answer and output.Findings already uses it.
+	findings := len(verifier.Clusters(claims, edges))
+	if findings == 0 {
+		m.Status = NotApplicable
+		m.Detail = "no findings"
+		return m
 	}
-	// Each duplicate edge merges two nodes, so n claims with d duplicate edges
-	// render as at most n-d findings.
-	collapsed := len(claims) - dupes
-	if collapsed < 1 {
-		collapsed = 1
-	}
-	m.Value = 100 * float64(len(claims)-collapsed) / float64(len(claims))
-	m.Detail = fmt.Sprintf("%d claim(s) render as %d finding(s)", len(claims), collapsed)
+	m.Value = 100 * float64(len(claims)-findings) / float64(len(claims))
+	m.Detail = fmt.Sprintf("%d claim(s) render as %d finding(s)", len(claims), findings)
 	return m
 }
 

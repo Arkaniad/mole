@@ -194,7 +194,27 @@ func Findings(claims []*core.Claim, edges []*core.ClaimEdge, max int) []Finding 
 		return out[i].order < out[j].order
 	})
 
-	// Now that the order is final, resolve the recorded IDs to indices.
+	// Cap BEFORE resolving IDs to indices, and keep both sides of a disagreement
+	// together.
+	//
+	// The naive order — truncate, then drop references past the cap — selects for
+	// erasing exactly what §11.2 promises a reader will always see. A contradiction
+	// LOWERS confidence, the list is sorted by confidence, so the weaker side of every
+	// disputed pair sorts toward the bottom and is among the first cut. When it goes,
+	// the survivor's Contradicts empties, corroborationNote stops emitting "disputed",
+	// and the material offered to the synthesis model shows the claim as unqualified.
+	// Measured: 4 findings, one contradiction, cap 3 — survivor Contradicts=[] and
+	// Report.Disagreements=0.
+	//
+	// So a finding is admitted only if its counterparties fit too. Skipping a pair that
+	// does not fit costs a finding; admitting half of one costs the disclosure.
+	if max > 0 && len(out) > max {
+		out = capKeepingPairs(out, max)
+	}
+
+	// Now that the membership and order are both final, resolve the recorded IDs to
+	// indices. Doing this after the cap is what makes the guarantee above hold: an index
+	// resolved earlier would have to be patched twice.
 	position := make(map[string]int, len(out))
 	for i, f := range out {
 		position[f.Claim.ID] = i
@@ -209,16 +229,52 @@ func Findings(claims []*core.Claim, edges []*core.ClaimEdge, max int) []Finding 
 		sort.Ints(idx)
 		out[i].Contradicts = idx
 	}
+	return out
+}
 
-	if max > 0 && len(out) > max {
-		out = out[:max]
-		// Drop references past the cap: a citation to a finding that is not in the
-		// report points nowhere.
-		for i := range out {
-			out[i].Contradicts = keepBelow(out[i].Contradicts, max)
+// capKeepingPairs truncates to max without splitting a disputed pair.
+//
+// Walks in rank order and admits a finding together with everything it disputes. A group
+// that does not fit is skipped entirely and the walk continues, so the cap is still hard
+// and a lower-ranked finding can take the freed slot.
+func capKeepingPairs(out []Finding, max int) []Finding {
+	byID := make(map[string]int, len(out))
+	for i, f := range out {
+		byID[f.Claim.ID] = i
+	}
+
+	kept := make(map[int]bool, max)
+	var order []int
+	for i := range out {
+		if len(kept) >= max {
+			break
+		}
+		if kept[i] {
+			continue
+		}
+		group := []int{i}
+		for _, id := range out[i].disputes {
+			if j, ok := byID[id]; ok && !kept[j] && j != i {
+				group = append(group, j)
+			}
+		}
+		if len(kept)+len(group) > max {
+			// Cannot show both sides. Skip rather than present a disputed claim as
+			// settled; a later, smaller group may still fit.
+			continue
+		}
+		for _, j := range group {
+			kept[j] = true
+			order = append(order, j)
 		}
 	}
-	return out
+
+	sort.Ints(order) // back into rank order
+	res := make([]Finding, 0, len(order))
+	for _, i := range order {
+		res = append(res, out[i])
+	}
+	return res
 }
 
 func appendUnique(xs []int, v int) []int {
@@ -237,16 +293,6 @@ func appendUniqueStr(xs []string, v string) []string {
 		}
 	}
 	return append(xs, v)
-}
-
-func keepBelow(xs []int, max int) []int {
-	var out []int
-	for _, x := range xs {
-		if x < max {
-			out = append(out, x)
-		}
-	}
-	return out
 }
 
 // Disagreements returns the pairs a report must disclose, most confident first.

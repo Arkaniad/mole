@@ -2,6 +2,7 @@ package eval_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -534,4 +535,51 @@ func scoreWith(t *testing.T, claims []core.Claim, edges func(ids map[string]stri
 		t.Fatalf("score: %v", err)
 	}
 	return card
+}
+
+// TestDuplicateCollapseHandlesACliqueNotJustAPair.
+//
+// The adjudicator judges EVERY pair in a cluster, so a k-member duplicate cluster carries
+// k(k-1)/2 edges and performs only k-1 merges. The metric counted edges, on the stated
+// reasoning that "each duplicate edge merges two nodes" — true only for a forest.
+// Measured on one 5-member clique plus five singletons: reported 90%, truth 40%, with a
+// clamp turning the negative into the most flattering number available.
+//
+// The original test used a single edge between two claims — the one shape where counting
+// edges and clustering agree — so the bug was invisible to it.
+func TestDuplicateCollapseHandlesACliqueNotJustAPair(t *testing.T) {
+	var claims []core.Claim
+	for i := 0; i < 10; i++ {
+		claims = append(claims, core.Claim{
+			Text:   fmt.Sprintf("Claim number %d.", i),
+			Source: fmt.Sprintf("https://s%02d.example/p", i),
+			Quote:  "a quote long enough to be real evidence",
+		})
+	}
+	card := scoreWith(t, claims, func(ids map[string]string) []core.ClaimEdge {
+		// Claims 0-4 all duplicate each other: ten edges, four merges.
+		var out []core.ClaimEdge
+		for i := 0; i < 5; i++ {
+			for j := i + 1; j < 5; j++ {
+				out = append(out, core.ClaimEdge{
+					FromID: ids[fmt.Sprintf("Claim number %d.", i)],
+					ToID:   ids[fmt.Sprintf("Claim number %d.", j)],
+					Kind:   core.EdgeDuplicateOf, Weight: 1,
+				})
+			}
+		}
+		return out
+	})
+
+	m := findMetric(card, "duplicate collapse")
+	if m == nil {
+		t.Fatal("duplicate collapse missing")
+	}
+	// 10 claims, one 5-member cluster plus 5 singletons = 6 findings, 40% collapsed.
+	if !strings.Contains(m.Detail, "10 claim(s) render as 6 finding(s)") {
+		t.Errorf("detail = %q, want 6 findings", m.Detail)
+	}
+	if m.Value < 39 || m.Value > 41 {
+		t.Errorf("collapse = %.1f%%, want 40%%", m.Value)
+	}
 }

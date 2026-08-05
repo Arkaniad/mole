@@ -7,9 +7,11 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lajosdeme/mole/internal/budget"
 	"github.com/lajosdeme/mole/internal/core"
@@ -779,5 +781,157 @@ func TestACancelledContextDoesNotStrandBudget(t *testing.T) {
 			t.Errorf("%s: ledger drift: held recorded=%d rows=%d",
 				name, v.HeldRecorded, v.HeldFromRows)
 		}
+	}
+}
+
+// TestTheFollowUpCapsAreActuallyWiredToTheVerifier.
+//
+// followup_test.go tests FollowUps as a pure function very thoroughly, and nothing tested
+// that Run passes it the right options. Two mutations passed the entire suite: deleting
+// `ExistingPerRoot` (which makes the per-root cap count one pass instead of the session —
+// precisely the "cap on a counter nothing increments" failure §11.4 warns about) and
+// deleting `MaxDepth: v.MaxVerifyDepth` (the configured value silently ignored).
+//
+// The only place those fields were ever set was a test that set them so neither could
+// bind.
+func TestTheFollowUpCapsAreActuallyWiredToTheVerifier(t *testing.T) {
+	ctx := context.Background()
+
+	// Two claims that contradict, from different publishers, so every pass finds a live
+	// disagreement and wants to queue a follow-up for the same root.
+	claims := []core.Claim{
+		{Text: "Subword tokenization improves accuracy on every benchmark.", Source: "https://a.example/p"},
+		{Text: "Subword tokenization does not improve accuracy on any benchmark.", Source: "https://b.example/p"},
+	}
+
+	t.Run("per-root cap counts the session, not the pass", func(t *testing.T) {
+		// Seed a follow-up lead that ALREADY exists for the root this pass will find,
+		// then assert the pass proposes none. That exercises followUpsPerRoot →
+		// ExistingPerRoot in one pass.
+		//
+		// The first version ran two passes and cleared grounding between them — not
+		// verified_at — so the second pass had no targets and returned early. It passed
+		// with ExistingPerRoot deleted, because nothing in it ever reached FollowUps.
+		r := newRig(t, 8_000_000, claims, judgeEveryPair(verifier.RelContradicts))
+		r.v.MaxFollowUpsPerRoot = 1
+		r.v.MaxVerifyDepth = 9
+
+		// Both claims sit at depth 0, so chainOf picks the lower claim ID as the root.
+		var ids []string
+		for _, c := range r.claims(t) {
+			ids = append(ids, c.ID)
+		}
+		sort.Strings(ids)
+		root := ids[0]
+
+		lead := core.Lead{
+			ID: core.NewLeadID(), SessionID: r.sess.ID, ActorType: core.ActorWeb,
+			Query: "an existing follow-up for this root", Status: core.LeadDone,
+			RootClaimID: &root, VerifyDepth: 1,
+		}
+		if err := r.db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+			return tx.InsertLead(ctx, &lead)
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		res, err := r.v.Run(ctx, r.sess.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Contradictions == 0 {
+			t.Fatal("no contradiction found, so the cap was never consulted")
+		}
+		if len(res.FollowUps) != 0 {
+			t.Errorf("%d follow-ups proposed for a root already at its cap of 1 — the "+
+				"existing lead was not counted, so the cap counts one pass rather than "+
+				"the session", len(res.FollowUps))
+		}
+	})
+
+	t.Run("the configured depth cap binds", func(t *testing.T) {
+		r := newRig(t, 8_000_000, claims, judgeEveryPair(verifier.RelContradicts))
+		// A depth cap of 1 admits no follow-up at all: depth+1 >= 1 for the first one.
+		r.v.MaxVerifyDepth = 1
+		r.v.MaxFollowUpsPerRoot = 9
+
+		res, err := r.v.Run(ctx, r.sess.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Contradictions == 0 {
+			t.Fatal("no contradiction found, so the cap was never reached")
+		}
+		if len(res.FollowUps) != 0 {
+			t.Errorf("%d follow-ups past a configured depth cap of 1 — MaxVerifyDepth is not "+
+				"reaching FollowUps", len(res.FollowUps))
+		}
+	})
+}
+
+// TestStalenessResolvedPairsAreNotCountedAsContradictions.
+//
+// Edges converts a date-separated contradiction into supersedes (§11.2) and FollowUps
+// skips it as "not a live disagreement". The counter read the raw verdicts instead, so
+// the planner was told evidence was disputed when the dates had settled it, and the CLI
+// printed a contradiction count the report's own Disagreements figure contradicted.
+func TestStalenessResolvedPairsAreNotCountedAsContradictions(t *testing.T) {
+	old := time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC)
+	recent := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	claims := []core.Claim{
+		{Text: "The measured figure is forty percent overall.", Source: "https://a.example/p", PublishedAt: &old},
+		{Text: "The measured figure is not forty percent overall.", Source: "https://b.example/p", PublishedAt: &recent},
+	}
+	r := newRig(t, 4_000_000, claims, judgeEveryPair(verifier.RelContradicts))
+
+	res, err := r.v.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.EdgesWritten != 1 {
+		t.Fatalf("%d edges, want 1", res.EdgesWritten)
+	}
+	edges := r.edges(t)
+	if edges[0].Kind != core.EdgeSupersedes {
+		t.Fatalf("edge kind = %q, want supersedes; the case under test was not built", edges[0].Kind)
+	}
+	if res.Contradictions != 0 {
+		t.Errorf("Contradictions = %d for a pair the publication dates resolved", res.Contradictions)
+	}
+	if len(res.FollowUps) != 0 {
+		t.Errorf("%d follow-ups queued to research a settled question", len(res.FollowUps))
+	}
+}
+
+// TestTheConfiguredStalenessGapReachesFollowUps.
+//
+// Edges takes v.StalenessGap; FollowUps hardcoded DefaultStalenessGap. With a tighter gap
+// configured, the graph resolved a pair as staleness while follow-up generation still saw
+// a live disagreement and queued a lead to research a question the dates had settled.
+// Inert today only because the CLI never sets the field.
+func TestTheConfiguredStalenessGapReachesFollowUps(t *testing.T) {
+	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	later := base.Add(60 * 24 * time.Hour) // well inside the one-year default
+	claims := []core.Claim{
+		{Text: "The measured figure is forty percent overall.", Source: "https://a.example/p", PublishedAt: &base},
+		{Text: "The measured figure is not forty percent overall.", Source: "https://b.example/p", PublishedAt: &later},
+	}
+	r := newRig(t, 4_000_000, claims, judgeEveryPair(verifier.RelContradicts))
+	r.v.StalenessGap = 30 * 24 * time.Hour // tighter than the default
+
+	res, err := r.v.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edges := r.edges(t)
+	if len(edges) != 1 || edges[0].Kind != core.EdgeSupersedes {
+		t.Fatalf("the graph did not resolve the pair as staleness: %v", edges)
+	}
+	if len(res.FollowUps) != 0 {
+		t.Errorf("%d follow-ups queued to research a pair the configured gap already "+
+			"resolved — StalenessGap is not reaching FollowUps", len(res.FollowUps))
+	}
+	if res.Contradictions != 0 {
+		t.Errorf("Contradictions = %d for a pair resolved as staleness", res.Contradictions)
 	}
 }

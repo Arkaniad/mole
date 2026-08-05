@@ -456,3 +456,64 @@ func TestDisagreementsSurviveReordering(t *testing.T) {
 		}
 	}
 }
+
+// TestTheCapNeverShowsOneSideOfADisagreement.
+//
+// The naive order — truncate, then drop references past the cap — selects for erasing
+// exactly what §11.2 promises a reader always sees. A contradiction LOWERS confidence
+// (§11.3), the list is sorted by confidence, so the weaker side of every disputed pair
+// sorts to the bottom and is among the first cut. The survivor is then presented as
+// unqualified and Report.Disagreements reads 0.
+//
+// No test covered the truncation branch at all, which is how it survived.
+func TestTheCapNeverShowsOneSideOfADisagreement(t *testing.T) {
+	mk := func(text, host string, conf float64) core.Claim {
+		c := claim(text, "https://"+host+"/p", "a quote long enough to be real evidence "+host)
+		c.Confidence = conf
+		return c
+	}
+	// The disputed pair scores lowest, so the cap reaches it first.
+	claims := []core.Claim{
+		mk("Subword tokenization improves accuracy.", "a.example", 0.10),
+		mk("Subword tokenization does not improve accuracy.", "b.example", 0.10),
+		mk("Byte-level models handle long documents.", "c.example", 0.90),
+		mk("Inference latency drops with speculative decoding.", "d.example", 0.80),
+	}
+	st, sid := newStore(t, claims)
+	stored := storedClaims(t, st, sid)
+	link(t, st, sid,
+		stored["Subword tokenization improves accuracy."].ID,
+		stored["Subword tokenization does not improve accuracy."].ID,
+		core.EdgeContradicts)
+
+	for _, cap := range []int{2, 3, 4} {
+		f := &fakeLLM{reply: func(string) string { return "Summary [1]." }}
+		rep, err := (&output.Generator{LLM: f, MaxClaims: cap}).Generate(context.Background(), st, sid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rep.Findings) > cap {
+			t.Errorf("cap=%d: %d findings — the cap stopped being hard", cap, len(rep.Findings))
+		}
+
+		// Whichever side survives, the other must be there too.
+		present := map[string]bool{}
+		for _, fd := range rep.Findings {
+			present[fd.Claim.Text] = true
+		}
+		a := present["Subword tokenization improves accuracy."]
+		b := present["Subword tokenization does not improve accuracy."]
+		if a != b {
+			t.Errorf("cap=%d: one side of a disagreement was shown alone (a=%v b=%v)", cap, a, b)
+		}
+		if a && b {
+			if rep.Disagreements != 1 {
+				t.Errorf("cap=%d: both sides present but Disagreements=%d", cap, rep.Disagreements)
+			}
+			if !strings.Contains(material(f.prompt), "disputed") {
+				t.Errorf("cap=%d: the surviving pair was not flagged disputed:\n%s",
+					cap, material(f.prompt))
+			}
+		}
+	}
+}

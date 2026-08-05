@@ -117,6 +117,9 @@ type Result struct {
 	// priorEdges is the graph as it stood before this pass, kept so confidence is
 	// derived over the whole of it rather than only what this pass added.
 	priorEdges []*core.ClaimEdge
+	// writtenEdges is what this pass added, so Run can count live disagreements from
+	// the edges rather than from the verdicts that produced them.
+	writtenEdges []core.ClaimEdge
 
 	// Degraded says what the pass could not finish (§9.5). Empty when complete.
 	Degraded string
@@ -216,8 +219,15 @@ func (v *Verifier) Run(ctx context.Context, sessionID string) (*Result, error) {
 		return res, err
 	}
 
-	for _, vd := range verdicts {
-		if vd.Relation == RelContradicts {
+	// Counted from the EDGES the pass wrote, not from the raw verdicts.
+	//
+	// By this point Edges has converted date-separated contradictions into supersedes
+	// (§11.2), and FollowUps skips them because "a superseded pair is not a live
+	// disagreement". Counting verdicts disagreed with both: the planner was told a
+	// sub-question's evidence was disputed when the publication dates had settled it,
+	// and the CLI printed "1 contradiction" for a session whose report showed none.
+	for _, e := range res.writtenEdges {
+		if e.Kind == core.EdgeContradicts {
 			res.Contradictions++
 		}
 	}
@@ -235,6 +245,7 @@ func (v *Verifier) Run(ctx context.Context, sessionID string) (*Result, error) {
 	}
 	res.FollowUps = FollowUps(verdicts, FollowUpOptions{
 		SessionID:       sessionID,
+		StalenessGap:    v.StalenessGap,
 		ActorType:       followUpActor(),
 		MaxDepth:        v.MaxVerifyDepth,
 		MaxPerRoot:      v.MaxFollowUpsPerRoot,
@@ -438,6 +449,7 @@ func (v *Verifier) persist(ctx context.Context, sessionID string, pool, targets 
 	}
 
 	res.EdgesWritten = len(newEdges)
+	res.writtenEdges = newEdges
 	res.ClaimsVerified = len(targets)
 	res.ClaimsScored = len(scores)
 	return nil
