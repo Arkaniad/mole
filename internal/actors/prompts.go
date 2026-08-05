@@ -1,11 +1,11 @@
 package actors
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/lajosdeme/mole/internal/core"
 )
 
 // Prompts and response parsing.
@@ -83,13 +83,7 @@ Rules:
 // altering one byte of it converts grounded claims into rejected ones. Randomly
 // naming the delimiter keeps the content byte-identical and leaves the page
 // nothing to imitate.
-func fenceToken() string {
-	var b [8]byte
-	// crypto/rand.Read fills b completely or panics internally; it cannot
-	// return a short read.
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
-}
+func fenceToken() string { return core.PromptFence() }
 
 // wrapSource delimits untrusted content.
 //
