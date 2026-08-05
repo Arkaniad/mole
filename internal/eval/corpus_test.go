@@ -148,3 +148,79 @@ func TestAMetricThatStopsBeingReportedIsNoticed(t *testing.T) {
 		t.Errorf("a new metric was not flagged: %q", joined)
 	}
 }
+
+// TestUnlabelledPairsAreExcludedNotGuessed. A score computed over whichever pairs someone
+// got round to labelling, reported as the score, is how a test set starts lying.
+func TestUnlabelledPairsAreExcludedNotGuessed(t *testing.T) {
+	ps := &eval.PairSet{Pairs: []eval.LabelledPair{
+		{Pair: "a|b", Model: "contradicts", Label: "contradicts", Judged: true},
+		{Pair: "a|c", Model: "contradicts", Label: "unrelated", Judged: true},
+		{Pair: "a|d", Model: "contradicts", Label: "", Judged: true},
+		{Pair: "a|e", Model: "supports", Label: "  ", Judged: true},
+	}}
+	s := eval.ScorePairs(ps)
+
+	if s.Labelled != 2 || s.Unlabelled != 2 {
+		t.Errorf("labelled=%d unlabelled=%d, want 2 and 2", s.Labelled, s.Unlabelled)
+	}
+	if s.Accuracy() != 0.5 {
+		t.Errorf("accuracy = %.2f over the two labelled pairs, want 0.50", s.Accuracy())
+	}
+	if p := s.Precision["contradicts"]; p != 0.5 {
+		t.Errorf("contradicts precision = %.2f, want 0.50", p)
+	}
+}
+
+// TestAPairTheModelNeverSawIsNotHeldAgainstIt. Verification is incremental and can stop
+// early — at max_leads, or when the share cap binds — so a pair involving an unverified
+// claim was never put to the judge. Scoring it would measure coverage as accuracy.
+func TestAPairTheModelNeverSawIsNotHeldAgainstIt(t *testing.T) {
+	ps := &eval.PairSet{Pairs: []eval.LabelledPair{
+		{Pair: "a|b", Model: "contradicts", Label: "contradicts", Judged: true},
+		{Pair: "a|c", Model: "unrelated", Label: "contradicts", Judged: false},
+	}}
+	s := eval.ScorePairs(ps)
+
+	if s.Labelled != 1 {
+		t.Errorf("labelled = %d, want 1", s.Labelled)
+	}
+	if s.Skipped != 1 {
+		t.Errorf("skipped = %d, want 1", s.Skipped)
+	}
+	if s.Accuracy() != 1 {
+		t.Errorf("accuracy = %.2f; a pair the model never saw was scored against it",
+			s.Accuracy())
+	}
+}
+
+// TestPrecisionAndRecallAnswerDifferentQuestions.
+//
+// The distinction is the whole point here. A judge that calls everything a contradiction
+// has perfect recall and terrible precision, and a live run looked exactly like that: 16
+// contradictions whose rationales described the pairs as being about different topics.
+func TestPrecisionAndRecallAnswerDifferentQuestions(t *testing.T) {
+	// Says "contradicts" to everything. Two of the six really are.
+	var pairs []eval.LabelledPair
+	for i := 0; i < 6; i++ {
+		label := "unrelated"
+		if i < 2 {
+			label = "contradicts"
+		}
+		pairs = append(pairs, eval.LabelledPair{
+			Pair: string(rune('a'+i)) + "|x", Model: "contradicts", Label: label, Judged: true,
+		})
+	}
+	s := eval.ScorePairs(&eval.PairSet{Pairs: pairs})
+
+	if p := s.Precision["contradicts"]; p > 0.34 {
+		t.Errorf("contradicts precision = %.2f; an over-reporting judge scored well", p)
+	}
+	if r := s.Recall["contradicts"]; r != 1 {
+		t.Errorf("contradicts recall = %.2f, want 1.00 — it found every real one", r)
+	}
+	// And the confusion says what it said instead, which is what tells you whether to
+	// change the prompt or the model.
+	if n := s.Confusion["contradicts"]["unrelated"]; n != 4 {
+		t.Errorf("confusion contradicts→unrelated = %d, want 4", n)
+	}
+}
