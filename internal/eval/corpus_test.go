@@ -224,3 +224,62 @@ func TestPrecisionAndRecallAnswerDifferentQuestions(t *testing.T) {
 		t.Errorf("confusion contradicts→unrelated = %d, want 4", n)
 	}
 }
+
+// TestSelfConsistencyIsMeasurableWithoutLabels.
+//
+// The cheapest useful measurement of a judge. Run the same model over the same pairs twice
+// and see how often it agrees with itself: qwen2.5:3b re-judging sixteen of its own
+// contradictions kept three, calling seven "unrelated" and four "supports". A judge that
+// does not agree with itself is not measuring anything, and no quantity of labelling fixes
+// it — so this screens judges far more cheaply than a labelled set can.
+func TestSelfConsistencyIsMeasurableWithoutLabels(t *testing.T) {
+	a := &eval.PairSet{Model: "run-one", Pairs: []eval.LabelledPair{
+		{Pair: "1", Model: "contradicts", Judged: true},
+		{Pair: "2", Model: "contradicts", Judged: true},
+		{Pair: "3", Model: "contradicts", Judged: true},
+		{Pair: "4", Model: "supports", Judged: true},
+	}}
+	b := &eval.PairSet{Model: "run-two", Pairs: []eval.LabelledPair{
+		{Pair: "1", Model: "contradicts", Judged: true},
+		{Pair: "2", Model: "unrelated", Judged: true},
+		{Pair: "3", Model: "supports", Judged: true},
+		{Pair: "4", Model: "supports", Judged: true},
+	}}
+
+	ag := eval.CompareVerdicts(a, b)
+	if ag.Compared != 4 || ag.Same != 2 {
+		t.Errorf("compared=%d same=%d, want 4 and 2", ag.Compared, ag.Same)
+	}
+	if ag.Rate() != 0.5 {
+		t.Errorf("rate = %.2f, want 0.50", ag.Rate())
+	}
+	if ag.Confusion["contradicts"]["unrelated"] != 1 {
+		t.Errorf("confusion does not record what it changed to: %+v", ag.Confusion)
+	}
+}
+
+// TestAMutualNonAnswerIsNotAgreement. Counting two silences as a match is how a judge that
+// answers nothing scores perfectly.
+func TestAMutualNonAnswerIsNotAgreement(t *testing.T) {
+	a := &eval.PairSet{Pairs: []eval.LabelledPair{
+		{Pair: "1", Model: "", Judged: false},
+		{Pair: "2", Model: "contradicts", Judged: true},
+		{Pair: "3", Model: "contradicts", Judged: true},
+	}}
+	b := &eval.PairSet{Pairs: []eval.LabelledPair{
+		{Pair: "1", Model: "", Judged: false},
+		{Pair: "2", Model: "contradicts", Judged: true},
+		{Pair: "3", Model: "", Judged: false},
+	}}
+
+	ag := eval.CompareVerdicts(a, b)
+	if ag.Compared != 1 || ag.Same != 1 {
+		t.Errorf("compared=%d same=%d, want 1 and 1", ag.Compared, ag.Same)
+	}
+	if ag.Unanswered != 2 {
+		t.Errorf("unanswered = %d, want 2", ag.Unanswered)
+	}
+	if ag.Rate() != 1 {
+		t.Errorf("rate = %.2f over the single pair both judged", ag.Rate())
+	}
+}

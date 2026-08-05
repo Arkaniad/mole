@@ -5,9 +5,13 @@ import (
 	"sort"
 	"strings"
 
+	"errors"
+	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/eval"
 	"github.com/lajosdeme/mole/internal/verifier"
 	"github.com/spf13/cobra"
+	"log/slog"
+	"os"
 )
 
 // Adjudicator test sets (§11.2).
@@ -27,10 +31,14 @@ func newPairsCmd() *cobra.Command {
 		Short: "Dump and score adjudicator judgements (§11.2)",
 		Long: "Measures whether the claim-graph adjudicator is RIGHT, which no other metric\n" +
 			"does — they all count what it found.\n\n" +
-			"  mole pairs dump <session-id> -o pairs.json    # then fill in each \"label\"\n" +
-			"  mole pairs score pairs.json",
+			"  mole pairs dump  <session> -o pairs.json      # then fill in each \"label\"\n" +
+			"  mole pairs score pairs.json\n\n" +
+			"To compare a different model on the SAME pairs — no research run, and the\n" +
+			"stored graph is left alone:\n\n" +
+			"  mole pairs judge <session> --model gemma4:12b --labels pairs.json -o gemma.json\n" +
+			"  mole pairs score gemma.json",
 	}
-	c.AddCommand(newPairsDumpCmd(), newPairsScoreCmd())
+	c.AddCommand(newPairsDumpCmd(), newPairsJudgeCmd(), newPairsCompareCmd(), newPairsScoreCmd())
 	return c
 }
 
@@ -181,4 +189,166 @@ func sortedKeys(m map[string]int) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func newPairsJudgeCmd() *cobra.Command {
+	var (
+		model  string
+		out    string
+		labels string
+		kinds  []string
+		batch  int
+	)
+	c := &cobra.Command{
+		Use:   "judge <session-id>",
+		Short: "Re-judge a session's pairs with a different model, without touching the graph",
+		Long: "Runs the adjudication prompt over the pairs a session already judged, with a\n" +
+			"model of your choosing, and writes the verdicts alongside the stored ones.\n\n" +
+			"No research run: the claims and pairs already exist, so comparing two judges is\n" +
+			"a handful of model calls rather than an hour. Nothing is written to the session —\n" +
+			"the stored graph is what is being compared against.\n\n" +
+			"The cost is the evaluator's and is deliberately not charged to the session: doing\n" +
+			"so would inflate the spend and corrupt cost-per-claim for the very session being\n" +
+			"examined.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			if model == "" {
+				return errors.New("--model is required: the point is to compare a different one")
+			}
+
+			cfg, err := config.Load()
+			if err != nil && !errors.Is(err, config.ErrNotConfigured) {
+				return err
+			}
+			provider, _, err := buildLLM(cfg)
+			if err != nil {
+				return err
+			}
+			if provider == nil {
+				return errors.New("no model provider configured")
+			}
+
+			opts := eval.JudgeOptions{Model: model, BatchSize: batch, Kinds: kinds}
+			if labels != "" {
+				prior, err := eval.LoadPairs(labels)
+				if err != nil {
+					return fmt.Errorf("read labels: %w", err)
+				}
+				opts.Labels = eval.LabelsFrom(prior)
+				fmt.Printf("carried %d label(s) forward from %s\n", len(opts.Labels), labels)
+			}
+
+			db, err := openDBRead(ctx, dbPath(cmd))
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+
+			ps, err := eval.JudgeSession(ctx, db, provider, args[0], opts,
+				slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			if err != nil {
+				return err
+			}
+
+			changed, unjudged := 0, 0
+			for _, p := range ps.Pairs {
+				if !p.Judged {
+					unjudged++
+					continue
+				}
+				if p.Model != p.Baseline {
+					changed++
+				}
+			}
+			fmt.Printf("%d pair(s) re-judged by %s: %d verdict(s) differ from the stored graph",
+				len(ps.Pairs), model, changed)
+			if unjudged > 0 {
+				fmt.Printf(", %d unanswered", unjudged)
+			}
+			fmt.Println()
+
+			if out == "" {
+				return eval.WritePairs("/dev/stdout", ps)
+			}
+			if err := eval.WritePairs(out, ps); err != nil {
+				return err
+			}
+			fmt.Printf("written to %s\n", out)
+			if len(opts.Labels) == 0 {
+				fmt.Println("Fill in \"label\" on each, then: mole pairs score " + out)
+			}
+			return nil
+		},
+	}
+	f := c.Flags()
+	f.StringVar(&model, "model", "", "model to judge with, e.g. gemma4:12b")
+	f.StringVarP(&out, "out", "o", "", "write here instead of stdout")
+	f.StringVar(&labels, "labels", "",
+		"carry labels forward from an earlier set, so the work is done once")
+	f.StringSliceVar(&kinds, "kind", nil, "only re-judge these stored verdicts, e.g. --kind contradicts")
+	f.IntVar(&batch, "batch", 0, "pairs per call; 0 uses the default, lower it if the model times out")
+	return c
+}
+
+func newPairsCompareCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "compare <a.json> <b.json>",
+		Short: "How often two verdict sets agree — no labels needed",
+		Long: "The cheapest useful measurement of a judge, and the only one needing no labels:\n" +
+			"run the same model over the same pairs twice and see how often it agrees with\n" +
+			"itself.\n\n" +
+			"Self-consistency is a ceiling, not a score — a judge cannot be more accurate than\n" +
+			"it is reproducible — so screening on it is far cheaper than labelling. It is also\n" +
+			"how two different models are compared without deciding which is right.",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			a, err := eval.LoadPairs(args[0])
+			if err != nil {
+				return err
+			}
+			b, err := eval.LoadPairs(args[1])
+			if err != nil {
+				return err
+			}
+			ag := eval.CompareVerdicts(a, b)
+			if ag.Compared == 0 {
+				return fmt.Errorf("no pair was judged by both sets (%d unanswered)", ag.Unanswered)
+			}
+
+			fmt.Printf("agreement: %.0f%%  (%d of %d pair(s) judged by both)\n",
+				100*ag.Rate(), ag.Same, ag.Compared)
+			if ag.Unanswered > 0 {
+				fmt.Printf("  %d pair(s) one side did not judge, excluded\n", ag.Unanswered)
+			}
+			if a.Model != "" || b.Model != "" {
+				fmt.Printf("  %s vs %s\n", orStored(a.Model), orStored(b.Model))
+			}
+
+			var lines []string
+			for x, ys := range ag.Confusion {
+				for y, n := range ys {
+					if x != y {
+						lines = append(lines, fmt.Sprintf("  %-13s vs %-13s ×%d", x, y, n))
+					}
+				}
+			}
+			if len(lines) > 0 {
+				sort.Strings(lines)
+				fmt.Println("\nwhere they differ:")
+				for _, l := range lines {
+					fmt.Println(l)
+				}
+			}
+			return nil
+		},
+	}
+	return c
+}
+
+func orStored(m string) string {
+	if m == "" {
+		return "the stored graph"
+	}
+	return m
 }

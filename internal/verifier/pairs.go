@@ -9,6 +9,8 @@ import (
 	"unicode"
 
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/llm"
+	"log/slog"
 )
 
 // Relation is what an adjudicator may say about a pair of claims.
@@ -307,3 +309,54 @@ func Batches(pairs []Pair, size int) [][]Pair {
 // responses are salvaged per verdict for exactly that reason, so an over-long batch
 // degrades rather than failing.
 const DefaultBatchSize = 8
+
+// JudgePairs adjudicates pairs with no ledger and no store.
+//
+// The evaluation path. Verifier.Run reserves budget, settles it, writes edges and marks
+// claims verified — all correct for research and all wrong for asking "would a different
+// model have judged these better". Charging an eval re-run to the session would inflate its
+// spend and corrupt cost-per-claim for the very session being examined, and writing edges
+// would destroy the judgements being compared against.
+//
+// So this shares the prompt, the batching and the parsing with the real path, and shares
+// nothing else. The cost is the evaluator's, not the session's, and it is not recorded —
+// which is a deliberate exception to §8.1's every-call-writes-a-row rule, taken because the
+// alternative is worse.
+//
+// Returns what it judged and what it could not, in that order.
+func JudgePairs(ctx context.Context, p llm.Provider, model string, pairs []Pair, batchSize int, log *slog.Logger) ([]Judged, []Pair) {
+	if log == nil {
+		log = slog.Default()
+	}
+	var judged []Judged
+	var unjudged []Pair
+
+	for _, batch := range Batches(pairs, batchSize) {
+		prompt, _ := adjudicateUserPrompt(batch)
+		resp, err := p.Complete(ctx, llm.Request{
+			Tier:      llm.TierCheap,
+			Model:     model,
+			System:    adjudicateSystemPrompt,
+			Messages:  []llm.Message{llm.User(prompt)},
+			MaxTokens: maxTokensForBatch(len(batch)),
+		})
+		if err != nil || resp == nil || resp.Refused {
+			log.WarnContext(ctx, "judge: batch failed", "pairs", len(batch), "err", err)
+			unjudged = append(unjudged, batch...)
+			if isFatal(err) {
+				// Every remaining batch fails the same way; stop rather than walking the
+				// whole list into the same wall.
+				break
+			}
+			continue
+		}
+
+		got, missed, perr := parseVerdicts(resp.Text, batch)
+		if perr != nil {
+			log.WarnContext(ctx, "judge: no usable verdicts", "err", perr)
+		}
+		judged = append(judged, got...)
+		unjudged = append(unjudged, missed...)
+	}
+	return judged, unjudged
+}

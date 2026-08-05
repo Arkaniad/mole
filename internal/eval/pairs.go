@@ -9,8 +9,10 @@ import (
 	"strings"
 
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/llm"
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/verifier"
+	"log/slog"
 )
 
 // Adjudicator test sets.
@@ -44,6 +46,9 @@ type LabelledPair struct {
 	// Model is what the adjudicator said. "unrelated" means no edge was stored, which
 	// covers both "judged unrelated" and "never reached" — Judged distinguishes them.
 	Model string `json:"model"`
+	// Baseline is what the STORED graph said, when this set came from re-judging with a
+	// different model. Kept so a comparison shows both verdicts on one line.
+	Baseline string `json:"baseline,omitempty"`
 	// Why is the model's own rationale, which is often the clearest evidence that a
 	// verdict is wrong.
 	Why string `json:"why,omitempty"`
@@ -298,4 +303,204 @@ func (s PairScore) Accuracy() float64 {
 		return 0
 	}
 	return float64(s.Correct) / float64(s.Labelled)
+}
+
+// pairsFromEdges rebuilds the pairs a session actually judged.
+//
+// From the edges, not from re-running retrieval. The Verifier works incrementally (§11.1),
+// so a claim retrieved against the seven claims that existed when it was new has a
+// different top-8 than against the finished twenty-five: regeneration found 11 of the 16
+// contradictions one real session produced. These are judgements, and a judgement that is
+// no longer a candidate is still a judgement.
+func pairsFromEdges(claims []*core.Claim, edges []*core.ClaimEdge) ([]verifier.Pair, map[string]string, map[string]string) {
+	byID := make(map[string]*core.Claim, len(claims))
+	for _, c := range claims {
+		byID[c.ID] = c
+	}
+
+	var pairs []verifier.Pair
+	kind := map[string]string{}
+	why := map[string]string{}
+	seen := map[string]bool{}
+
+	for _, e := range edges {
+		a, b := byID[e.FromID], byID[e.ToID]
+		if a == nil || b == nil {
+			continue
+		}
+		if a.ID > b.ID {
+			a, b = b, a
+		}
+		key := a.ID + "|" + b.ID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		pairs = append(pairs, verifier.Pair{A: a, B: b})
+		kind[key] = string(e.Kind)
+		why[key] = e.Rationale
+	}
+	sort.SliceStable(pairs, func(i, j int) bool { return pairs[i].Key() < pairs[j].Key() })
+	return pairs, kind, why
+}
+
+// JudgeOptions configure a re-judge.
+type JudgeOptions struct {
+	Model     string
+	BatchSize int
+	// Kinds restricts which stored verdicts get re-judged. Empty means all of them.
+	Kinds []string
+	// Labels carries labels across from an earlier set, matched by pair key.
+	//
+	// The reason the whole harness is worth having: label once, and every future model
+	// or prompt is scored against the same judgements rather than needing the work done
+	// again.
+	Labels map[string]string
+}
+
+// JudgeSession re-adjudicates a session's pairs with a different model.
+//
+// Reads the store and writes nothing to it. The stored graph is the thing being compared
+// against, so a tool that overwrote it while measuring it would have nothing left to
+// measure.
+func JudgeSession(ctx context.Context, st store.Store, p llm.Provider, sessionID string, opts JudgeOptions, log *slog.Logger) (*PairSet, error) {
+	var (
+		claims []*core.Claim
+		edges  []*core.ClaimEdge
+	)
+	if err := st.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		if claims, err = q.ListClaims(ctx, sessionID, 0); err != nil {
+			return err
+		}
+		edges, err = q.ListEdges(ctx, sessionID, 0)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+
+	pairs, storedKind, _ := pairsFromEdges(claims, edges)
+	if len(opts.Kinds) > 0 {
+		keep := map[string]bool{}
+		for _, k := range opts.Kinds {
+			keep[strings.ToLower(strings.TrimSpace(k))] = true
+		}
+		var filtered []verifier.Pair
+		for _, pr := range pairs {
+			if keep[storedKind[pr.Key()]] {
+				filtered = append(filtered, pr)
+			}
+		}
+		pairs = filtered
+	}
+	if len(pairs) == 0 {
+		return nil, fmt.Errorf("eval: session %s has no judged pairs matching the filter", sessionID)
+	}
+
+	judged, unjudged := verifier.JudgePairs(ctx, p, opts.Model, pairs, opts.BatchSize, log)
+
+	verdict := make(map[string]verifier.Judged, len(judged))
+	for _, j := range judged {
+		verdict[j.Key()] = j
+	}
+	missed := map[string]bool{}
+	for _, pr := range unjudged {
+		missed[pr.Key()] = true
+	}
+
+	out := &PairSet{Session: sessionID, Model: opts.Model}
+	for _, pr := range pairs {
+		key := pr.Key()
+		lp := LabelledPair{
+			Pair: key,
+			A:    oneLine(pr.A.Text), B: oneLine(pr.B.Text),
+			SourceA: pr.A.Source, SourceB: pr.B.Source,
+			Baseline: storedKind[key],
+			Label:    opts.Labels[key],
+		}
+		if j, ok := verdict[key]; ok {
+			lp.Model = string(j.Relation)
+			lp.Why = j.Rationale
+			lp.Judged = true
+		} else {
+			// It answered nothing for this pair. Not "unrelated" — recording a
+			// non-answer as a verdict would credit the model with a judgement it did
+			// not make, and scoring skips unjudged pairs precisely so it cannot.
+			lp.Model = ""
+			lp.Judged = false
+			if missed[key] {
+				lp.Note = "the model returned no verdict for this pair"
+			}
+		}
+		out.Pairs = append(out.Pairs, lp)
+	}
+	return out, nil
+}
+
+// LabelsFrom extracts the labels already applied to a set, for carrying forward.
+func LabelsFrom(ps *PairSet) map[string]string {
+	out := map[string]string{}
+	for _, p := range ps.Pairs {
+		if l := strings.TrimSpace(p.Label); l != "" {
+			out[p.Pair] = l
+		}
+	}
+	return out
+}
+
+// Agreement is how often two verdict sets say the same thing.
+type Agreement struct {
+	Compared int `json:"compared"`
+	Same     int `json:"same"`
+	// Unanswered counts pairs one side or the other did not judge.
+	Unanswered int `json:"unanswered"`
+	// Confusion[a][b] is how often the first set said a and the second said b.
+	Confusion map[string]map[string]int `json:"confusion"`
+}
+
+func (a Agreement) Rate() float64 {
+	if a.Compared == 0 {
+		return 0
+	}
+	return float64(a.Same) / float64(a.Compared)
+}
+
+// Compare two verdict sets over the pairs both judged.
+//
+// The cheapest useful measurement of a judge, and the only one that needs no labels: run
+// the SAME model over the SAME pairs twice and see how often it agrees with itself. A judge
+// that does not is not measuring anything, and no quantity of labelling will fix it —
+// qwen2.5:3b re-judging sixteen of its own contradictions kept three of them, calling seven
+// "unrelated" and four "supports".
+//
+// Self-consistency is a ceiling, not a score: a judge cannot be more accurate than it is
+// reproducible. Screening on it first is far cheaper than labelling.
+func CompareVerdicts(a, b *PairSet) Agreement {
+	out := Agreement{Confusion: map[string]map[string]int{}}
+	other := make(map[string]LabelledPair, len(b.Pairs))
+	for _, p := range b.Pairs {
+		other[p.Pair] = p
+	}
+
+	for _, p := range a.Pairs {
+		q, ok := other[p.Pair]
+		if !ok {
+			continue
+		}
+		// A pair neither side answered says nothing about agreement, and counting a
+		// mutual non-answer as agreement is how a broken judge scores perfectly.
+		if !p.Judged || !q.Judged || p.Model == "" || q.Model == "" {
+			out.Unanswered++
+			continue
+		}
+		out.Compared++
+		if out.Confusion[p.Model] == nil {
+			out.Confusion[p.Model] = map[string]int{}
+		}
+		out.Confusion[p.Model][q.Model]++
+		if p.Model == q.Model {
+			out.Same++
+		}
+	}
+	return out
 }
