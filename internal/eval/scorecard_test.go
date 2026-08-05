@@ -3,6 +3,7 @@ package eval_test
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -315,4 +316,222 @@ func TestBlockedMetricsCarryNoValue(t *testing.T) {
 			t.Errorf("%s is blocked but carries value %v", m.Name, m.Value)
 		}
 	}
+}
+
+// findMetric returns a named metric, or nil.
+func findMetric(card eval.Scorecard, name string) *eval.Metric {
+	for i := range card.Metrics {
+		if card.Metrics[i].Name == name {
+			return &card.Metrics[i]
+		}
+	}
+	return nil
+}
+
+// TestACountIsNotRecall is the honesty property of the graph metrics.
+//
+// M4 made contradictions findable, so they are counted — as "disagreement rate".
+// Recall is a different number: it needs to know what the graph MISSED, which needs
+// disagreements planted on purpose. Reporting a count as recall would be the most
+// flattering possible confusion, because it rises when the pipeline gets noisier
+// rather than when it gets better.
+func TestACountIsNotRecall(t *testing.T) {
+	card := scoreWith(t, nil, nil)
+
+	if m := findMetric(card, "disagreement rate"); m == nil || m.Status == eval.Blocked {
+		t.Error("disagreement rate is not measured; M4 made it computable")
+	}
+	recall := findMetric(card, "contradiction recall")
+	if recall == nil {
+		t.Fatal("contradiction recall is not named at all")
+	}
+	if recall.Status != eval.Blocked {
+		t.Errorf("contradiction recall reported as %s — a count was promoted to recall", recall.Status)
+	}
+	if !strings.Contains(recall.Reason, "MISSED") {
+		t.Errorf("the blocked reason does not say what is missing: %q", recall.Reason)
+	}
+	// Same shape for staleness.
+	if m := findMetric(card, "staleness separation"); m == nil {
+		t.Error("staleness separation is not reported")
+	}
+	if m := findMetric(card, "staleness detection"); m == nil || m.Status != eval.Blocked {
+		t.Error("staleness detection is no longer named as blocked")
+	}
+}
+
+// TestVerificationCoverageIsTheDenominator. Zero disagreements on a session where
+// nothing was verified is not a clean bill of health, and a reader seeing only the
+// disagreement count cannot tell those apart.
+func TestVerificationCoverageIsTheDenominator(t *testing.T) {
+	unverified := []core.Claim{
+		{Text: "A.", Source: "https://a.example/1", Quote: "a quote long enough to be real evidence"},
+		{Text: "B.", Source: "https://b.example/1", Quote: "a quote long enough to be real evidence"},
+	}
+	card := scoreWith(t, unverified, nil)
+	m := findMetric(card, "verification coverage")
+	if m == nil {
+		t.Fatal("verification coverage missing")
+	}
+	if m.Value != 0 {
+		t.Errorf("coverage = %v on an unverified session", m.Value)
+	}
+	if !strings.Contains(m.Detail, "measured over nothing") {
+		t.Errorf("a zero-coverage session does not warn that the graph numbers mean nothing: %q",
+			m.Detail)
+	}
+}
+
+// TestGroundingRateExcludesInconclusiveChecks.
+//
+// A vanished quote, an unreachable host and a judge that declined all get recorded and
+// none says anything about whether a quote supports its claim. Counting them as
+// failures would make the metric track network weather.
+func TestGroundingRateExcludesInconclusiveChecks(t *testing.T) {
+	yes, no := true, false
+	claims := []core.Claim{
+		{Text: "Confirmed.", Source: "https://a.example/1", Quote: "a quote long enough to be real evidence",
+			Grounded: &yes},
+		{Text: "Unsupported.", Source: "https://b.example/1", Quote: "a quote long enough to be real evidence",
+			Grounded: &no},
+		// Checked, inconclusive: note set, Grounded nil.
+		{Text: "Page changed.", Source: "https://c.example/1", Quote: "a quote long enough to be real evidence",
+			GroundingNote: "the quote is no longer present in the source"},
+		{Text: "Host down.", Source: "https://d.example/1", Quote: "a quote long enough to be real evidence",
+			GroundingNote: "source could not be re-read"},
+		// Never checked at all.
+		{Text: "Untouched.", Source: "https://e.example/1", Quote: "a quote long enough to be real evidence"},
+	}
+	card := scoreWith(t, claims, nil)
+	m := findMetric(card, "grounding rate")
+	if m == nil {
+		t.Fatal("grounding rate missing")
+	}
+	if m.Status != eval.Measured {
+		t.Fatalf("status = %s, want measured", m.Status)
+	}
+	// 1 of 2 DECISIVE checks confirmed — not 1 of 4, and not 1 of 5.
+	if m.Value != 50 {
+		t.Errorf("grounding rate = %v%%, want 50 (1 of 2 decisive checks)", m.Value)
+	}
+	if !strings.Contains(m.Detail, "2 inconclusive, excluded") {
+		t.Errorf("inconclusive checks were not declared: %q", m.Detail)
+	}
+	if !strings.Contains(m.Detail, "NOT supported") {
+		t.Errorf("the unsupported claim is not called out: %q", m.Detail)
+	}
+}
+
+// TestGroundingRateIsBlockedNotZeroWhenNothingRan. 0% would read as "every checked
+// claim failed" instead of "nothing was checked" — the same conflation slice 0 removed
+// from confidence.
+func TestGroundingRateIsBlockedNotZeroWhenNothingRan(t *testing.T) {
+	card := scoreWith(t, []core.Claim{
+		{Text: "A.", Source: "https://a.example/1", Quote: "a quote long enough to be real evidence"},
+	}, nil)
+	m := findMetric(card, "grounding rate")
+	if m == nil {
+		t.Fatal("grounding rate is not named")
+	}
+	if m.Status != eval.Blocked {
+		t.Errorf("status = %s with no check run; a 0%% would read as total failure", m.Status)
+	}
+	if m.Value != 0 {
+		t.Errorf("a blocked metric carries value %v", m.Value)
+	}
+}
+
+// TestDuplicateCollapseCountsRepetitionRemoved (§11.2).
+func TestDuplicateCollapseCountsRepetitionRemoved(t *testing.T) {
+	claims := []core.Claim{
+		{Text: "One phrasing.", Source: "https://a.example/1", Quote: "a quote long enough to be real evidence"},
+		{Text: "Another phrasing.", Source: "https://b.example/1", Quote: "a quote long enough to be real evidence"},
+		{Text: "Unrelated.", Source: "https://c.example/1", Quote: "a quote long enough to be real evidence"},
+	}
+	card := scoreWith(t, claims, func(ids map[string]string) []core.ClaimEdge {
+		return []core.ClaimEdge{{
+			FromID: ids["One phrasing."], ToID: ids["Another phrasing."],
+			Kind: core.EdgeDuplicateOf, Weight: 1,
+		}}
+	})
+	m := findMetric(card, "duplicate collapse")
+	if m == nil {
+		t.Fatal("duplicate collapse missing")
+	}
+	// 3 claims, 1 duplicate edge -> 2 findings -> one third collapsed.
+	if !strings.Contains(m.Detail, "3 claim(s) render as 2 finding(s)") {
+		t.Errorf("detail = %q", m.Detail)
+	}
+	if m.Value <= 0 {
+		t.Errorf("collapse rate = %v with a duplicate present", m.Value)
+	}
+}
+
+// TestStalenessSeparationSaysWhenDatesAreMissing. The rule needs PublishedAt on both
+// claims and most web pages supply none, so a zero here is usually missing dates
+// rather than a broken rule — and a reader chasing the wrong one wastes their time.
+func TestStalenessSeparationSaysWhenDatesAreMissing(t *testing.T) {
+	claims := []core.Claim{
+		{Text: "A.", Source: "https://a.example/1", Quote: "a quote long enough to be real evidence"},
+		{Text: "B.", Source: "https://b.example/1", Quote: "a quote long enough to be real evidence"},
+	}
+	card := scoreWith(t, claims, func(ids map[string]string) []core.ClaimEdge {
+		return []core.ClaimEdge{{
+			FromID: ids["A."], ToID: ids["B."], Kind: core.EdgeContradicts, Weight: 1,
+		}}
+	})
+	m := findMetric(card, "staleness separation")
+	if m == nil {
+		t.Fatal("staleness separation missing")
+	}
+	if m.Value != 0 {
+		t.Errorf("value = %v with no supersedes edges", m.Value)
+	}
+	if !strings.Contains(m.Detail, "publication dates") {
+		t.Errorf("a zero does not point at the likely cause: %q", m.Detail)
+	}
+}
+
+// scoreWith builds a session with claims and optional edges, then scores it.
+//
+// edges receives claim text -> assigned ID, because the store assigns IDs and a test
+// cannot know them in advance.
+func scoreWith(t *testing.T, claims []core.Claim, edges func(ids map[string]string) []core.ClaimEdge) eval.Scorecard {
+	t.Helper()
+	ctx := context.Background()
+	f := newFixture(t, core.MicrosPerUSD)
+
+	if len(claims) > 0 {
+		for i := range claims {
+			claims[i].SessionID = f.sess.ID
+			claims[i].LeadID = f.lead.ID
+		}
+		if err := f.db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+			return tx.InsertClaims(ctx, claims)
+		}); err != nil {
+			t.Fatalf("insert claims: %v", err)
+		}
+	}
+
+	if edges != nil {
+		ids := map[string]string{}
+		for _, c := range claims {
+			ids[c.Text] = c.ID
+		}
+		e := edges(ids)
+		for i := range e {
+			e[i].SessionID = f.sess.ID
+		}
+		if err := f.db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+			return tx.InsertEdges(ctx, e)
+		}); err != nil {
+			t.Fatalf("insert edges: %v", err)
+		}
+	}
+
+	card, err := eval.Score(ctx, f.db, f.sess.ID, eval.Options{})
+	if err != nil {
+		t.Fatalf("score: %v", err)
+	}
+	return card
 }

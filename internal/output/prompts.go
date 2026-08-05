@@ -3,8 +3,6 @@ package output
 import (
 	"fmt"
 	"strings"
-
-	"github.com/lajosdeme/mole/internal/core"
 )
 
 // Report prompts.
@@ -29,11 +27,36 @@ Never write a citation number that does not appear in the material. Never state
 a fact that no claim supports.`
 
 // reportPrompt builds the synthesis request.
-func reportPrompt(fence, question string, claims []*core.Claim, index map[string]int) string {
+//
+// One line per FINDING, not per claim, and each carries every citation number
+// supporting it (§11.2). Two consequences the last live run made visible. The model
+// no longer sees one assertion eight times and write it up as eight facts. And
+// corroboration is legible in the material itself: "[1][4][7]" says three publishers
+// agree, where three separate bullets said only that something was repeated.
+func reportPrompt(fence, question string, findings []Finding, index map[string]int) string {
 	var material strings.Builder
-	for _, c := range claims {
-		n := index[c.Source]
-		fmt.Fprintf(&material, "- [%d] %s\n", n, clamp(oneLine(c.Text), MaxClaimChars))
+	for _, f := range findings {
+		fmt.Fprintf(&material, "- %s %s", markers(f, index),
+			clamp(oneLine(f.Claim.Text), MaxClaimChars))
+		if note := corroborationNote(f); note != "" {
+			// Flagged inline, because the model is being asked to disclose
+			// disagreement and cannot do so without knowing where it is.
+			fmt.Fprintf(&material, " (%s)", note)
+		}
+		material.WriteString("\n")
+	}
+
+	// The disagreements, named. The rule below tells the model to disclose them, and
+	// a rule to report something it has to infer is a rule it will sometimes miss —
+	// especially a small model reading forty bullets.
+	var disputes strings.Builder
+	for _, p := range Disagreements(findings) {
+		fmt.Fprintf(&disputes, "- %s and %s cannot both be true\n",
+			markers(findings[p[0]], index), markers(findings[p[1]], index))
+	}
+	if disputes.Len() > 0 {
+		material.WriteString("\nDISAGREEMENTS the sources contain:\n")
+		material.WriteString(disputes.String())
 	}
 
 	return fmt.Sprintf(`Write an answer to a research question from verified claims.
@@ -44,8 +67,16 @@ Rules:
   evidence of your own.
 - Use ONLY the numbers that appear in the material. Inventing one produces a
   citation pointing nowhere.
-- Where claims disagree, say so explicitly and cite both. Do not pick a winner
-  silently — a reader who cannot see the disagreement cannot judge it.
+- Where the material lists DISAGREEMENTS, every one of them must appear in your
+  answer, saying explicitly that the sources conflict and citing both sides. Do
+  not pick a winner silently — a reader who cannot see the disagreement cannot
+  judge it.
+- A claim marked "source does NOT support this on re-reading" failed a re-read of
+  its own source. Do not rely on it; if you mention it, say that.
+- A claim marked "superseded by a later source" is likely outdated. Prefer the
+  later finding and say which you are following.
+- Citation markers come in groups: "[1][4]" means two sources assert the same
+  thing. Cite the whole group, and do not present it as two separate findings.
 - Do not add facts, caveats, or background the claims do not support.
 - If the claims do not answer the question, say that plainly and describe what
   they do cover.

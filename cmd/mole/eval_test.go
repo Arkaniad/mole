@@ -71,8 +71,14 @@ func TestEvalExitsZeroOnACleanSession(t *testing.T) {
 	}
 }
 
-// TestEvalNamesWhatIsNotMeasured. Six of thirteen lines are blocked, and a
-// reader who does not know that will take five green ticks as full coverage.
+// TestEvalNamesWhatIsNotMeasured. A reader who does not know which lines are blocked
+// will take the green ticks as full coverage.
+//
+// It asserts on the missing COMPONENT rather than a milestone label. The first version
+// required the string "M4", which was correct until M4 landed and then failed for the
+// right reason: contradiction recall and staleness detection are no longer waiting on
+// the Verifier, they are waiting on labelled data. A test pinned to a milestone name
+// goes stale exactly when the milestone ships.
 func TestEvalNamesWhatIsNotMeasured(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
@@ -86,7 +92,9 @@ func TestEvalNamesWhatIsNotMeasured(t *testing.T) {
 	for _, want := range []string{
 		"not measured yet", "claim precision", "grounding rate",
 		"citation accuracy", "contradiction recall", "staleness detection",
-		"exfil regression", "M4", "M8",
+		"exfil regression",
+		// What each is actually waiting for.
+		"§14.2", "aggregation gate",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("scorecard does not mention %q:\n%s", want, out)

@@ -50,6 +50,13 @@ type Report struct {
 	// Model names what wrote it.
 	Model string
 
+	// Findings are the collapsed assertions the body was written from (§11.2):
+	// one per duplicate cluster, each with every source asserting it.
+	Findings []Finding
+	// Disagreements is how many contradicting pairs the graph found among them.
+	// Reported so a reader can tell "no disagreements" from "not checked".
+	Disagreements int
+
 	// Degraded explains why the report is thin, when it is. Surfaced rather
 	// than left for a reader to infer from a short answer.
 	Degraded string
@@ -98,13 +105,19 @@ func (g *Generator) Generate(ctx context.Context, st store.Store, sessionID stri
 	var (
 		sess   *core.Session
 		claims []*core.Claim
+		edges  []*core.ClaimEdge
 	)
 	if err := st.Read(ctx, func(ctx context.Context, q store.Queries) error {
 		var err error
 		if sess, err = q.GetSession(ctx, sessionID); err != nil {
 			return err
 		}
-		claims, err = q.ListClaims(ctx, sessionID, 10_000)
+		if claims, err = q.ListClaims(ctx, sessionID, 10_000); err != nil {
+			return err
+		}
+		// Edges too: §11.2 collapses duplicate clusters into one finding, and a
+		// report built from raw claims restates the same finding once per source.
+		edges, err = q.ListEdges(ctx, sessionID, 0)
 		return err
 	}); err != nil {
 		return nil, err
@@ -120,41 +133,36 @@ func (g *Generator) Generate(ctx context.Context, st store.Store, sessionID stri
 		return rep, nil
 	}
 
+	// Collapse duplicate clusters BEFORE the cap applies (§11.2). Capping raw
+	// claims spends the whole budget on one page asserting one thing eight ways;
+	// capping findings counts distinct assertions.
+	findings := Findings(claims, edges, gen.MaxClaims)
+	if n := len(Findings(claims, edges, 0)); n > len(findings) {
+		rep.Degraded = fmt.Sprintf("%d of %d findings included; the rest did not fit the report budget",
+			len(findings), n)
+	}
+	rep.Findings = findings
+	rep.Citations = citeFindings(findings)
+	index := map[string]int{}
+	for _, c := range rep.Citations {
+		index[c.Source] = c.N
+	}
+	rep.Disagreements = len(Disagreements(findings))
+
 	// No model available or affordable: return the evidence without prose. The
 	// escrow already paid to collect it, and verified claims with citations are
 	// a real answer — less readable, not less true.
 	if gen.LLM == nil {
-		kept := mostConfident(claims, gen.MaxClaims)
-		rep.Citations = numberSources(kept)
-		index := map[string]int{}
-		for _, c := range rep.Citations {
-			index[c.Source] = c.N
-		}
-		rep.Body = fallbackBody(sess.Prompt, kept, index)
+		rep.Body = fallbackBody(sess.Prompt, findings, index)
 		rep.Degraded = "no budget left to synthesize; evidence listed unsynthesized"
 		return rep, nil
-	}
-
-	kept := claims
-	if len(kept) > gen.MaxClaims {
-		// Keep the most confident. Truncating arbitrarily would drop evidence
-		// the pipeline rated highest.
-		kept = mostConfident(claims, gen.MaxClaims)
-		rep.Degraded = fmt.Sprintf("%d of %d claims included; the rest did not fit the report budget",
-			gen.MaxClaims, len(claims))
-	}
-
-	rep.Citations = numberSources(kept)
-	index := map[string]int{}
-	for _, c := range rep.Citations {
-		index[c.Source] = c.N
 	}
 
 	fence := fenceToken()
 	resp, err := gen.LLM.Complete(ctx, llm.Request{
 		Tier:      llm.TierStrong,
 		System:    reportSystemPrompt,
-		Messages:  []llm.Message{llm.User(reportPrompt(fence, sess.Prompt, kept, index))},
+		Messages:  []llm.Message{llm.User(reportPrompt(fence, sess.Prompt, findings, index))},
 		MaxTokens: gen.MaxTokens,
 	})
 	if resp != nil {
@@ -169,88 +177,22 @@ func (g *Generator) Generate(ctx context.Context, st store.Store, sessionID stri
 	if err != nil {
 		// The claims are still worth returning. A failed synthesis should cost
 		// the prose, not the evidence.
-		rep.Body = fallbackBody(sess.Prompt, kept, index)
+		rep.Body = fallbackBody(sess.Prompt, findings, index)
 		rep.Degraded = "synthesis failed: " + err.Error()
 		return rep, nil
 	}
 	if resp.Refused {
-		rep.Body = fallbackBody(sess.Prompt, kept, index)
+		rep.Body = fallbackBody(sess.Prompt, findings, index)
 		rep.Degraded = "model refused to synthesize (" + resp.RefusalCategory + ")"
 		return rep, nil
 	}
 
 	rep.Body = strings.TrimSpace(resp.Text)
 	if rep.Body == "" {
-		rep.Body = fallbackBody(sess.Prompt, kept, index)
+		rep.Body = fallbackBody(sess.Prompt, findings, index)
 		rep.Degraded = "synthesis returned nothing"
 	}
 	return rep, nil
-}
-
-// mostConfident keeps the n claims most worth putting in front of the model.
-//
-// Ordered by DERIVED confidence (§11.3), never by the extractor's self-report.
-// This function used to sort by the latter, under the same field name, so an
-// uncalibrated number — one §11.3 describes as "mostly encoding fluency" —
-// decided which claims led the answer and which were dropped at the cap. A
-// fluently-worded claim from one anonymous page outranked a claim corroborated
-// by three independent publishers.
-//
-// Until the Verifier scores a session, every derived confidence is 0 and this
-// sort has nothing to work with. Assertion strength is the wrong tie-break —
-// preferring it is the exact behaviour being removed — so ties fall back to
-// source breadth: a claim from a source that also supports others is more likely
-// load-bearing than one from a page mentioned once. Mechanical, and it does not
-// pretend to be a confidence judgment.
-//
-// Sorts a copy: Generate used to sort the slice it was handed, which aliases the
-// caller's backing array. Harmless while it comes straight from a store read,
-// and invisible at the call site if that ever changes.
-func mostConfident(claims []*core.Claim, n int) []*core.Claim {
-	perSource := map[string]int{}
-	for _, c := range claims {
-		perSource[c.Source]++
-	}
-
-	out := append([]*core.Claim(nil), claims...)
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Confidence != out[j].Confidence {
-			return out[i].Confidence > out[j].Confidence
-		}
-		return perSource[out[i].Source] > perSource[out[j].Source]
-	})
-	if n > 0 && len(out) > n {
-		out = out[:n]
-	}
-	return out
-}
-
-// numberSources assigns each distinct source a citation number in first-seen
-// order, and collects the verified quotes and earliest date per source.
-//
-// Assigned mechanically, before the prompt is built, so the model cannot invent
-// a citation: every [n] it can legitimately write already maps to a real
-// source, and any other number is detectable.
-func numberSources(claims []*core.Claim) []Citation {
-	var out []Citation
-	index := map[string]int{}
-
-	for _, c := range claims {
-		n, seen := index[c.Source]
-		if !seen {
-			out = append(out, Citation{N: len(out) + 1, Source: c.Source})
-			n = len(out)
-			index[c.Source] = n
-		}
-		cit := &out[n-1]
-		if q := strings.TrimSpace(c.Quote); q != "" && len(cit.Quotes) < 3 {
-			cit.Quotes = append(cit.Quotes, q)
-		}
-		if c.PublishedAt != nil && (cit.PublishedAt == nil || c.PublishedAt.Before(*cit.PublishedAt)) {
-			cit.PublishedAt = c.PublishedAt
-		}
-	}
-	return out
 }
 
 // fallbackBody lists the claims without synthesis.
@@ -258,13 +200,83 @@ func numberSources(claims []*core.Claim) []Citation {
 // Used when the model call fails. Verified evidence with citations is a
 // genuinely useful answer — less readable than prose, but not less true — and
 // it is what the escrow already paid to collect.
-func fallbackBody(question string, claims []*core.Claim, index map[string]int) string {
+func fallbackBody(question string, findings []Finding, index map[string]int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Evidence gathered for %q, unsynthesized:\n\n", question)
-	for _, c := range claims {
-		fmt.Fprintf(&b, "- %s [%d]\n", strings.TrimSpace(c.Text), index[c.Source])
+	for _, f := range findings {
+		fmt.Fprintf(&b, "- %s %s", strings.TrimSpace(f.Claim.Text), markers(f, index))
+		if note := corroborationNote(f); note != "" {
+			fmt.Fprintf(&b, " (%s)", note)
+		}
+		b.WriteString("\n")
+	}
+	// Disagreements have to survive the fallback too. The prose is what usually
+	// discloses them, and this is the path taken when there is no prose.
+	if pairs := Disagreements(findings); len(pairs) > 0 {
+		b.WriteString("\nThe sources disagree:\n\n")
+		for _, p := range pairs {
+			fmt.Fprintf(&b, "- %s %s\n  CONTRADICTS %s %s\n",
+				strings.TrimSpace(findings[p[0]].Claim.Text), markers(findings[p[0]], index),
+				strings.TrimSpace(findings[p[1]].Claim.Text), markers(findings[p[1]], index))
+		}
 	}
 	return b.String()
+}
+
+// markers renders a finding's citation numbers, e.g. "[1][3][7]".
+//
+// Plural because a collapsed cluster carries every source asserting it — which is
+// how §11.3's corroboration signal becomes visible to a reader instead of appearing
+// as the same sentence repeated.
+func markers(f Finding, index map[string]int) string {
+	var ns []int
+	for _, src := range f.Sources {
+		if n, ok := index[src]; ok {
+			ns = append(ns, n)
+		}
+	}
+	sort.Ints(ns)
+	var b strings.Builder
+	for _, n := range ns {
+		fmt.Fprintf(&b, "[%d]", n)
+	}
+	return b.String()
+}
+
+// citeFindings numbers every source across every finding, in first-seen order.
+//
+// Assigned mechanically before the prompt is built, so the model cannot invent a
+// citation: every [n] it can legitimately write already maps to a real source.
+func citeFindings(findings []Finding) []Citation {
+	var out []Citation
+	index := map[string]int{}
+
+	for _, f := range findings {
+		for _, src := range f.Sources {
+			if _, seen := index[src]; !seen {
+				out = append(out, Citation{N: len(out) + 1, Source: src})
+				index[src] = len(out)
+			}
+		}
+	}
+	// Quotes and dates come from the claims themselves, so a reader can check a
+	// citation without re-fetching.
+	for _, f := range findings {
+		for _, c := range f.claims() {
+			n, ok := index[c.Source]
+			if !ok {
+				continue
+			}
+			cit := &out[n-1]
+			if q := strings.TrimSpace(c.Quote); q != "" && len(cit.Quotes) < 3 {
+				cit.Quotes = append(cit.Quotes, q)
+			}
+			if c.PublishedAt != nil && (cit.PublishedAt == nil || c.PublishedAt.Before(*cit.PublishedAt)) {
+				cit.PublishedAt = c.PublishedAt
+			}
+		}
+	}
+	return out
 }
 
 // stripControls removes C0/C1 control characters other than newline and tab.

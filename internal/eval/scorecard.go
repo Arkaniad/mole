@@ -96,6 +96,7 @@ func Score(ctx context.Context, st store.Store, sessionID string, opts Options) 
 		claims   []*core.Claim
 		calls    []*core.ToolCall
 		outcomes []*store.FetchOutcome
+		edges    []*core.ClaimEdge
 	)
 	if err := st.Read(ctx, func(ctx context.Context, q store.Queries) error {
 		var err error
@@ -108,7 +109,10 @@ func Score(ctx context.Context, st store.Store, sessionID string, opts Options) 
 		if calls, err = q.ListToolCalls(ctx, sessionID, 10_000); err != nil {
 			return err
 		}
-		outcomes, err = q.ListFetchOutcomes(ctx, sessionID, 10_000)
+		if outcomes, err = q.ListFetchOutcomes(ctx, sessionID, 10_000); err != nil {
+			return err
+		}
+		edges, err = q.ListEdges(ctx, sessionID, 0)
 		return err
 	}); err != nil {
 		return card, err
@@ -133,6 +137,29 @@ func Score(ctx context.Context, st store.Store, sessionID string, opts Options) 
 		rep := VerifyCitations(ctx, claims, providerSupplied(outcomes), opts.Citations)
 		card.Citations = &rep
 		card.Metrics = append(card.Metrics, citationAccuracy(rep))
+	}
+
+	// Graph metrics (§11). Blocked until M4 built the Verifier; computable now, and
+	// separated deliberately from the ones that need labelled data. A count of what
+	// the graph found is not recall — recall needs to know what it MISSED — and
+	// reporting one as the other would be the most flattering possible confusion.
+	card.Metrics = append(card.Metrics,
+		verificationCoverage(claims),
+		duplicateCollapse(claims, edges),
+		disagreementRate(claims, edges),
+		stalenessSeparation(edges),
+	)
+	if g := groundingRate(claims); g != nil {
+		card.Metrics = append(card.Metrics, *g)
+	} else {
+		// Named rather than omitted. §11.5.2's judge exists, so this is no longer
+		// blocked on a component — it is blocked on nobody having run a check, which
+		// is a different thing and a reader should be able to tell.
+		card.Metrics = append(card.Metrics, Metric{
+			Name: "grounding rate", Status: Blocked,
+			Reason: "no claim was re-read: §11.5.2's grounding pass needs escrow left " +
+				"over and a fetcher configured",
+		})
 	}
 
 	card.Metrics = append(card.Metrics, blockedMetrics(opts)...)
@@ -357,17 +384,20 @@ func blockedMetrics(opts Options) []Metric {
 			Reason: "needs labelled answers; the question corpus (§14.2) is not built yet",
 		},
 		{
-			Name: "grounding rate", Status: Blocked,
-			Reason: "needs a judge: whether a quote SUPPORTS its claim is not mechanical. " +
-				"Quote-was-found is already enforced at the actor boundary (§11.5)",
-		},
-		{
 			Name: "contradiction recall", Status: Blocked,
-			Reason: "needs the Verifier and planted disagreements — M4",
+			// M4 built the Verifier, so contradictions are now FOUND and counted as
+			// "disagreement rate". Recall is a different number: it needs to know
+			// what the graph missed, which needs disagreements planted on purpose.
+			Reason: "the Verifier now finds contradictions (see disagreement rate), but " +
+				"recall needs planted disagreements to measure what it MISSED — the " +
+				"question corpus (§14.2)",
 		},
 		{
 			Name: "staleness detection", Status: Blocked,
-			Reason: "needs supersedes edges — M4",
+			// Same shape. supersedes edges exist and are counted as "staleness
+			// separation"; detection needs to know how many stale claims were there.
+			Reason: "supersedes edges now exist (see staleness separation), but detection " +
+				"needs a corpus with known-stale sources to measure what was missed (§14.2)",
 		},
 		{
 			Name: "exfil regression", Status: Blocked,
@@ -386,4 +416,188 @@ func blockedMetrics(opts Options) []Metric {
 		})
 	}
 	return metrics
+}
+
+// ---------------------------------------------------------------------------
+// Graph metrics (§11)
+// ---------------------------------------------------------------------------
+//
+// These became computable when M4 built the Verifier. What is deliberately NOT
+// here is anything called recall: recall needs to know what the graph MISSED, which
+// needs planted disagreements in §14.2's corpus. A count of what was found, reported
+// as recall, would be the most flattering possible confusion — it rises when the
+// pipeline gets noisier, not when it gets better.
+
+// verificationCoverage is how much of the claim set the Verifier actually looked at.
+//
+// The denominator for every other graph number. Zero disagreements on a session
+// where nothing was verified is not a clean bill of health, and a reader seeing only
+// the disagreement count cannot tell those apart.
+func verificationCoverage(claims []*core.Claim) Metric {
+	m := Metric{Name: "verification coverage", Status: Measured, Unit: "%"}
+	if len(claims) == 0 {
+		m.Status = NotApplicable
+		m.Detail = "no claims"
+		return m
+	}
+	verified := 0
+	for _, c := range claims {
+		if c.VerifiedAt != nil {
+			verified++
+		}
+	}
+	m.Value = 100 * float64(verified) / float64(len(claims))
+	m.Detail = fmt.Sprintf("%d of %d claim(s) verified", verified, len(claims))
+	if verified == 0 {
+		m.Detail += " — every graph number below is measured over nothing"
+	}
+	return m
+}
+
+// duplicateCollapse is how much repetition the graph removed (§11.2).
+//
+// The live run this was built against produced two near-identical claims from one
+// source and rendered both as separate findings. The number matters in both
+// directions: 0% on a session with obvious repeats means clustering is not working,
+// and a very high figure means the extractor is emitting the same claim over and
+// over.
+func duplicateCollapse(claims []*core.Claim, edges []*core.ClaimEdge) Metric {
+	m := Metric{Name: "duplicate collapse", Status: Measured, Unit: "%"}
+	if len(claims) == 0 {
+		m.Status = NotApplicable
+		m.Detail = "no claims"
+		return m
+	}
+	dupes := 0
+	for _, e := range edges {
+		if e != nil && e.Kind == core.EdgeDuplicateOf {
+			dupes++
+		}
+	}
+	// Each duplicate edge merges two nodes, so n claims with d duplicate edges
+	// render as at most n-d findings.
+	collapsed := len(claims) - dupes
+	if collapsed < 1 {
+		collapsed = 1
+	}
+	m.Value = 100 * float64(len(claims)-collapsed) / float64(len(claims))
+	m.Detail = fmt.Sprintf("%d claim(s) render as %d finding(s)", len(claims), collapsed)
+	return m
+}
+
+// disagreementRate is how often the graph found two sources incompatible.
+//
+// Named a rate, not recall, and the distinction is the point: this counts what was
+// found and says nothing about what was missed. It is diagnostic in both directions —
+// a session on a contested question reporting zero is suspicious, and one reporting
+// half its claims as disputed probably has an adjudicator saying "contradicts" to
+// anything it cannot parse.
+func disagreementRate(claims []*core.Claim, edges []*core.ClaimEdge) Metric {
+	m := Metric{Name: "disagreement rate", Status: Measured, Unit: "%"}
+	if len(claims) == 0 {
+		m.Status = NotApplicable
+		m.Detail = "no claims"
+		return m
+	}
+	contradicts := 0
+	involved := map[string]bool{}
+	for _, e := range edges {
+		if e == nil || e.Kind != core.EdgeContradicts {
+			continue
+		}
+		contradicts++
+		involved[e.FromID] = true
+		involved[e.ToID] = true
+	}
+	m.Value = 100 * float64(len(involved)) / float64(len(claims))
+	m.Detail = fmt.Sprintf("%d contradiction(s) involving %d of %d claim(s)",
+		contradicts, len(involved), len(claims))
+	return m
+}
+
+// stalenessSeparation is how many conflicts the dates resolved rather than the model
+// (§11.2).
+//
+// A 2019 claim contradicted by a 2025 one is usually staleness, not disagreement, and
+// this is what says whether that rule is doing anything. Not "staleness detection" —
+// that would claim to know how many stale claims exist, which needs the corpus.
+func stalenessSeparation(edges []*core.ClaimEdge) Metric {
+	m := Metric{Name: "staleness separation", Status: Measured, Unit: "edges"}
+	supersedes, contradicts := 0, 0
+	for _, e := range edges {
+		if e == nil {
+			continue
+		}
+		switch e.Kind {
+		case core.EdgeSupersedes:
+			supersedes++
+		case core.EdgeContradicts:
+			contradicts++
+		}
+	}
+	m.Value = float64(supersedes)
+	total := supersedes + contradicts
+	if total == 0 {
+		m.Status = NotApplicable
+		m.Detail = "no conflicting claims to separate"
+		return m
+	}
+	m.Detail = fmt.Sprintf("%d of %d conflict(s) resolved as staleness by publication date",
+		supersedes, total)
+	if supersedes == 0 {
+		// Worth naming: the rule needs PublishedAt on both claims, and most web
+		// pages supply none, so a zero here is usually missing dates rather than a
+		// broken rule.
+		m.Detail += " — check whether the sources carried publication dates at all"
+	}
+	return m
+}
+
+// groundingRate is §14.3's metric, unblocked by §11.5.2's judge.
+//
+// Nil when no claim was ever checked, so it is omitted rather than reported as 0% —
+// which would read as "every checked claim failed" instead of "nothing was checked".
+//
+// The denominator is DECISIVE checks only. A vanished quote, an unreachable host and a
+// judge that would not answer are all recorded, and none of them says anything about
+// whether a quote supports its claim; counting them as failures would make the metric
+// track network weather.
+func groundingRate(claims []*core.Claim) *Metric {
+	decisive, confirmed, inconclusive := 0, 0, 0
+	for _, c := range claims {
+		switch {
+		case c.Grounded != nil:
+			decisive++
+			if *c.Grounded {
+				confirmed++
+			}
+		case c.GroundingNote != "":
+			inconclusive++
+		}
+	}
+	if decisive == 0 && inconclusive == 0 {
+		return nil
+	}
+
+	m := Metric{Name: "grounding rate", Status: Measured, Unit: "%"}
+	if decisive == 0 {
+		m.Status = NotApplicable
+		m.Detail = fmt.Sprintf("%d check(s) ran, none decisive (page changed, source "+
+			"unreachable, or the judge declined)", inconclusive)
+		return &m
+	}
+	m.Value = 100 * float64(confirmed) / float64(decisive)
+	m.Detail = fmt.Sprintf("%d of %d re-read claim(s) confirmed by their own source",
+		confirmed, decisive)
+	if inconclusive > 0 {
+		m.Detail += fmt.Sprintf(" (%d inconclusive, excluded)", inconclusive)
+	}
+	if confirmed < decisive {
+		// Not a Regression flag: one claim whose source does not support it is a
+		// finding about that claim, not proof the pipeline is broken. But it is the
+		// most important line on the card when it happens.
+		m.Detail += fmt.Sprintf(" — %d claim(s) NOT supported by their own source",
+			decisive-confirmed)
+	}
+	return &m
 }
