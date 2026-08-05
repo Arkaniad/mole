@@ -1,0 +1,11 @@
+{
+  "name": "smoke",
+  "questions": [
+    {
+      "id": "mambabyte-pg19",
+      "question": "what is mambabyte and what does it achieve on PG-19?",
+      "tags": ["settled"],
+      "notes": "The one question a cassette already exists for, recorded during M1. Kept as the seed of the golden set: it exercises search, fetch, extract, mine, quote verification and report generation end to end, for nothing, offline."
+    }
+  ]
+}

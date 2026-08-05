@@ -72,6 +72,22 @@ type researchOpts struct {
 	alwaysFetch bool
 	maxDepth    int
 	dbPath      string
+
+	// silent suppresses ALL output, including the report.
+	//
+	// Distinct from quiet, which suppresses progress and still prints the answer — that
+	// is what a person running one question wants. The corpus runner produces its own
+	// output and a hundred inlined reports would bury it. No flag: nothing on the
+	// command line should ask mole to research a question and say nothing.
+	silent bool
+
+	// onSession, when set, is called with the session id as soon as it exists.
+	//
+	// A callback rather than a return value because the corpus runner needs the id even
+	// when the run goes on to fail — a session that errored still has a ledger to
+	// reconcile and claims to score, and those are exactly the runs worth looking at.
+	// Nil for the CLI.
+	onSession func(string)
 }
 
 func newResearchCmd() *cobra.Command {
@@ -184,6 +200,9 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 		MaxLeads:     int64(maxLeadsFor(o)),
 		MaxWallClock: o.timeout,
 	})
+	if o.onSession != nil && sess != nil {
+		o.onSession(sess.ID)
+	}
 	if err != nil {
 		return err
 	}
@@ -309,6 +328,9 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 		out.Spent = runRes.Spent
 	}
 
+	if o.silent {
+		return nil
+	}
 	if o.asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")

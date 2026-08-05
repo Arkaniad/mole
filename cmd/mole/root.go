@@ -116,6 +116,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(
 		newResearchCmd(),
 		newEvalCmd(),
+		newCorpusCmd(),
 		newMigrateCmd(),
 		newConfigCmd(),
 		newDoctorCmd(),
