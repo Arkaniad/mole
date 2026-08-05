@@ -140,15 +140,19 @@ func TestDisagreementsAreDisclosedNotResolved(t *testing.T) {
 	}
 	// The model must be TOLD, not merely instructed to notice. A rule to disclose
 	// something it has to infer is a rule a small model reading forty bullets misses.
-	if !strings.Contains(f.prompt, "DISAGREEMENTS") {
-		t.Errorf("the disagreement was not named in the material:\n%s", f.prompt)
+	// Asserted on the MATERIAL, not the whole prompt. The rules section explains what
+	// a conflict annotation means and so contains overlapping words; an assertion over
+	// the whole prompt would pass with the annotation removed.
+	mat := material(f.prompt)
+	if !strings.Contains(mat, "pairs conflict") {
+		t.Errorf("the disagreement was not named in the material:\n%s", mat)
 	}
-	if !strings.Contains(f.prompt, "cannot both be true") {
-		t.Errorf("the material does not say the two conflict:\n%s", f.prompt)
+	if !strings.Contains(mat, "cannot both be true") {
+		t.Errorf("the material does not say the two conflict:\n%s", mat)
 	}
 	// And each finding is flagged inline.
-	if !strings.Contains(f.prompt, "disputed") {
-		t.Errorf("neither side was flagged as disputed:\n%s", f.prompt)
+	if !strings.Contains(mat, "disputed") {
+		t.Errorf("neither side was flagged as disputed:\n%s", mat)
 	}
 }
 
@@ -198,7 +202,7 @@ func TestAFailedGroundingCheckIsFlaggedToTheModelAndTheReader(t *testing.T) {
 	// Inside the MATERIAL, not anywhere in the prompt. The rules section explains
 	// what the flag means and therefore contains the same words — so asserting on
 	// the whole prompt passed with the flag removed entirely.
-	if !strings.Contains(material(f.prompt), "does NOT support") {
+	if !strings.Contains(material(f.prompt), "failed source re-read") {
 		t.Errorf("the failed grounding check was not flagged on the claim's own line:\n%s",
 			material(f.prompt))
 	}
@@ -340,8 +344,9 @@ func TestSupersededFindingsAreFlagged(t *testing.T) {
 	if fresh.Superseded {
 		t.Error("the newer finding was flagged superseded; the edge direction was lost")
 	}
-	if !strings.Contains(f.prompt, "superseded by a later source") {
-		t.Errorf("staleness was not flagged to the model:\n%s", f.prompt)
+	// Material only: the rules use the word "outdated" too.
+	if !strings.Contains(material(f.prompt), "outdated") {
+		t.Errorf("staleness was not flagged to the model:\n%s", material(f.prompt))
 	}
 }
 

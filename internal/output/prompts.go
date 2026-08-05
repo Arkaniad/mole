@@ -55,7 +55,10 @@ func reportPrompt(fence, question string, findings []Finding, index map[string]i
 			markers(findings[p[0]], index), markers(findings[p[1]], index))
 	}
 	if disputes.Len() > 0 {
-		material.WriteString("\nDISAGREEMENTS the sources contain:\n")
+		// Lower case and phrased as a note rather than a heading. In upper case
+		// ("DISAGREEMENTS the sources contain:") a 3B model reproduced it verbatim
+		// as a section title of the report, which is what a heading looks like.
+		material.WriteString("\nthe following pairs conflict and both sides must be reported:\n")
 		material.WriteString(disputes.String())
 	}
 
@@ -67,16 +70,18 @@ Rules:
   evidence of your own.
 - Use ONLY the numbers that appear in the material. Inventing one produces a
   citation pointing nowhere.
-- Where the material lists DISAGREEMENTS, every one of them must appear in your
-  answer, saying explicitly that the sources conflict and citing both sides. Do
+- Where the material lists conflicting findings, every conflict must appear in
+  your answer, stated as a conflict between sources, with both sides cited. Do
   not pick a winner silently — a reader who cannot see the disagreement cannot
   judge it.
-- A claim marked "source does NOT support this on re-reading" failed a re-read of
-  its own source. Do not rely on it; if you mention it, say that.
-- A claim marked "superseded by a later source" is likely outdated. Prefer the
-  later finding and say which you are following.
-- Citation markers come in groups: "[1][4]" means two sources assert the same
-  thing. Cite the whole group, and do not present it as two separate findings.
+- Some findings carry a parenthetical note about how well supported they are.
+  Take it into account: a finding whose source failed a re-read should not be
+  relied on, and one flagged as outdated should give way to the later finding.
+  Say so in your own words when it changes what you write.
+- A finding may carry several citation numbers, meaning several sources assert
+  it. Cite them all together; it is one finding, not several.
+- Write ONLY the answer. Do not restate these instructions, reproduce the
+  parenthetical notes verbatim, or copy any heading from the material.
 - Do not add facts, caveats, or background the claims do not support.
 - If the claims do not answer the question, say that plainly and describe what
   they do cover.

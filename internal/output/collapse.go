@@ -285,7 +285,7 @@ func corroborationNote(f Finding) string {
 		parts = append(parts, fmt.Sprintf("%d pages from one publisher", len(f.Sources)))
 	}
 	if f.Superseded {
-		parts = append(parts, "superseded by a later source")
+		parts = append(parts, "outdated")
 	}
 	if len(f.Contradicts) > 0 {
 		parts = append(parts, "disputed")
@@ -293,7 +293,12 @@ func corroborationNote(f Finding) string {
 	if f.Claim != nil && f.Claim.Grounded != nil && !*f.Claim.Grounded {
 		// The one flag a reader must not miss: the claim's own source, re-read,
 		// does not support it (§11.5).
-		parts = append(parts, "source does NOT support this on re-reading")
+		//
+		// Worded as a fragment, not a sentence. The earlier phrasing was a complete
+		// clause — "source does NOT support this on re-reading" — and a 3B model
+		// lifted it straight into the report body as the whole answer, asserting a
+		// re-read verdict on claims that were never checked.
+		parts = append(parts, "failed source re-read")
 	}
 	return strings.Join(parts, "; ")
 }

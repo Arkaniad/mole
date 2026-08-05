@@ -779,7 +779,17 @@ func runGrounding(
 		fmt.Fprintf(os.Stderr, "warning: grounding pass failed: %v\n", err)
 		return nil
 	}
-	if rep == nil || rep.Checked == 0 {
+	if rep == nil {
+		return nil
+	}
+	if rep.Checked == 0 {
+		// Silence here made a skipped pass indistinguishable from no pass at all. On a
+		// live run the allowance (30% of a 9,000-token escrow) was smaller than one
+		// judge call, so grounding declined correctly and said nothing — and the report
+		// carried no indication that the check had not happened.
+		if !o.quiet && !o.asJSON && rep.Degraded != "" {
+			fmt.Printf("   grounding: not run — %s\n", rep.Degraded)
+		}
 		return rep
 	}
 
@@ -790,6 +800,9 @@ func runGrounding(
 	if !o.quiet && !o.asJSON {
 		fmt.Printf("   grounding: %d claim(s) re-read — %d confirmed, %d unsupported",
 			rep.Checked, rep.Confirmed, rep.Unsupported)
+		if rep.NotFetchable > 0 {
+			fmt.Printf(", %d not re-readable", rep.NotFetchable)
+		}
 		if n := rep.Vanished + rep.Unreachable + rep.Undecided; n > 0 {
 			// Said separately, because none of these is a verdict about a claim: the
 			// page changed, the host was down, or the judge would not answer. Folding

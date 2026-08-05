@@ -498,3 +498,75 @@ func TestGroundingSpendIsAttributedToTheVerifier(t *testing.T) {
 			v.SpentRecorded, v.SpentFromLedger)
 	}
 }
+
+// TestProviderSuppliedSourcesAreNotReRead is a live false positive.
+//
+// Two galileo.ai claims came back "the quote is no longer present in the source", which
+// reads as the page having changed. It had not. Tavily SUPPLIED that page's text, so
+// the quote was verified against the provider's extraction and the re-read compared it
+// against a fresh HTML extraction of the same URL — two different pipelines, and the
+// mismatch was manufactured by the check itself.
+//
+// eval's citation accuracy already skips these. Grounding did not, and a manufactured
+// mismatch is worse here: it tells a reader a source has changed when nothing has.
+func TestProviderSuppliedSourcesAreNotReRead(t *testing.T) {
+	ctx := context.Background()
+	const supplied = "https://provider.example/page"
+	const fetched = "https://fetched.example/page"
+
+	claims := []core.Claim{
+		{Text: "A claim from a page the provider supplied.", Source: supplied, Quote: groundedQuote},
+		{Text: "A claim from a page mole actually fetched.", Source: fetched, Quote: groundedQuote},
+	}
+	// Both pages would re-read cleanly if asked; the point is that one must not be.
+	pages := map[string]string{
+		supplied: "This page has been rewritten and no longer contains the quote.",
+		fetched:  pageContaining(groundedQuote),
+	}
+	r := groundRig(t, claims, pages, alwaysSupported())
+
+	// Record how each source's text was obtained (§10.4).
+	if err := r.db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		sid := r.sess.ID
+		for url, outcome := range map[string]string{
+			supplied: string(fetch.OutcomeProviderContent),
+			fetched:  string(fetch.OutcomeOK),
+		} {
+			if err := tx.RecordFetchOutcome(ctx, &store.FetchOutcome{
+				ID: core.NewSpanID(), SessionID: &sid, URL: url,
+				Domain: url, Outcome: outcome, StatusCode: 200,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := r.v.Ground(ctx, r.sess.ID, 4_000_000)
+	if err != nil {
+		t.Fatalf("ground: %v", err)
+	}
+
+	if rep.Checked != 1 {
+		t.Errorf("Checked = %d, want 1 (only the fetched source is re-readable)", rep.Checked)
+	}
+	if rep.Vanished != 0 {
+		t.Errorf("Vanished = %d — a provider-supplied page was re-read and the mismatch "+
+			"manufactured", rep.Vanished)
+	}
+	if rep.NotFetchable != 1 {
+		t.Errorf("NotFetchable = %d, want 1; a reader cannot tell this from a claim "+
+			"nobody tried to check", rep.NotFetchable)
+	}
+
+	stored := r.claims(t)
+	if c := stored["A claim from a page the provider supplied."]; c.Grounded != nil || c.GroundingNote != "" {
+		t.Errorf("the provider-supplied claim carries a verdict: grounded=%v note=%q",
+			c.Grounded, c.GroundingNote)
+	}
+	if c := stored["A claim from a page mole actually fetched."]; c.Grounded == nil {
+		t.Error("the fetched claim was not checked")
+	}
+}

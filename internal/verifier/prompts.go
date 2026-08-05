@@ -57,7 +57,8 @@ Relations, and nothing else:
 Rules:
 - "confidence" is 0.0-1.0: how sure you are of the RELATION, not how true you
   believe either claim is.
-- "why" is one short clause. It is read by a person inspecting the graph.
+- "why" is your own one-clause reason, read by a person inspecting the graph.
+  Do not copy wording from these rules.
 - Return exactly one verdict per pair, using the pair's number. Judge every pair
   you were given, and no others.
 - Do not judge whether a claim is correct. Two claims can both be wrong and
@@ -206,20 +207,37 @@ func extractVerdicts(raw string) []wireVerdict {
 	body := stripFence(raw)
 
 	var obj wireResponse
-	if err := json.Unmarshal([]byte(body), &obj); err == nil && len(obj.Verdicts) > 0 {
+	if err := json.Unmarshal([]byte(body), &obj); err == nil && anyUsable(obj.Verdicts) {
 		return obj.Verdicts
 	}
+	// USABLE, not merely non-empty. A model returned `[{"verdicts":[...]}]` — the
+	// object wrapped in an array — and every element unmarshals into wireVerdict with
+	// Pair 0 and no relation. Non-empty, so this branch returned six useless verdicts
+	// and salvage never ran; the whole batch was reported as unusable. Same shape as
+	// the bug that made salvageClaims a no-op in the actor, arriving from the other
+	// direction: there a break stopped the scan, here a premature success skipped it.
 	var arr []wireVerdict
-	if err := json.Unmarshal([]byte(body), &arr); err == nil && len(arr) > 0 {
+	if err := json.Unmarshal([]byte(body), &arr); err == nil && anyUsable(arr) {
 		return arr
 	}
 	if body := extractJSONObject(raw); body != "" {
 		var obj wireResponse
-		if err := json.Unmarshal([]byte(body), &obj); err == nil && len(obj.Verdicts) > 0 {
+		if err := json.Unmarshal([]byte(body), &obj); err == nil && anyUsable(obj.Verdicts) {
 			return obj.Verdicts
 		}
 	}
 	return salvageVerdicts(raw)
+}
+
+// anyUsable reports whether a parse produced at least one verdict that names a pair
+// and a relation. Anything less is a shape that happened to unmarshal.
+func anyUsable(vs []wireVerdict) bool {
+	for _, v := range vs {
+		if v.Pair > 0 && strings.TrimSpace(v.Relation) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // salvageVerdicts scans for complete {...} objects and unmarshals each alone.

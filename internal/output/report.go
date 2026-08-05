@@ -187,11 +187,15 @@ func (g *Generator) Generate(ctx context.Context, st store.Store, sessionID stri
 		return rep, nil
 	}
 
-	rep.Body = strings.TrimSpace(resp.Text)
-	if rep.Body == "" {
+	// Check what came back before printing it. The prompt is not a guarantee, and a
+	// body carrying a forged citation or a fragment of its own instructions is worse
+	// than the evidence listing that is already available for nothing.
+	if problem := validateBody(resp.Text, findings, rep.Citations); problem != nil {
 		rep.Body = fallbackBody(sess.Prompt, findings, index)
-		rep.Degraded = "synthesis returned nothing"
+		rep.Degraded = "synthesis rejected — " + problem.Error()
+		return rep, nil
 	}
+	rep.Body = strings.TrimSpace(resp.Text)
 	return rep, nil
 }
 

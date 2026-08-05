@@ -412,3 +412,72 @@ func TestAnEnormousPageCannotSetTheCallSize(t *testing.T) {
 		t.Errorf("prompt is %d bytes; the page decided the call size", len(prompt))
 	}
 }
+
+// TestAnArrayWrappedObjectDoesNotBlockSalvage is the exact shape a live run returned.
+//
+// `[{"verdicts":[...]}]` — the object inside an array. Every element unmarshals into
+// wireVerdict with Pair 0 and no relation, so the bare-array branch saw a non-empty
+// slice, returned six useless verdicts, and salvage never ran. The batch was reported
+// as unusable and six real judgements were thrown away.
+//
+// Same shape as the bug that made salvageClaims a no-op in the actor, arriving from the
+// other direction: there a break stopped the scan, here a premature success skipped it.
+func TestAnArrayWrappedObjectDoesNotBlockSalvage(t *testing.T) {
+	batch := testBatch(3)
+
+	// Verbatim from the run, trimmed to three pairs.
+	raw := `[
+  {
+    "verdicts": [
+      {"pair": 1, "relation": "unrelated", "confidence": 0.9, "why": "different subjects"},
+      {"pair": 2, "relation": "contradicts", "confidence": 0.8, "why": "cannot both hold"},
+      {"pair": 3, "relation": "duplicate_of", "confidence": 0.7, "why": "same assertion"}
+    ]
+  }
+]`
+	judged, unjudged, err := parseVerdicts(raw, batch)
+	if err != nil {
+		t.Fatalf("array-wrapped response rejected: %v", err)
+	}
+	if len(judged) != 3 {
+		t.Errorf("%d verdicts recovered, want 3", len(judged))
+	}
+	if len(unjudged) != 0 {
+		t.Errorf("%d pairs left unjudged", len(unjudged))
+	}
+
+	// Every wrapping shape models actually produce.
+	for name, body := range map[string]string{
+		"array-wrapped object":  `[{"verdicts":[{"pair":1,"relation":"supports"}]}]`,
+		"doubly nested":         `{"verdicts":[{"verdicts":[{"pair":1,"relation":"supports"}]}]}`,
+		"array-wrapped, fenced": "```json\n[{\"verdicts\":[{\"pair\":1,\"relation\":\"supports\"}]}]\n```",
+		"plain object":          `{"verdicts":[{"pair":1,"relation":"supports"}]}`,
+		"bare array":            `[{"pair":1,"relation":"supports"}]`,
+	} {
+		got, _, err := parseVerdicts(body, testBatch(1))
+		if err != nil || len(got) != 1 {
+			t.Errorf("%s: %d verdicts, err=%v", name, len(got), err)
+		}
+	}
+}
+
+// TestAShapeThatMerelyUnmarshalsIsNotAVerdict. The other half: accepting anything that
+// parses is how the bug above happened, so a slice of empty verdicts must still fail.
+func TestAShapeThatMerelyUnmarshalsIsNotAVerdict(t *testing.T) {
+	for name, body := range map[string]string{
+		"objects with no pair":      `[{"foo":1},{"bar":2}]`,
+		"verdicts with no relation": `{"verdicts":[{"pair":1},{"pair":2}]}`,
+		"empty objects":             `[{},{},{}]`,
+	} {
+		got, unjudged, err := parseVerdicts(body, testBatch(2))
+		if len(got) != 0 {
+			t.Errorf("%s: %d verdicts from a shape that names nothing", name, len(got))
+		}
+		if len(unjudged) != 2 {
+			t.Errorf("%s: %d unjudged, want 2", name, len(unjudged))
+		}
+		if err == nil {
+			t.Errorf("%s: reported no problem", name)
+		}
+	}
+}

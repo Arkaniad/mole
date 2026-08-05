@@ -99,6 +99,9 @@ type GroundReport struct {
 
 	// Skipped is how many candidates the caps left unchecked.
 	Skipped int
+	// NotFetchable is how many claims cite a page the search provider supplied, which
+	// grounding cannot re-read without manufacturing a mismatch.
+	NotFetchable int
 	// Degraded says what the pass could not finish (§9.5).
 	Degraded string
 }
@@ -152,15 +155,19 @@ func (v *Verifier) Ground(ctx context.Context, sessionID string, allowance int64
 	}
 
 	var (
-		claims []*core.Claim
-		edges  []*core.ClaimEdge
+		claims   []*core.Claim
+		edges    []*core.ClaimEdge
+		outcomes []*store.FetchOutcome
 	)
 	if err := v.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
 		var err error
 		if claims, err = q.ListClaims(ctx, sessionID, 0); err != nil {
 			return err
 		}
-		edges, err = q.ListEdges(ctx, sessionID, 0)
+		if edges, err = q.ListEdges(ctx, sessionID, 0); err != nil {
+			return err
+		}
+		outcomes, err = q.ListFetchOutcomes(ctx, sessionID, 0)
 		return err
 	}); err != nil {
 		return rep, err
@@ -169,8 +176,23 @@ func (v *Verifier) Ground(ctx context.Context, sessionID string, allowance int64
 		return rep, nil
 	}
 
-	candidates := groundingCandidates(claims, edges, v.maxGroundChecks())
-	rep.Skipped = countGroundable(claims) - len(candidates)
+	// Sources mole never fetched cannot be re-read against (§10.4).
+	//
+	// Measured on a live run: two galileo.ai claims came back "the quote is no longer
+	// present in the source", which read as the page having changed. It had not. Tavily
+	// SUPPLIED that page's text, so the quote was verified against the provider's
+	// extraction and the re-read compared it against a fresh HTML extraction of the
+	// same URL — a different pipeline producing different text. The mismatch was
+	// manufactured by the check.
+	//
+	// eval's citation accuracy already skips these for exactly this reason. Grounding
+	// did not, and a manufactured mismatch is worse here than there: it is a claim
+	// telling a reader its own source has changed when nothing has.
+	skip := providerSupplied(outcomes)
+
+	candidates := groundingCandidates(claims, edges, v.maxGroundChecks(), skip)
+	rep.Skipped = countGroundable(claims, skip) - len(candidates)
+	rep.NotFetchable = countProviderSupplied(claims, skip)
 
 	// Group by source, so several claims citing one page cost one fetch. The
 	// common case on a real run: a single arXiv page produced seven of thirteen
@@ -454,7 +476,7 @@ func (v *Verifier) maxGroundChecks() int {
 //
 // Ordered and truncated rather than filtered by a threshold: the cap is what bounds
 // cost, and a threshold would need a number nobody can justify.
-func groundingCandidates(claims []*core.Claim, edges []*core.ClaimEdge, max int) []*core.Claim {
+func groundingCandidates(claims []*core.Claim, edges []*core.ClaimEdge, max int, skip map[string]bool) []*core.Claim {
 	if max <= 0 {
 		return nil
 	}
@@ -488,7 +510,7 @@ func groundingCandidates(claims []*core.Claim, edges []*core.ClaimEdge, max int)
 	}
 	var out []ranked
 	for _, c := range claims {
-		if !groundable(c) {
+		if !groundable(c) || skip[c.Source] {
 			continue
 		}
 		score := 0
@@ -537,14 +559,41 @@ func groundable(c *core.Claim) bool {
 	return err == nil && u.Host != ""
 }
 
-func countGroundable(claims []*core.Claim) int {
+func countGroundable(claims []*core.Claim, skip map[string]bool) int {
 	n := 0
 	for _, c := range claims {
-		if groundable(c) && c.Grounded == nil && c.GroundingNote == "" {
+		if groundable(c) && !skip[c.Source] && c.Grounded == nil && c.GroundingNote == "" {
 			n++
 		}
 	}
 	return n
+}
+
+// countProviderSupplied is how many otherwise-checkable claims cite a page mole never
+// fetched. Reported rather than silently excluded: a session where the search provider
+// supplied everything is a session grounding cannot check at all, and a reader seeing
+// "0 checked" deserves to know it was not for lack of trying.
+func countProviderSupplied(claims []*core.Claim, skip map[string]bool) int {
+	n := 0
+	for _, c := range claims {
+		if groundable(c) && skip[c.Source] && c.Grounded == nil && c.GroundingNote == "" {
+			n++
+		}
+	}
+	return n
+}
+
+// providerSupplied is the set of URLs whose text came from the search provider rather
+// than a fetch (§10.4). Re-reading one compares two different extractions of the same
+// page and manufactures a mismatch.
+func providerSupplied(outcomes []*store.FetchOutcome) map[string]bool {
+	out := map[string]bool{}
+	for _, o := range outcomes {
+		if o != nil && fetch.Outcome(o.Outcome) == fetch.OutcomeProviderContent {
+			out[o.URL] = true
+		}
+	}
+	return out
 }
 
 // contextAround returns the quote plus surrounding text.

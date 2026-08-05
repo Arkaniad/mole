@@ -34,7 +34,7 @@ Output JSON only. No prose before or after.`
 const groundPromptTemplate = `Decide whether the quoted span supports the claim, read in context.
 
 Return JSON only:
-{"supported": true, "why": "one short clause"}
+{"supported": true, "why": "..."}
 
 Rules:
 - "supported" is true only if the passage ASSERTS what the claim says. A passage
