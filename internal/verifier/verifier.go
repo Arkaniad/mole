@@ -19,10 +19,9 @@ import (
 // against the session's whole claim set, settle what can be settled without a
 // model, adjudicate the rest in batches, and write the edges.
 //
-// Deriving confidence from the resulting graph (§11.3) is a separate stage and is
-// not here yet; a pass marks claims verified so the work queue drains, and the
-// confidence it writes stays 0 until that stage lands. That is the honest value —
-// there is nothing to derive from until the graph exists.
+// Then confidence is derived from the resulting graph (§11.3) — over the WHOLE
+// graph, not just this pass's edges, because a new claim corroborating an existing
+// one changes the existing claim's standing too.
 type Verifier struct {
 	Store  store.Store
 	Ledger *budget.Ledger
@@ -83,6 +82,18 @@ type Result struct {
 	Calls         int
 	Spent         int64
 
+	// ClaimsScored is how many claims had confidence recomputed. Larger than
+	// ClaimsVerified whenever a new claim changed an older claim's standing.
+	ClaimsScored int
+	// Scores is the per-cluster derivation, for a trace. §11.3 requires the number
+	// be explainable, and a bare 0.62 is exactly the figure people either trust
+	// blindly or dismiss.
+	Scores []Score
+
+	// priorEdges is the graph as it stood before this pass, kept so confidence is
+	// derived over the whole of it rather than only what this pass added.
+	priorEdges []*core.ClaimEdge
+
 	// Degraded says what the pass could not finish (§9.5). Empty when complete.
 	Degraded string
 }
@@ -140,6 +151,7 @@ func (v *Verifier) Run(ctx context.Context, sessionID string) (*Result, error) {
 	// Pairs that already carry an edge. Only reachable when a previous pass was
 	// interrupted: in the normal course a pair is generated once, when the later of
 	// its two claims is verified.
+	res.priorEdges = edges
 	already := make(map[string]bool, len(edges))
 	for _, e := range edges {
 		already[newPairKey(e.FromID, e.ToID)] = true
@@ -176,7 +188,7 @@ func (v *Verifier) Run(ctx context.Context, sessionID string) (*Result, error) {
 	}
 	res.PairsJudged = len(verdicts) - len(free)
 
-	if err := v.persist(ctx, sessionID, targets, verdicts, res); err != nil {
+	if err := v.persist(ctx, sessionID, pool, targets, verdicts, res); err != nil {
 		return res, err
 	}
 	return res, nil
@@ -275,19 +287,22 @@ func (v *Verifier) adjudicate(ctx context.Context, sessionID string, batch []Pai
 // Both in one transaction. A pass that wrote edges but failed to mark the claims
 // would regenerate the same pairs next time and pay for them again; one that
 // marked them without the edges would lose the graph permanently.
-func (v *Verifier) persist(ctx context.Context, sessionID string, targets []*core.Claim, verdicts []Judged, res *Result) error {
-	edges := Edges(sessionID, verdicts, v.StalenessGap)
+func (v *Verifier) persist(ctx context.Context, sessionID string, pool, targets []*core.Claim, verdicts []Judged, res *Result) error {
+	newEdges := Edges(sessionID, verdicts, v.StalenessGap)
 
-	scores := make([]store.ClaimScore, 0, len(targets))
-	for _, c := range targets {
-		// Confidence stays 0: §11.3 derives it from the graph, and that stage has
-		// not landed. verified_at is what drains the work queue.
-		scores = append(scores, store.ClaimScore{ClaimID: c.ID})
-	}
+	// Confidence is derived over the WHOLE graph, not just this pass's edges. A new
+	// claim corroborating an existing one raises the existing claim's confidence
+	// too, and scoring only the targets would leave that claim carrying the number
+	// it earned when it stood alone.
+	priorEdges := res.priorEdges
+	all := append(append([]*core.ClaimEdge(nil), priorEdges...), pointers(newEdges)...)
+
+	scores, breakdown := DeriveConfidence(pool, all)
+	res.Scores = breakdown
 
 	if err := v.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
-		if len(edges) > 0 {
-			if err := tx.InsertEdges(ctx, edges); err != nil {
+		if len(newEdges) > 0 {
+			if err := tx.InsertEdges(ctx, newEdges); err != nil {
 				return err
 			}
 		}
@@ -296,9 +311,18 @@ func (v *Verifier) persist(ctx context.Context, sessionID string, targets []*cor
 		return err
 	}
 
-	res.EdgesWritten = len(edges)
+	res.EdgesWritten = len(newEdges)
 	res.ClaimsVerified = len(targets)
+	res.ClaimsScored = len(scores)
 	return nil
+}
+
+func pointers(edges []core.ClaimEdge) []*core.ClaimEdge {
+	out := make([]*core.ClaimEdge, 0, len(edges))
+	for i := range edges {
+		out = append(out, &edges[i])
+	}
+	return out
 }
 
 func (v *Verifier) session(ctx context.Context, sessionID string) (*core.Session, error) {

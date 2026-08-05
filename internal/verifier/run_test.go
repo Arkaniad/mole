@@ -473,3 +473,227 @@ func TestVerifierSpendIsAttributedToTheVerifier(t *testing.T) {
 		}
 	}
 }
+
+// judgeAllDuplicates answers every pair in a batch as duplicate_of, so one cluster
+// forms and corroboration is what decides the score.
+func judgeAllDuplicates() func(int, string) (string, error) {
+	return judgeEveryPair(verifier.RelDuplicate)
+}
+
+func (r *rig) claims(t *testing.T) map[string]*core.Claim {
+	t.Helper()
+	var list []*core.Claim
+	if err := r.db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		var err error
+		list, err = q.ListClaims(ctx, r.sess.ID, 0)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]*core.Claim{}
+	for _, c := range list {
+		out[c.Text] = c
+	}
+	return out
+}
+
+// TestDerivedConfidenceReachesTheDatabase is the wiring half of §11.3.
+//
+// The formula is worth nothing if the number never leaves memory. Slice 1 wrote
+// confidence 0 on purpose, so a pass that forgot to derive would look identical to
+// one that ran — every claim at 0.00, which is exactly the state slice 0 found and
+// removed.
+func TestDerivedConfidenceReachesTheDatabase(t *testing.T) {
+	// Three peer-reviewed publishers stating the same thing.
+	claims := []core.Claim{
+		{Text: "Byte-level modelling removes subword tokenization.", Source: "https://www.nature.com/a"},
+		{Text: "Subword tokenization is removed by byte-level modelling.", Source: "https://www.science.org/b"},
+		{Text: "Removing subword tokenization is what byte-level modelling does.", Source: "https://www.cell.com/c"},
+	}
+	r := newRig(t, 2_000_000, claims, judgeAllDuplicates())
+
+	res, err := r.v.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.ClaimsScored != 3 {
+		t.Errorf("ClaimsScored = %d, want 3", res.ClaimsScored)
+	}
+
+	stored := r.claims(t)
+	for text, c := range stored {
+		if c.Confidence <= 0 {
+			t.Errorf("claim %.40q stored with confidence %.4f — nothing was derived",
+				text, c.Confidence)
+		}
+		// Three independent peer-reviewed publishers should land well above what a
+		// lone source could reach.
+		if c.Confidence <= 0.5 {
+			t.Errorf("claim %.40q scored %.4f on three peer-reviewed publishers",
+				text, c.Confidence)
+		}
+	}
+
+	// Cluster members share one number: they are the same assertion.
+	var seen []float64
+	for _, c := range stored {
+		seen = append(seen, c.Confidence)
+	}
+	for _, v := range seen[1:] {
+		if v != seen[0] {
+			t.Errorf("cluster members stored different confidences: %v", seen)
+			break
+		}
+	}
+	if len(res.Scores) != 1 {
+		t.Errorf("%d score breakdowns, want 1 cluster", len(res.Scores))
+	}
+}
+
+// TestASecondPassRescoresOlderClaims. Confidence is a property of the graph, not of
+// the pass that created a claim. A claim that stood alone and then gets corroborated
+// by a later lead must be rescored — otherwise it keeps the number it earned when it
+// was the only thing saying so.
+func TestASecondPassRescoresOlderClaims(t *testing.T) {
+	ctx := context.Background()
+
+	// Pass one: a single claim, nothing to compare it to.
+	first := []core.Claim{
+		{Text: "Byte-level modelling removes subword tokenization.", Source: "https://www.nature.com/a"},
+	}
+	r := newRig(t, 4_000_000, first, judgeAllDuplicates())
+	if _, err := r.v.Run(ctx, r.sess.ID); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	alone := r.claims(t)["Byte-level modelling removes subword tokenization."]
+	if alone == nil {
+		t.Fatal("claim missing after the first pass")
+	}
+	if alone.VerifiedAt == nil {
+		t.Fatal("claim not marked verified by the first pass")
+	}
+
+	// A later lead finds two more publishers saying the same thing.
+	more := []core.Claim{
+		{SessionID: r.sess.ID, LeadID: "l_2", Quote: "a quote long enough to be real evidence x",
+			Text: "Subword tokenization is removed by byte-level modelling.", Source: "https://www.science.org/b"},
+		{SessionID: r.sess.ID, LeadID: "l_2", Quote: "a quote long enough to be real evidence y",
+			Text: "Removing subword tokenization is what byte-level modelling does.", Source: "https://www.cell.com/c"},
+	}
+	if err := r.db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.InsertClaims(ctx, more)
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	res, err := r.v.Run(ctx, r.sess.ID)
+	if err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	// Two new claims verified, but all three rescored.
+	if res.ClaimsVerified != 2 {
+		t.Errorf("ClaimsVerified = %d, want 2", res.ClaimsVerified)
+	}
+	if res.ClaimsScored != 3 {
+		t.Errorf("ClaimsScored = %d, want 3 — the older claim was not rescored", res.ClaimsScored)
+	}
+
+	after := r.claims(t)["Byte-level modelling removes subword tokenization."]
+	if after.Confidence <= alone.Confidence {
+		t.Errorf("the older claim still scores %.4f after being corroborated by two "+
+			"more publishers (was %.4f alone)", after.Confidence, alone.Confidence)
+	}
+}
+
+// TestAContradictionLowersConfidenceEndToEnd. The path that matters most: a
+// disagreement discovered between claims from DIFFERENT leads has to reach the
+// stored number, which is the case §11.1 says rev 1 structurally could not see.
+func TestAContradictionLowersConfidenceEndToEnd(t *testing.T) {
+	agree := []core.Claim{
+		{Text: "Byte-level modelling removes subword tokenization.", Source: "https://a.example/x"},
+		{Text: "Subword tokenization is removed by byte-level modelling.", Source: "https://b.example/y"},
+	}
+	quiet := newRig(t, 2_000_000, agree, judgeAllDuplicates())
+	if _, err := quiet.v.Run(context.Background(), quiet.sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	base := quiet.claims(t)["Byte-level modelling removes subword tokenization."].Confidence
+
+	disputed := newRig(t, 2_000_000, agree, judgeEveryPair(verifier.RelContradicts))
+	if _, err := disputed.v.Run(context.Background(), disputed.sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	got := disputed.claims(t)["Byte-level modelling removes subword tokenization."].Confidence
+
+	if got >= base {
+		t.Errorf("a contradicted claim stored %.4f against %.4f for an agreeing pair",
+			got, base)
+	}
+}
+
+// TestAContradictionFromAnEarlierPassIsNotForgotten. Confidence is derived over the
+// WHOLE graph, not just the edges one pass produced.
+//
+// Isolated deliberately. Pass one records a contradiction; pass two adds a claim
+// whose text is identical to the contradicted one, so the duplicate edge is decided
+// mechanically and the model is asked only about pairs it calls unrelated. If the
+// derivation used just this pass's edges, the earlier disagreement would vanish and
+// the claim's confidence would RISE on being restated — a claim talking itself up.
+func TestAContradictionFromAnEarlierPassIsNotForgotten(t *testing.T) {
+	ctx := context.Background()
+
+	initial := []core.Claim{
+		{Text: "Byte-level modelling removes subword tokenization.", Source: "https://a.example/x"},
+		{Text: "Byte-level modelling requires subword tokenization.", Source: "https://b.example/y"},
+	}
+	// Pass one contradicts; every later pass says unrelated, so the only new edge
+	// in pass two is the mechanical duplicate.
+	r := newRig(t, 4_000_000, initial, func(call int, prompt string) (string, error) {
+		if call == 0 {
+			return judgeEveryPair(verifier.RelContradicts)(call, prompt)
+		}
+		return judgeEveryPair(verifier.RelUnrelated)(call, prompt)
+	})
+
+	if _, err := r.v.Run(ctx, r.sess.ID); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	const target = "Byte-level modelling removes subword tokenization."
+	contradicted := r.claims(t)[target].Confidence
+
+	// A later lead restates the contradicted claim verbatim, from another site.
+	restated := []core.Claim{{
+		SessionID: r.sess.ID, LeadID: "l_2",
+		Quote: "a quote long enough to be real evidence z",
+		Text:  target, Source: "https://c.example/z",
+	}}
+	if err := r.db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.InsertClaims(ctx, restated)
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if _, err := r.v.Run(ctx, r.sess.ID); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	after := r.claims(t)[target].Confidence
+
+	// The extra publisher is real corroboration, so some rise is legitimate — but
+	// not past what an uncontradicted two-publisher cluster would earn. That is the
+	// number the penalty is worth, and dropping the prior edge would hand it back.
+	clean := newRig(t, 2_000_000, []core.Claim{
+		{Text: target, Source: "https://a.example/x"},
+		{Text: target, Source: "https://c.example/z"},
+	}, judgeEveryPair(verifier.RelUnrelated))
+	if _, err := clean.v.Run(ctx, clean.sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	unopposed := clean.claims(t)[target].Confidence
+
+	if after >= unopposed {
+		t.Errorf("after being restated, the contradicted claim scores %.4f — at least "+
+			"as much as an unopposed two-publisher claim (%.4f). The earlier "+
+			"contradiction was dropped from the derivation. (was %.4f)",
+			after, unopposed, contradicted)
+	}
+}
