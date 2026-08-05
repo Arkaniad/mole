@@ -281,3 +281,47 @@ func TestOneShortClaimDoesNotDisableTheProseFloor(t *testing.T) {
 		t.Errorf("rejected for the wrong reason: %s", rep.Degraded)
 	}
 }
+
+// TestCommonCitationNotationsAreNotRejected. A rejected group discards the WHOLE
+// synthesis and falls back to the unsynthesized listing, so needless strictness costs a
+// report. "[1-3]" is a very common model style and "[sic]" is ordinary prose; neither
+// reads as a forged citation, which is what the check is for.
+func TestCommonCitationNotationsAreNotRejected(t *testing.T) {
+	var claims []core.Claim
+	for i := 0; i < 4; i++ {
+		claims = append(claims, claim(
+			fmt.Sprintf("Distinct finding number %d about byte-level scaling behaviour.", i),
+			fmt.Sprintf("https://s%d.example/p", i),
+			fmt.Sprintf("a quote long enough to be real evidence %d", i)))
+	}
+	st, sid := newStore(t, claims)
+
+	const tail = " The remaining sources are consistent with that reading throughout."
+	for name, body := range map[string]string{
+		"a numeric range":    "Every source agrees on the direction of the effect [1-3]." + tail,
+		"a comma list":       "Every source agrees on the direction of the effect [1, 3]." + tail,
+		"an editorial aside": "The paper writes \"teh\" [sic] and reports the effect [1]." + tail,
+		"an ellipsis":        "The passage reads in part [...] and reports the effect [2]." + tail,
+	} {
+		f := &fakeLLM{reply: func(string) string { return body }}
+		rep, err := (&output.Generator{LLM: f}).Generate(context.Background(), st, sid)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if rep.Degraded != "" {
+			t.Errorf("%s: rejected a legitimate answer (%s):\n%s", name, rep.Degraded, body)
+		}
+	}
+
+	// A range still has to be in range.
+	f := &fakeLLM{reply: func(string) string {
+		return "Every source agrees on the direction of the effect [1-9]." + tail
+	}}
+	rep, err := (&output.Generator{LLM: f}).Generate(context.Background(), st, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Degraded == "" {
+		t.Error("[1-9] was accepted with only 4 sources")
+	}
+}

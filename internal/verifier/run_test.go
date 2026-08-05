@@ -935,3 +935,61 @@ func TestTheConfiguredStalenessGapReachesFollowUps(t *testing.T) {
 		t.Errorf("Contradictions = %d for a pair resolved as staleness", res.Contradictions)
 	}
 }
+
+// TestTheShareCapCountsTheSessionNotTheProcess.
+//
+// `spent` was an in-memory field, so a second Verifier on the same session — a daemon
+// restart, or any caller constructing one per pass — restarted the cumulative cap at
+// zero. The field's own comment claimed it bound across passes, which was true only for
+// one instance's lifetime.
+func TestTheShareCapCountsTheSessionNotTheProcess(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t, 400_000, distinctClaims(24), judgeEveryPair(verifier.RelUnrelated))
+	r.v.BatchSize = 2
+	r.v.MaxShareOfBudget = 0.05 // 20_000
+
+	first, err := r.v.Run(ctx, r.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Spent == 0 {
+		t.Fatal("the first pass spent nothing, so the cap was never approached")
+	}
+
+	// A FRESH Verifier over the same session and store, as a restart would build, with
+	// genuinely new work: more claims gathered before it starts.
+	more := make([]core.Claim, 0, 24)
+	for i := 0; i < 24; i++ {
+		more = append(more, core.Claim{
+			SessionID: r.sess.ID, LeadID: "l_2",
+			Quote:  fmt.Sprintf("a quote long enough to be real evidence r%d", i),
+			Text:   fmt.Sprintf("Second-round finding %d about tokenization and throughput.", i),
+			Source: fmt.Sprintf("https://r%02d.example/p", i),
+		})
+	}
+	if err := r.db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.InsertClaims(ctx, more)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh := &verifier.Verifier{
+		Store: r.db, Ledger: r.led, LLM: r.llm,
+		BatchSize: 2, MaxShareOfBudget: 0.05,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	second, err := fresh.Run(ctx, r.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ClaimsVerified == 0 {
+		t.Fatal("the second pass had no work, so the cap was never consulted twice")
+	}
+
+	ceiling := int64(float64(r.sess.Budget) * 0.05)
+	total := first.Spent + second.Spent
+	if total > ceiling {
+		t.Errorf("two Verifier instances spent %d against a session ceiling of %d — the "+
+			"cap counts one process rather than the session", total, ceiling)
+	}
+}

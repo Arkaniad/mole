@@ -111,13 +111,7 @@ func adjudicateUserPrompt(pairs []Pair) (string, string) {
 // does not trust it.
 const MaxClaimChars = 600
 
-func clampClaim(s string) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if len(s) <= MaxClaimChars {
-		return s
-	}
-	return s[:MaxClaimChars] + "…"
-}
+func clampClaim(s string) string { return clampTo(s, MaxClaimChars) }
 
 // ---------------------------------------------------------------------------
 // Response parsing

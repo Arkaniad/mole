@@ -208,11 +208,13 @@ func (v *Verifier) Ground(ctx context.Context, sessionID string, allowance int64
 	// as "undecided" would write a grounding note onto a claim nobody examined, and
 	// a note is what distinguishes a checked claim from an unchecked one — so an
 	// exhausted allowance would make every remaining claim look inspected.
+	unit := v.unit(ctx, sessionID)
+	perCall := groundCallEstimate(unit)
 	remaining := func() int64 { return allowance - spent }
 
 exhausted:
 	for _, src := range order {
-		if remaining() < groundCallEstimate() {
+		if remaining() < perCall {
 			rep.Degraded = fmt.Sprintf("grounding allowance exhausted after %d check(s)", rep.Checked)
 			break exhausted
 		}
@@ -236,7 +238,7 @@ exhausted:
 		for _, c := range bySource[src] {
 			// Re-checked per claim, not per source: several claims share one fetch,
 			// and each still costs its own judge call.
-			if remaining() < groundCallEstimate() {
+			if remaining() < perCall {
 				rep.Degraded = fmt.Sprintf("grounding allowance exhausted after %d check(s)", rep.Checked)
 				break exhausted
 			}
@@ -396,7 +398,7 @@ func (v *Verifier) checkOne(ctx context.Context, sessionID string, c *core.Claim
 
 	window := contextAround(text, match.Offset, len(match.Text))
 
-	reservation, rerr := v.Ledger.Reserve(ctx, sessionID, groundCallEstimate())
+	reservation, rerr := v.Ledger.Reserve(ctx, sessionID, groundCallEstimate(v.unit(ctx, sessionID)))
 	if rerr != nil {
 		out.Outcome = GroundUndecided
 		out.Note = "could not reserve budget to judge the quote: " + oneLine(rerr.Error())
@@ -642,7 +644,11 @@ func countProviderSupplied(claims []*core.Claim, skip map[string]bool) int {
 // believed that", or a scope the claim drops — and mechanism 1 cannot see any of
 // that. Bounded so one enormous page cannot set the size of the call.
 func contextAround(text string, offset, length int) string {
-	const window = 900
+	// Derived, not chosen. window*2 + MaxClaimChars is exactly MaxPassageChars, so the
+	// clamp downstream has no slack — its comment used to call itself a backstop that
+	// "does not trust" this function, and it never once trimmed anything. Stating the
+	// relation means raising one raises the other instead of silently truncating.
+	const window = (MaxPassageChars - MaxClaimChars) / 2
 
 	start := offset - window
 	if start < 0 {

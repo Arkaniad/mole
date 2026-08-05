@@ -59,6 +59,9 @@ func validateBody(body string, findings []Finding, citations []Citation) error {
 	groups := bracketGroups(trimmed)
 	valid := 0
 	for _, g := range groups {
+		if editorialMarks[strings.ToLower(strings.TrimSpace(g))] {
+			continue
+		}
 		ns, ok := citationNumbers(g)
 		if !ok {
 			// A bracket holding anything but citation numbers. This is the forged
@@ -189,9 +192,10 @@ func lookalikeBracket(s string) (rune, bool) {
 
 // citationNumbers parses a bracket group's contents as citation numbers.
 //
-// Accepts "3" and "3, 4" — models write both — but nothing else. A group is all
-// DIGITS or it is not a citation: strconv.Atoi also accepts "+1", "-0" and Unicode
-// digits, and the promise this function makes is stricter than "parses as an int".
+// Accepts "3", "3, 4" and "1-3" — models write all three, and a rejected group discards
+// the WHOLE synthesis, so being needlessly strict costs a report. Nothing else: strconv
+// .Atoi alone would take "+1", "-0" and Unicode digits, and the promise here is stricter
+// than "parses as an int".
 func citationNumbers(g string) ([]int, bool) {
 	g = strings.TrimSpace(g)
 	if g == "" || g == markdownLinkGroup || g == markdownRefGroup {
@@ -201,19 +205,54 @@ func citationNumbers(g string) ([]int, bool) {
 	if len(fields) == 0 {
 		return nil, false
 	}
-	out := make([]int, 0, len(fields))
+	var out []int
 	for _, f := range fields {
 		f = strings.TrimSpace(f)
-		if !allASCIIDigits(f) {
-			return nil, false
+		// A range. "1-3" is three citations, and every one of them still has to be in
+		// range for the group to pass.
+		if lo, hi, ok := strings.Cut(f, "-"); ok {
+			a, aok := parseCitation(lo)
+			bnum, bok := parseCitation(hi)
+			if !aok || !bok || a > bnum {
+				return nil, false
+			}
+			for n := a; n <= bnum; n++ {
+				out = append(out, n)
+			}
+			continue
 		}
-		n, err := strconv.Atoi(f)
-		if err != nil {
+		n, ok := parseCitation(f)
+		if !ok {
 			return nil, false
 		}
 		out = append(out, n)
 	}
-	return out, true
+	return out, len(out) > 0
+}
+
+func parseCitation(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if !allASCIIDigits(s) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// editorialMarks are bracketed asides that are ordinary prose, not citation attempts.
+//
+// The forged-citation check exists because "[subword tokenizers often need a massive
+// vocabulary…]" READS as a citation. "[sic]" does not, and discarding a whole synthesis
+// over one is a false rejection with a real cost. Short, closed, and lower-cased before
+// lookup — anything longer than these is a sentence in brackets, which is the thing being
+// caught.
+var editorialMarks = map[string]bool{
+	"sic": true, "e.g.": true, "i.e.": true, "eg": true, "ie": true,
+	"...": true, "…": true, "citation needed": true, "emphasis added": true,
+	"ibid": true, "cf.": true, "cf": true,
 }
 
 func allASCIIDigits(s string) bool {

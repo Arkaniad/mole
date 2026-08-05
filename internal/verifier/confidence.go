@@ -101,6 +101,15 @@ type Score struct {
 
 	// Explain is the derivation, one line, for a trace.
 	Explain string
+
+	// Cluster is the claims this score covers, representative resolvable via
+	// Cluster.Representative.
+	//
+	// Carried so a caller does not re-derive what scoreCluster already computed.
+	// output.Findings independently recomputed distinct publishers, superseded-as-target
+	// and cross-cluster contradictions from the same inputs; the two agreed only because
+	// both were written carefully, and nothing enforced it.
+	Cluster Cluster
 }
 
 // Tuning constants. Every one of them is a judgement rather than a measurement,
@@ -261,6 +270,7 @@ func DeriveConfidence(claims []*core.Claim, edges []*core.ClaimEdge) ([]store.Cl
 	out := make([]store.ClaimScore, 0, len(claims))
 	for _, cl := range clusters {
 		s := scoreCluster(cl, clusterOf, edges)
+		s.Cluster = cl
 		scores = append(scores, s)
 		for _, c := range cl.Claims {
 			out = append(out, store.ClaimScore{

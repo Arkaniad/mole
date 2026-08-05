@@ -26,6 +26,7 @@ import (
 	"github.com/lajosdeme/mole/internal/pricing"
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/store/sqlite"
+	"github.com/lajosdeme/mole/internal/verifier"
 	"github.com/spf13/cobra"
 )
 
@@ -1105,6 +1106,16 @@ func printClaimGraph(w io.Writer, claims []*core.Claim, edges []*core.ClaimEdge)
 		return
 	}
 
+	// How each confidence was arrived at. §11.3 requires the number be explainable in
+	// the trace, verifier.Score has computed that string on every pass since M4, and
+	// nothing printed it — so a reader saw a bare 0.62 and had to trust or dismiss it.
+	if scored := scoredClusters(claims, edges); len(scored) > 0 {
+		fmt.Println("\nconfidence:")
+		for _, s := range scored {
+			fmt.Printf("  %.2f  %.58q\n        %s\n", s.conf, s.text, s.explain)
+		}
+	}
+
 	// Contradictions are the one kind worth naming individually: they are what a
 	// reader most needs to see, and §11.3 penalizes confidence for them.
 	text := map[string]string{}
@@ -1128,4 +1139,49 @@ func printClaimGraph(w io.Writer, claims []*core.Claim, edges []*core.ClaimEdge)
 	if n := byKind[core.EdgeContradicts]; n > shown {
 		fmt.Fprintf(w, "  (%d more)\n", n-shown)
 	}
+}
+
+// scoredCluster is one line of the confidence breakdown.
+type scoredCluster struct {
+	conf    float64
+	text    string
+	explain string
+}
+
+// scoredClusters re-derives the graph's confidence breakdown for display.
+//
+// Recomputed rather than stored: the derivation is a pure function of the claims and
+// edges already in the database, so a trace of an old session explains itself with
+// today's formula rather than showing a number whose reasoning was thrown away. It also
+// means `mole trace` needs no schema of its own for this.
+func scoredClusters(claims []*core.Claim, edges []*core.ClaimEdge) []scoredCluster {
+	verified := false
+	for _, c := range claims {
+		if c.VerifiedAt != nil {
+			verified = true
+			break
+		}
+	}
+	if !verified {
+		// Nothing has been scored, so every explanation would read "0 publishers → 0.00"
+		// and say only that the Verifier has not run — which the line above already says.
+		return nil
+	}
+
+	clusters := verifier.Clusters(claims, edges)
+	_, scores := verifier.DeriveConfidence(claims, edges)
+	if len(scores) != len(clusters) {
+		return nil
+	}
+
+	out := make([]scoredCluster, 0, len(scores))
+	for i, s := range scores {
+		rep := clusters[i].Representative()
+		if rep == nil {
+			continue
+		}
+		out = append(out, scoredCluster{conf: s.Confidence, text: rep.Text, explain: s.Explain})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].conf > out[j].conf })
+	return out
 }

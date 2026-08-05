@@ -82,139 +82,110 @@ func Findings(claims []*core.Claim, edges []*core.ClaimEdge, max int) []Finding 
 		return nil
 	}
 
-	// Input position per claim. This is the final tie-break, and it has to be:
-	// claim IDs carry a millisecond timestamp and a random suffix, so a batch
-	// inserted in one transaction shares the prefix and orders RANDOMLY. Sorting on
-	// ID made the report's citation numbering differ between runs of one session —
-	// unstable output, and a cassette recorded on one ordering misses on another.
-	// ListClaims returns created_at order, which is both stable and meaningful.
+	// Built FROM the Verifier's scores rather than re-derived.
+	//
+	// This function used to recompute distinct publishers, superseded-as-target and
+	// cross-cluster contradictions from the same (claims, edges) inputs that
+	// verifier.scoreCluster had already reduced — two implementations of one derivation,
+	// agreeing only because both were written carefully. Meanwhile Score held all of it
+	// and was discarded.
+	_, scores := verifier.DeriveConfidence(claims, edges)
+
+	// Input position per claim: the final tie-break. Claim IDs carry a millisecond
+	// timestamp and a random suffix, so a batch inserted in one transaction orders
+	// RANDOMLY, and sorting on ID made citation numbering differ between runs of one
+	// session. ListClaims returns created_at order, which is stable and meaningful.
 	inputPos := make(map[string]int, len(claims))
-	for i, c := range claims {
-		if c != nil {
-			inputPos[c.ID] = i
-		}
-	}
-
-	// Claims per source across the whole session. The pre-Verifier tie-break: with
-	// no graph every derived confidence is 0, and a source that also supports other
-	// claims is more likely load-bearing than a page mentioned once. Mechanical, and
-	// it claims nothing about quality — which is the point, since the alternative
-	// that was removed was assertion strength.
 	perSource := map[string]int{}
-	for _, c := range claims {
-		if c != nil {
-			perSource[c.Source]++
+	for i, c := range claims {
+		if c == nil {
+			continue
 		}
+		inputPos[c.ID] = i
+		perSource[c.Source]++
 	}
 
-	clusters := verifier.Clusters(claims, edges)
-	out := make([]Finding, 0, len(clusters))
-	// clusterOf resolves an edge endpoint to the finding it landed in.
-	clusterOf := map[string]int{}
-
-	for _, cl := range clusters {
-		rep := cl.Representative()
+	out := make([]Finding, 0, len(scores))
+	for _, sc := range scores {
+		rep := sc.Cluster.Representative()
 		if rep == nil {
 			continue
 		}
-		f := Finding{Claim: rep, Confidence: rep.Confidence, cluster: cl.Claims, order: len(claims)}
-		for _, c := range cl.Claims {
-			if p, ok := inputPos[c.ID]; ok && p < f.order {
-				f.order = p
-			}
+		f := Finding{
+			Claim: rep,
+			// The STORED confidence, not the one just recomputed. They agree in
+			// production — same function, same inputs — but the stored number is what
+			// ScoreClaims persisted, what `mole trace` prints, and what a reader can
+			// look up. Ordering the report by a second, freshly computed figure would
+			// mean two numbers for one claim, which is worse than the duplicated
+			// derivation this change removes.
+			//
+			// Score is used for the STRUCTURE it already worked out: cluster membership,
+			// distinct publishers, superseded-as-target.
+			Confidence: rep.Confidence,
+			Publishers: sc.Publishers,
+			Superseded: sc.Superseded,
+			cluster:    sc.Cluster.Claims,
+			order:      len(claims),
 		}
 
 		seen := map[string]bool{}
-		pubs := map[string]bool{}
-		// Representative's source first, so the citation a reader checks first is
-		// the strongest-classed one.
-		for _, c := range append([]*core.Claim{rep}, cl.Claims...) {
+		// Representative's source first, so the citation a reader checks first is the
+		// strongest-classed one.
+		for _, c := range append([]*core.Claim{rep}, sc.Cluster.Claims...) {
 			if c.Source == "" || seen[c.Source] {
 				continue
 			}
 			seen[c.Source] = true
 			f.Sources = append(f.Sources, c.Source)
-			if p := verifier.PublisherOf(c.Source); p != "" {
-				pubs[p] = true
+			f.breadth += perSource[c.Source]
+		}
+		for _, c := range sc.Cluster.Claims {
+			if p, ok := inputPos[c.ID]; ok && p < f.order {
+				f.order = p
 			}
-		}
-		f.Publishers = len(pubs)
-		for _, src := range f.Sources {
-			f.breadth += perSource[src]
-		}
-
-		for _, c := range cl.Claims {
-			clusterOf[c.ID] = len(out)
 		}
 		out = append(out, f)
 	}
 
-	// Disagreements, recorded by the opposing finding's REPRESENTATIVE CLAIM ID
-	// rather than by its index.
-	//
-	// Indices do not survive the sort below. An earlier version assigned them here,
-	// sorted `out` in place, and then tried to translate them using the sorted slice
-	// as the pre-sort reference — which is incoherent, and passed only while the sort
-	// happened not to reorder anything. When it did reorder, a disagreement pointed
-	// at whatever finding now occupied the old position: worse than not disclosing
-	// it, because it attributes a dispute to an unrelated claim.
-	disputes := make([][]string, len(out))
+	// Disagreements, recorded by the opposing finding's REPRESENTATIVE CLAIM ID rather
+	// than by index. Indices do not survive the sort below, and an earlier version
+	// translated them using the sorted slice as the pre-sort reference — incoherent, and
+	// it passed whenever the sort happened not to reorder anything.
+	repOf := make(map[string]string, len(claims))
+	for _, f := range out {
+		for _, c := range f.cluster {
+			repOf[c.ID] = f.Claim.ID
+		}
+	}
+	disputes := map[string][]string{}
 	for _, e := range edges {
-		if e == nil {
+		if e == nil || e.Kind != core.EdgeContradicts {
 			continue
 		}
-		from, okFrom := clusterOf[e.FromID]
-		to, okTo := clusterOf[e.ToID]
+		from, okFrom := repOf[e.FromID]
+		to, okTo := repOf[e.ToID]
 		if !okFrom || !okTo || from == to {
 			continue
 		}
-		switch e.Kind {
-		case core.EdgeContradicts:
-			disputes[from] = appendUniqueStr(disputes[from], out[to].Claim.ID)
-			disputes[to] = appendUniqueStr(disputes[to], out[from].Claim.ID)
-		case core.EdgeSupersedes:
-			// Directional: only the target is stale.
-			out[to].Superseded = true
-		}
+		disputes[from] = appendUnique(disputes[from], to)
+		disputes[to] = appendUnique(disputes[to], from)
 	}
 	for i := range out {
-		out[i].disputes = disputes[i]
+		out[i].disputes = disputes[out[i].Claim.ID]
 	}
 
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Confidence != out[j].Confidence {
-			return out[i].Confidence > out[j].Confidence
-		}
-		if out[i].Publishers != out[j].Publishers {
-			return out[i].Publishers > out[j].Publishers
-		}
-		if out[i].breadth != out[j].breadth {
-			return out[i].breadth > out[j].breadth
-		}
-		return out[i].order < out[j].order
-	})
+	sortFindings(out)
 
 	// Cap BEFORE resolving IDs to indices, and keep both sides of a disagreement
-	// together.
-	//
-	// The naive order — truncate, then drop references past the cap — selects for
-	// erasing exactly what §11.2 promises a reader will always see. A contradiction
-	// LOWERS confidence, the list is sorted by confidence, so the weaker side of every
-	// disputed pair sorts toward the bottom and is among the first cut. When it goes,
-	// the survivor's Contradicts empties, corroborationNote stops emitting "disputed",
-	// and the material offered to the synthesis model shows the claim as unqualified.
-	// Measured: 4 findings, one contradiction, cap 3 — survivor Contradicts=[] and
-	// Report.Disagreements=0.
-	//
-	// So a finding is admitted only if its counterparties fit too. Skipping a pair that
-	// does not fit costs a finding; admitting half of one costs the disclosure.
+	// together. The naive order — truncate, then drop references past the cap — selects
+	// for erasing exactly what §11.2 promises a reader will always see, because a
+	// contradiction LOWERS confidence and the list is sorted by it.
 	if max > 0 && len(out) > max {
 		out = capKeepingPairs(out, max)
 	}
 
-	// Now that the membership and order are both final, resolve the recorded IDs to
-	// indices. Doing this after the cap is what makes the guarantee above hold: an index
-	// resolved earlier would have to be patched twice.
+	// Now that membership and order are both final, resolve IDs to indices.
 	position := make(map[string]int, len(out))
 	for i, f := range out {
 		position[f.Claim.ID] = i
@@ -230,6 +201,29 @@ func Findings(claims []*core.Claim, edges []*core.ClaimEdge, max int) []Finding 
 		out[i].Contradicts = idx
 	}
 	return out
+}
+
+// sortFindings ranks by derived confidence, then publisher breadth, then source breadth,
+// then input position.
+//
+// Ordered by DERIVED confidence (§11.3), never by the extractor's self-report — a
+// function that sorted by the latter under the same field name let an uncalibrated number
+// decide which claims led the answer. Before the Verifier scores a session every derived
+// confidence is 0, and assertion strength is the wrong tie-break, so ties fall back to
+// breadth: mechanical, and it claims nothing.
+func sortFindings(out []Finding) {
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Confidence != out[j].Confidence {
+			return out[i].Confidence > out[j].Confidence
+		}
+		if out[i].Publishers != out[j].Publishers {
+			return out[i].Publishers > out[j].Publishers
+		}
+		if out[i].breadth != out[j].breadth {
+			return out[i].breadth > out[j].breadth
+		}
+		return out[i].order < out[j].order
+	})
 }
 
 // capKeepingPairs truncates to max without splitting a disputed pair.
@@ -277,16 +271,9 @@ func capKeepingPairs(out []Finding, max int) []Finding {
 	return res
 }
 
-func appendUnique(xs []int, v int) []int {
-	for _, x := range xs {
-		if x == v {
-			return xs
-		}
-	}
-	return append(xs, v)
-}
-
-func appendUniqueStr(xs []string, v string) []string {
+// appendUnique appends v unless it is already present. Generic: the int and string
+// versions were separate functions for no reason on Go 1.25.
+func appendUnique[T comparable](xs []T, v T) []T {
 	for _, x := range xs {
 		if x == v {
 			return xs

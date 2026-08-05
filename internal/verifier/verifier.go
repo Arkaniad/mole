@@ -69,8 +69,10 @@ type Verifier struct {
 
 	Log *slog.Logger
 
-	// spent accumulates this Verifier's charges, so the share cap binds across
-	// passes rather than per pass.
+	// spent accumulates this Verifier's charges within one process. Reconciled against
+	// the ledger before each batch — see remainingAllowance — because an in-memory
+	// counter restarts at zero for a second Verifier on the same session, and the cap
+	// is supposed to bind on the SESSION.
 	spent int64
 }
 
@@ -309,7 +311,7 @@ func (v *Verifier) adjudicate(ctx context.Context, sessionID string, batch []Pai
 		return nil, batch, err
 	}
 
-	allowance := v.remainingAllowance(sess)
+	allowance := v.remainingAllowance(ctx, sess)
 	est := estimateBatch(sess.BudgetUnit, len(batch))
 	if est > allowance {
 		return nil, batch, fmt.Errorf("verification allowance exhausted (%d of %.0f%% of budget spent)",
@@ -481,12 +483,40 @@ func (v *Verifier) share() float64 {
 }
 
 // remainingAllowance is what is left of the verification share.
-func (v *Verifier) remainingAllowance(sess *core.Session) int64 {
+//
+// Read from the LEDGER, not from the in-memory counter. §14.3 already sums spend by role,
+// and the counter was instance-scoped: a daemon restart, or any caller constructing one
+// Verifier per pass, restarted the cumulative cap at zero — while the field's own comment
+// claimed it bound across passes. The in-memory figure is kept as a floor, so a batch
+// settled but not yet visible to a read cannot be spent twice.
+func (v *Verifier) remainingAllowance(ctx context.Context, sess *core.Session) int64 {
 	ceiling := int64(float64(sess.Budget) * v.share())
-	if left := ceiling - v.spent; left > 0 {
+
+	spent := v.spent
+	if fromLedger, err := v.verifierSpend(ctx, sess); err == nil && fromLedger > spent {
+		spent = fromLedger
+	} else if err != nil {
+		v.logger().WarnContext(ctx, "verifier: could not read prior verification spend; "+
+			"the share cap counts this process only", "err", err)
+	}
+
+	if left := ceiling - spent; left > 0 {
 		return left
 	}
 	return 0
+}
+
+// verifierSpend is everything charged to RoleVerifier on this session so far.
+func (v *Verifier) verifierSpend(ctx context.Context, sess *core.Session) (int64, error) {
+	var byRole map[core.Role]core.Cost
+	if err := v.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		byRole, err = q.SumCostsByRole(ctx, sess.ID)
+		return err
+	}); err != nil {
+		return 0, err
+	}
+	return byRole[core.RoleVerifier].BudgetAmount(sess.BudgetUnit), nil
 }
 
 // isFatal reports whether an error will fail every remaining batch the same way
