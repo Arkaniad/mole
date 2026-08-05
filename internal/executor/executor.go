@@ -414,7 +414,7 @@ func (e *Executor) completeFromCache(
 	if entry.Claims > 0 {
 		digest.RecordClaims(questionID, entry.Claims)
 	} else {
-		digest.RecordDeadEnd("no_evidence", lease.Lead.Query)
+		digest.RecordDeadEnd("no_evidence", deadEndExample(lease.Lead))
 	}
 
 	e.complete(ctx, lease, core.LeadSkippedCache)
@@ -446,7 +446,7 @@ func (e *Executor) runLead(
 	actor, ok := e.Actors[lead.ActorType]
 	if !ok {
 		err := fmt.Errorf("executor: no actor registered for %q", lead.ActorType)
-		digest.RecordDeadEnd("no_actor", lead.Query)
+		digest.RecordDeadEnd("no_actor", deadEndExample(&lead))
 		e.complete(ctx, lease, core.LeadFailed)
 		return leadOutcome{err: err, class: Fatal}
 	}
@@ -475,7 +475,7 @@ func (e *Executor) runLead(
 			if len(out.claims) == 0 {
 				// A lead that ran cleanly and found nothing is still a dead end
 				// for the planner: the question was asked and not answered.
-				digest.RecordDeadEnd("no_evidence", lead.Query)
+				digest.RecordDeadEnd("no_evidence", deadEndExample(&lead))
 			}
 			e.Cache.Put(&cache.Entry{
 				Key:    cache.QueryKey(lead.Query),
@@ -493,7 +493,7 @@ func (e *Executor) runLead(
 
 	// Out of attempts, or not worth retrying. §9.5: a transient error that
 	// exhausts its retries becomes degraded — the session continues.
-	digest.RecordDeadEnd(DeadEndCause(last.err), lead.Query)
+	digest.RecordDeadEnd(DeadEndCause(last.err), deadEndExample(&lead))
 	// Claims from a partial run are kept: the actor verified every quote it
 	// returned, and discarding them because a later chunk failed throws away
 	// evidence that was paid for.
@@ -571,6 +571,28 @@ func (e *Executor) attempt(ctx context.Context, sess *core.Session, lead core.Le
 		out.err, out.class = runErr, Classify(runErr)
 	}
 	return out
+}
+
+// deadEndExample is the query to record against a dead end, or empty.
+//
+// §9.1's digest deliberately carries NO page-derived text: sub-question wording is the
+// planner's own output, dead-end causes are a fixed enum, everything else is a count.
+// The comment on the planner package calls that "stronger than fencing it — there is
+// nothing to fence", and it stopped being true when M4 added verification follow-ups.
+//
+// A follow-up lead's query is built by disambiguationQuery from up to 240 characters of
+// raw CLAIM text, and a follow-up searching for a contradiction is exactly the lead
+// most likely to dead-end — at which point the query became DeadEnd.Example and was
+// rendered into the next replan prompt.
+//
+// The example exists so the planner can tell a blocked domain from a badly phrased
+// search. It cannot rephrase a query it did not write, so for a verifier-authored lead
+// the example is useless as well as unsafe.
+func deadEndExample(lead *core.Lead) string {
+	if lead.RootClaimID != nil {
+		return ""
+	}
+	return lead.Query
 }
 
 // orElse is the first non-empty of two strings.

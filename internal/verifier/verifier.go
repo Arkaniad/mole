@@ -341,9 +341,20 @@ func (v *Verifier) adjudicate(ctx context.Context, sessionID string, batch []Pai
 			},
 		})
 	}
-	settled, serr := v.Ledger.Settle(ctx, reservation, calls)
+	// WithoutCancel, and a release if the settle still fails. Ctrl-C during a model
+	// call cancels ctx, Settle's transaction then fails to even begin, and the hold is
+	// stranded — neither spent nor available — which is the one invariant §9.2's loop is
+	// arranged around. executor.go:539 already does this; both verifier reservation
+	// sites did not, and TestNothingIsLeftHeld covered six model-failure shapes without
+	// covering a cancelled context.
+	settleCtx := context.WithoutCancel(ctx)
+	settled, serr := v.Ledger.Settle(settleCtx, reservation, calls)
 	if serr != nil {
-		v.logger().WarnContext(ctx, "verifier: settle failed", "err", serr)
+		v.logger().WarnContext(settleCtx, "verifier: settle failed; releasing the hold", "err", serr)
+		if rerr := v.Ledger.Release(settleCtx, reservation); rerr != nil {
+			v.logger().WarnContext(settleCtx, "verifier: release failed; budget is stranded",
+				"reservation", reservation.ID, "err", rerr)
+		}
 	} else {
 		charged := settled.Cost.BudgetAmount(sess.BudgetUnit)
 		v.spent += charged
@@ -392,6 +403,28 @@ func (v *Verifier) persist(ctx context.Context, sessionID string, pool, targets 
 
 	scores, breakdown := DeriveConfidence(pool, all)
 	res.Scores = breakdown
+
+	// Every target must be marked verified, whether or not the derivation covered it.
+	//
+	// It was covered only as a side effect: scores come from `pool`, and while a session
+	// has fewer claims than the store's default limit, pool is a superset of targets so
+	// nothing showed. Past that limit the two sets DISJOIN — pool is the oldest claims,
+	// all already verified; targets is the next unverified batch — and no target was
+	// ever marked. Measured at 505 claims: every pass reported 5 verified and marked
+	// zero, so the same pairs were retrieved and paid for again on every replan, and
+	// those claims kept confidence 0 permanently, which the report's sort puts last.
+	scored := make(map[string]bool, len(scores))
+	for _, sc := range scores {
+		scored[sc.ClaimID] = true
+	}
+	for _, c := range targets {
+		if !scored[c.ID] {
+			// Confidence 0 is correct here: the derivation did not see this claim's
+			// neighbourhood. What matters is that verified_at is set so the work queue
+			// drains and the pair is not judged twice.
+			scores = append(scores, store.ClaimScore{ClaimID: c.ID, Grounded: c.Grounded})
+		}
+	}
 
 	if err := v.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
 		if len(newEdges) > 0 {

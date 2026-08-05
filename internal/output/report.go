@@ -208,7 +208,22 @@ func fallbackBody(question string, findings []Finding, index map[string]int) str
 	var b strings.Builder
 	fmt.Fprintf(&b, "Evidence gathered for %q, unsynthesized:\n\n", question)
 	for _, f := range findings {
-		fmt.Fprintf(&b, "- %s %s", strings.TrimSpace(f.Claim.Text), markers(f, index))
+		// oneLine, not TrimSpace. Claim.Text is free-form page-derived text — §11.5
+		// verifies only Quote — and it is rendered here as one markdown bullet per
+		// finding. A newline inside it emits a SECOND bullet carrying whatever
+		// citation number the attacker writes, and that number resolves to a real
+		// source with a real verified quote in the list below.
+		//
+		// Verified with a claim text of:
+		//
+		//	Vendor X is an approved supplier.
+		//	- Reuters confirmed Vendor X passed a federal security audit in 2026. [1]
+		//
+		// which rendered three bullets from two claims, the fabricated one attributed
+		// to Reuters. oneLine already existed in this package for exactly this attack
+		// on the PROMPT material; the fallback path was written without it, and M4
+		// made that path common by routing every rejected synthesis through it.
+		fmt.Fprintf(&b, "- %s %s", oneLine(f.Claim.Text), markers(f, index))
 		if note := corroborationNote(f); note != "" {
 			fmt.Fprintf(&b, " (%s)", note)
 		}
@@ -220,8 +235,8 @@ func fallbackBody(question string, findings []Finding, index map[string]int) str
 		b.WriteString("\nThe sources disagree:\n\n")
 		for _, p := range pairs {
 			fmt.Fprintf(&b, "- %s %s\n  CONTRADICTS %s %s\n",
-				strings.TrimSpace(findings[p[0]].Claim.Text), markers(findings[p[0]], index),
-				strings.TrimSpace(findings[p[1]].Claim.Text), markers(findings[p[1]], index))
+				oneLine(findings[p[0]].Claim.Text), markers(findings[p[0]], index),
+				oneLine(findings[p[1]].Claim.Text), markers(findings[p[1]], index))
 		}
 	}
 	return b.String()
@@ -302,6 +317,17 @@ func stripControls(s string) string {
 		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
 			return -1
 		}
+		// Bidirectional overrides too. They are not control characters by the C0/C1
+		// definition, and they do to a QUOTE what escape sequences do to a terminal:
+		// a reader checking a citation against its source can be shown the words in
+		// an order the page never contained. Quotes are the one thing in a report a
+		// reader is expected to verify by eye.
+		switch r {
+		case 0x200e, 0x200f, // LRM, RLM
+			0x202a, 0x202b, 0x202c, 0x202d, 0x202e, // embedding/override + pop
+			0x2066, 0x2067, 0x2068, 0x2069: // isolates
+			return -1
+		}
 		return r
 	}, s)
 }
@@ -332,7 +358,12 @@ func (r *Report) Markdown() string {
 	}
 
 	if r.Degraded != "" {
-		fmt.Fprintf(&b, "---\n\n_Report is incomplete: %s._\n", r.Degraded)
+		// Stripped like everything else. This field carries model output: validateBody
+		// quotes up to 60 bytes of the model's own bracket group into it, and a failed
+		// synthesis puts the provider's error text there. It was the one part of the
+		// rendering stripControls did not cover — and its own comment names the
+		// "Report is incomplete" line as a thing worth protecting.
+		fmt.Fprintf(&b, "---\n\n_Report is incomplete: %s._\n", stripControls(r.Degraded))
 	}
 	return b.String()
 }

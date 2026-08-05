@@ -407,10 +407,19 @@ func (v *Verifier) checkOne(ctx context.Context, sessionID string, c *core.Claim
 			},
 		})
 	}
-	settled, serr := v.Ledger.Settle(ctx, reservation, calls)
+	// WithoutCancel plus a release fallback, for the same reason as adjudicate: a
+	// cancelled context makes Settle's transaction fail to begin and strands the hold.
+	// Worse here — `charged` stays 0, so `spent` never advances and the allowance gate
+	// in Ground stops binding on exactly the runs where money is being lost.
+	settleCtx := context.WithoutCancel(ctx)
+	settled, serr := v.Ledger.Settle(settleCtx, reservation, calls)
 	var charged int64
 	if serr != nil {
-		v.logger().WarnContext(ctx, "grounding: settle failed", "err", serr)
+		v.logger().WarnContext(settleCtx, "grounding: settle failed; releasing the hold", "err", serr)
+		if rerr := v.Ledger.Release(settleCtx, reservation); rerr != nil {
+			v.logger().WarnContext(settleCtx, "grounding: release failed; budget is stranded",
+				"reservation", reservation.ID, "err", rerr)
+		}
 	} else {
 		charged = settled.Cost.BudgetAmount(unitOf(ctx, v, sessionID))
 		rep.Calls++

@@ -327,12 +327,35 @@ func clamp01(f float64) float64 {
 	return f
 }
 
-// oneLine flattens a rationale.
+// oneLine flattens and sanitizes a rationale, and caps its length.
 //
-// It is written to claim_edges.rationale and printed by `mole trace`, so a newline
-// in it lets model output forge what looks like a separate trace line — the same
-// reason the report's citation rendering flattens claim text.
+// It is written to claim_edges.rationale and claims.grounding_note, and printed by
+// `mole trace` and the research progress line. Three things have to go.
+//
+// Newlines, so model output cannot forge what looks like a separate trace line — the
+// same reason the report's citation rendering flattens claim text.
+//
+// Control characters, which flattening does NOT remove: strings.Fields splits on
+// unicode.IsSpace, and ESC is not a space. A rationale of "looks fine\x1b[2K\x1b[1A…"
+// survived this function intact and reached the terminal through %.100s, where it can
+// rewrite the lines already printed above it. Model prose here is not evidence —
+// nothing verifies it byte-for-byte, unlike a quote — so sanitizing at write time is
+// safe and covers every consumer at once.
+//
+// And the length cap, which is stated here because it is otherwise invisible: every
+// stored rationale is silently truncated at 200 characters.
 func oneLine(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return -1
+		}
+		switch r {
+		case 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
+			0x2066, 0x2067, 0x2068, 0x2069:
+			return -1
+		}
+		return r
+	}, s)
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) > 200 {
 		s = s[:200] + "…"

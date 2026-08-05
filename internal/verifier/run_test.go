@@ -697,3 +697,87 @@ func TestAContradictionFromAnEarlierPassIsNotForgotten(t *testing.T) {
 			after, unopposed, contradicted)
 	}
 }
+
+// TestPastTheStoreLimitClaimsStillGetVerified is the bug that made every replan pay
+// again for the same pairs.
+//
+// Run reads targets and pool with the store's default limit. While a session has fewer
+// claims than that limit, pool is a superset of targets and nothing shows. Past it the
+// sets disjoin — pool is the oldest claims, all already verified; targets is the next
+// unverified batch — and persist marked claims verified only as a SIDE EFFECT of scoring
+// the pool, so no target was ever marked. Measured at 505 claims: every pass reported 5
+// verified and marked zero.
+func TestPastTheStoreLimitClaimsStillGetVerified(t *testing.T) {
+	ctx := context.Background()
+	var claims []core.Claim
+	for i := 0; i < 505; i++ {
+		claims = append(claims, core.Claim{
+			Text:   fmt.Sprintf("Distinct finding number %d about tokenization and scaling.", i),
+			Source: fmt.Sprintf("https://s%03d.example/p", i),
+		})
+	}
+	r := newRig(t, 40_000_000, claims, judgeEveryPair(verifier.RelUnrelated))
+	r.v.BatchSize = 8
+	r.v.MaxShareOfBudget = 0.9
+
+	for pass := 1; pass <= 3; pass++ {
+		res, err := r.v.Run(ctx, r.sess.ID)
+		if err != nil {
+			t.Fatalf("pass %d: %v", pass, err)
+		}
+		left := r.unverified(t)
+		t.Logf("pass %d: verified=%d scored=%d unverified-after=%d",
+			pass, res.ClaimsVerified, res.ClaimsScored, left)
+		if pass == 3 && left != 0 {
+			t.Errorf("%d claims still unverified after three passes; the queue never drains "+
+				"and every pass re-judges the same pairs", left)
+		}
+	}
+}
+
+// TestACancelledContextDoesNotStrandBudget. Ctrl-C during a model call cancels ctx,
+// Settle's transaction then fails to begin, and the hold is neither spent nor available —
+// the one invariant the loop is arranged around. executor.go already settles with
+// context.WithoutCancel; both verifier reservation sites did not, and the existing
+// TestNothingIsLeftHeld covers six model-failure shapes without covering cancellation.
+func TestACancelledContextDoesNotStrandBudget(t *testing.T) {
+	for name, run := range map[string]func(*rig, context.Context) error{
+		"adjudication": func(r *rig, ctx context.Context) error {
+			_, err := r.v.Run(ctx, r.sess.ID)
+			return err
+		},
+		"grounding": func(r *rig, ctx context.Context) error {
+			_, err := r.v.Ground(ctx, r.sess.ID, 4_000_000)
+			return err
+		},
+	} {
+		ctx, cancel := context.WithCancel(context.Background())
+		const src = "https://arxiv.example/abs/1"
+		claims := []core.Claim{
+			{Text: "First distinct finding about scaling behaviour.", Source: src, Quote: groundedQuote},
+			{Text: "Second distinct finding about throughput limits.", Source: src + "b", Quote: groundedQuote},
+		}
+		r := groundRig(t, claims, map[string]string{
+			src: pageContaining(groundedQuote), src + "b": pageContaining(groundedQuote),
+		}, func(string) (string, error) {
+			// Cancel mid-call, exactly as Ctrl-C does.
+			cancel()
+			return "", context.Canceled
+		})
+
+		_ = run(r, ctx)
+
+		after := r.reload(t)
+		if after.Held != 0 {
+			t.Errorf("%s: %d still held after a cancelled run", name, after.Held)
+		}
+		v, err := r.led.Verify(context.Background(), r.sess.ID)
+		if err != nil {
+			t.Fatalf("%s: verify: %v", name, err)
+		}
+		if !v.Consistent() {
+			t.Errorf("%s: ledger drift: held recorded=%d rows=%d",
+				name, v.HeldRecorded, v.HeldFromRows)
+		}
+	}
+}
