@@ -408,6 +408,7 @@ func (v *Verifier) checkOne(ctx context.Context, sessionID string, c *core.Claim
 	prompt := groundUserPrompt(c.Text, match.Text, window)
 	resp, callErr := v.LLM.Complete(ctx, llm.Request{
 		Tier:      llm.TierCheap,
+		Model:     v.Model,
 		System:    groundSystemPrompt,
 		Messages:  []llm.Message{llm.User(prompt)},
 		MaxTokens: groundMaxTokens,

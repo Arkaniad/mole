@@ -786,6 +786,11 @@ func reportLLM(report func(bool, string, string), cfg *config.Config) {
 	if cheap := built.ModelFor(llm.TierCheap); cheap != built.ModelFor(llm.TierStrong) {
 		detail += fmt.Sprintf(" (cheap tier: %s)", cheap)
 	}
+	if v := cfg.LLM.VerifierModel; v != "" {
+		// Named separately because it is the stage whose errors are hardest to see: a
+		// bad adjudicator does not fail, it produces a confident graph of wrong edges.
+		detail += fmt.Sprintf(" (verifier: %s)", v)
+	}
 	if reason != "" {
 		detail += " — " + reason
 	}

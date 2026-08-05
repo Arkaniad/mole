@@ -27,7 +27,16 @@ type scriptedLLM struct {
 	mu      sync.Mutex
 	calls   int
 	prompts []string
+	models  []string
 	reply   func(call int, prompt string) (string, error)
+}
+
+// requestedModels is what each call asked for, so a test can see whether an override
+// reached the provider rather than only whether it was stored.
+func (s *scriptedLLM) requestedModels() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.models...)
 }
 
 func (s *scriptedLLM) Name() string               { return "fake" }
@@ -41,6 +50,7 @@ func (s *scriptedLLM) Complete(_ context.Context, req llm.Request) (*llm.Respons
 		prompt = req.Messages[0].Text
 	}
 	s.prompts = append(s.prompts, prompt)
+	s.models = append(s.models, req.Model)
 	s.mu.Unlock()
 
 	text, err := s.reply(i, prompt)
@@ -1104,5 +1114,62 @@ func bump(t *testing.T, r *rig, d store.BudgetDelta) {
 		return tx.ApplyBudgetDelta(ctx, r.sess.ID, d)
 	}); err != nil {
 		t.Fatalf("bump counters: %v", err)
+	}
+}
+
+// TestTheVerifierModelOverrideReachesEveryCall.
+//
+// A config field nothing reads is worse than none: it reads as configured while the cheap
+// model keeps judging. Both stages have to honour it — adjudication and grounding — since
+// the reason for the setting is the same in each.
+func TestTheVerifierModelOverrideReachesEveryCall(t *testing.T) {
+	ctx := context.Background()
+	// DIFFERENT sources. With one source, one quote and one offset, decideMechanically
+	// settles the pair for free and adjudication makes no call at all — so the
+	// adjudication half of this test passed with the override deleted.
+	const srcA, srcB = "https://a.example/abs/1", "https://b.example/abs/2"
+	claims := []core.Claim{
+		{Text: "First distinct finding about scaling behaviour.", Source: srcA, Quote: groundedQuote},
+		{Text: "Second distinct finding about throughput limits.", Source: srcB, Quote: groundedQuote},
+	}
+	pages := map[string]string{
+		srcA: pageContaining(groundedQuote),
+		srcB: pageContaining(groundedQuote),
+	}
+
+	r := groundRig(t, claims, pages,
+		func(string) (string, error) { return `{"supported":true,"why":"asserted"}`, nil })
+	r.v.Model = "gemma4:12b"
+
+	if _, err := r.v.Run(ctx, r.sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.v.Ground(ctx, r.sess.ID, 4_000_000); err != nil {
+		t.Fatal(err)
+	}
+
+	models := r.llm.requestedModels()
+	// Both stages must have called: adjudication AND grounding. Two claims from two
+	// sources produce one pair to judge and two quotes to check.
+	if len(models) < 3 {
+		t.Fatalf("%d calls made; both stages have to run for this to prove anything",
+			len(models))
+	}
+	for i, m := range models {
+		if m != "gemma4:12b" {
+			t.Errorf("call %d used %q, not the configured verifier model", i, m)
+		}
+	}
+
+	// And with no override, the tier's model is left in place.
+	plain := groundRig(t, claims, pages,
+		func(string) (string, error) { return `{"supported":true,"why":"asserted"}`, nil })
+	if _, err := plain.v.Run(ctx, plain.sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	for i, m := range plain.llm.requestedModels() {
+		if m != "" {
+			t.Errorf("call %d pinned model %q with no override configured", i, m)
+		}
 	}
 }

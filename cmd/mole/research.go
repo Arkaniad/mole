@@ -236,10 +236,13 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	// §11.5's re-read goes through the same robots handling, rate limiter and SSRF
 	// guard as the fetch that produced the claim.
 	vf := &verifier.Verifier{
-		Store:    db,
-		Ledger:   led,
-		LLM:      actor.LLM,
-		Log:      actor.Log,
+		Store:  db,
+		Ledger: led,
+		LLM:    actor.LLM,
+		Log:    actor.Log,
+		// Empty leaves the cheap model in place; set it when the cheap model cannot
+		// tell a contradiction from two unrelated statements.
+		Model:    cfg.LLM.VerifierModel,
 		Grounder: &verifier.Grounder{Fetch: actor.Fetch, Extract: actor.Extract},
 	}
 

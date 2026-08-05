@@ -27,6 +27,16 @@ type Verifier struct {
 	Ledger *budget.Ledger
 	LLM    llm.Provider
 
+	// Model overrides the tier's default for every call this Verifier makes. Empty
+	// leaves the cheap-tier model in place.
+	//
+	// Separate from the tier because the workloads are not alike. Chunk mining is
+	// extraction and runs per chunk; adjudication decides whether two sentences can both
+	// be true and runs per batch — 31 calls against 7 on a live 25-claim run. A model too
+	// expensive to mine with can be affordable to judge with, and judging is the stage
+	// whose errors corrupt confidence, the report's disagreements and three eval metrics.
+	Model string
+
 	// Retriever selects candidate pairs. Nil takes LexicalRetriever.
 	Retriever Retriever
 
@@ -349,9 +359,11 @@ func (v *Verifier) adjudicate(ctx context.Context, sessionID string, batch []Pai
 
 	prompt, _ := adjudicateUserPrompt(batch)
 	resp, callErr := v.LLM.Complete(ctx, llm.Request{
-		// Cheap tier: this is a bounded comparison of two sentences, run many
-		// times, which is exactly what §10.1's split exists for.
+		// Cheap tier by default: a bounded comparison of two sentences, run many
+		// times, which is what §10.1's split exists for. Model overrides it when the
+		// cheap model cannot tell "contradicts" from "unrelated".
 		Tier:      llm.TierCheap,
+		Model:     v.Model,
 		System:    adjudicateSystemPrompt,
 		Messages:  []llm.Message{llm.User(prompt)},
 		MaxTokens: maxTokensForBatch(len(batch)),

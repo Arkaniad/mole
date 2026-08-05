@@ -76,6 +76,21 @@ type LLMConfig struct {
 	// is not worth its price (§10.1).
 	CheapModel string `json:"cheap_model,omitempty"`
 
+	// VerifierModel judges claim pairs and grounding (§11). Empty uses CheapModel.
+	//
+	// A third setting rather than a third tier, because the argument for it is
+	// measured rather than architectural. On a live 25-claim run, adjudication made 7
+	// calls against 31 for chunk mining — so a model too expensive to mine with can be
+	// affordable to judge with, and the two workloads are not alike: mining is
+	// extraction, judging is deciding whether two sentences can both be true.
+	//
+	// It is also the stage whose errors corrupt everything downstream. That same run
+	// produced 16 contradictions out of 37 edges, and the model's own rationales
+	// described the pairs as being about different topics — which is "unrelated". Every
+	// false positive spent a follow-up lead, docked two claims' confidence, and put a
+	// disagreement in the report that was not there.
+	VerifierModel string `json:"verifier_model,omitempty"`
+
 	// MaxInputTokens caps a SINGLE request's input.
 	//
 	// Not the same limit as a context window, and often much smaller. A
@@ -282,6 +297,15 @@ func Fields() []Field {
 			Name: "llm.cheap-model", Help: "model for chunk mining and extraction",
 			get: func(c *Config) string { return c.LLM.CheapModel },
 			set: func(c *Config, v string) error { c.LLM.CheapModel = strings.TrimSpace(v); return nil },
+		},
+		{
+			Name: "llm.verifier-model",
+			Help: "model for judging claim pairs and grounding; defaults to the cheap model",
+			get:  func(c *Config) string { return c.LLM.VerifierModel },
+			set: func(c *Config, v string) error {
+				c.LLM.VerifierModel = strings.TrimSpace(v)
+				return nil
+			},
 		},
 		{
 			Name: "llm.max-input-tokens",
