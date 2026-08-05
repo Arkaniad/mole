@@ -13,6 +13,8 @@ import (
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/executor"
 	"github.com/lajosdeme/mole/internal/store/sqlite"
+
+	"github.com/lajosdeme/mole/internal/verifier"
 )
 
 // ---------------------------------------------------------------------------
@@ -288,4 +290,48 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// TestASkippedGroundingPassSaysSo.
+//
+// Two live runs reached "grounding never happened" from different directions and both
+// printed nothing. The first was an allowance smaller than one judge call; that was fixed,
+// and the second — every source supplied by the search provider, so nothing was
+// re-readable — was still silent, because NotFetchable is not Degraded.
+//
+// Silence makes a skipped check indistinguishable from a check that found no problems,
+// which is the worst possible reading of it.
+func TestASkippedGroundingPassSaysSo(t *testing.T) {
+	cases := map[string]struct {
+		rep  verifier.GroundReport
+		want string
+	}{
+		"every source came from the provider": {
+			verifier.GroundReport{NotFetchable: 4},
+			"the search provider supplied",
+		},
+		"the allowance could not cover a call": {
+			verifier.GroundReport{Degraded: "no allowance for grounding"},
+			"no allowance for grounding",
+		},
+		"nothing was eligible": {
+			verifier.GroundReport{},
+			"no claim was eligible",
+		},
+	}
+	for name, tc := range cases {
+		rep := tc.rep
+		out := captureStdout(t, func() { reportGrounding(&rep, researchOpts{}) })
+		if !strings.Contains(out, tc.want) {
+			t.Errorf("%s: output %q does not say why grounding did not run (want %q)",
+				name, out, tc.want)
+		}
+	}
+
+	// A pass that DID check says what it found instead.
+	rep := verifier.GroundReport{Checked: 3, Confirmed: 2, Unsupported: 1}
+	out := captureStdout(t, func() { reportGrounding(&rep, researchOpts{}) })
+	if !strings.Contains(out, "3 claim(s) re-read") {
+		t.Errorf("a completed pass did not report its result: %q", out)
+	}
 }

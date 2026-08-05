@@ -87,6 +87,12 @@ type rig struct {
 }
 
 func newRig(t *testing.T, budgetTokens int64, claims []core.Claim, reply func(int, string) (string, error)) *rig {
+	return newRigWithCeilings(t, budgetTokens, 50, 500, claims, reply)
+}
+
+// newRigWithCeilings exposes the §8.5 limits, so a test can put a session exactly where a
+// real one ends up: at max_leads, with verification still to do.
+func newRigWithCeilings(t *testing.T, budgetTokens, maxLeads, maxCalls int64, claims []core.Claim, reply func(int, string) (string, error)) *rig {
 	t.Helper()
 	ctx := context.Background()
 
@@ -104,7 +110,7 @@ func newRig(t *testing.T, budgetTokens int64, claims []core.Claim, reply func(in
 		Prompt: "q", Mode: core.ModeReport,
 		ActorTypes: []core.ActorType{core.ActorWeb},
 		BudgetUnit: core.BudgetTokens, Budget: budgetTokens,
-		MaxLeads: 50, MaxToolCalls: 500,
+		MaxLeads: maxLeads, MaxToolCalls: maxCalls,
 	})
 	if err != nil {
 		t.Fatalf("session: %v", err)
@@ -982,8 +988,16 @@ func TestTheShareCapCountsTheSessionNotTheProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.ClaimsVerified == 0 {
-		t.Fatal("the second pass had no work, so the cap was never consulted twice")
+	// It must have HAD work — otherwise the cap was never consulted — and spent nothing
+	// on it, because the session's share was already gone. It correctly leaves those
+	// claims unverified: nothing was compared, so recording them as verified would say
+	// otherwise.
+	if second.PairsRetrieved == 0 {
+		t.Fatal("the second pass retrieved no pairs, so the cap was never consulted twice")
+	}
+	if second.Spent != 0 {
+		t.Errorf("the second pass spent %d with the session's share already exhausted",
+			second.Spent)
 	}
 
 	ceiling := int64(float64(r.sess.Budget) * 0.05)
@@ -991,5 +1005,104 @@ func TestTheShareCapCountsTheSessionNotTheProcess(t *testing.T) {
 	if total > ceiling {
 		t.Errorf("two Verifier instances spent %d against a session ceiling of %d — the "+
 			"cap counts one process rather than the session", total, ceiling)
+	}
+}
+
+// TestHittingMaxLeadsDoesNotBlockVerification.
+//
+// max_leads is a NORMAL ending, not a failure: §8.5's lead ceiling exists to stop research
+// running away. But Reserve enforced every ceiling, so the moment a session hit it the
+// Verifier could no longer reserve anything — and persist marked the last batch of claims
+// verified against an empty graph. Measured on a live run: 12 of 12 leads used, final pass
+// "graph: 7 claim(s), 0 edge(s), 0 contradiction(s)".
+//
+// Verification dispatches no leads. It is bounded by its own share of the budget.
+func TestHittingMaxLeadsDoesNotBlockVerification(t *testing.T) {
+	ctx := context.Background()
+	// maxLeads 1, and consume it, so the session sits exactly where the live run did.
+	r := newRigWithCeilings(t, 4_000_000, 1, 500, distinctClaims(6), judgeEveryPair(verifier.RelSupports))
+	bump(t, r, store.BudgetDelta{LeadCount: 1})
+	sess := r.reload(t)
+	if hit, which := sess.HitCeiling(time.Now()); !hit || which != "max_leads" {
+		t.Fatalf("the session is not at max_leads (hit=%v which=%q)", hit, which)
+	}
+
+	res, err := r.v.Run(ctx, r.sess.ID)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Calls == 0 {
+		t.Errorf("no adjudication call was made at max_leads: %s", res.Degraded)
+	}
+	if res.EdgesWritten == 0 {
+		t.Errorf("no edges written at max_leads; the graph is empty for %d claims",
+			res.ClaimsVerified)
+	}
+	if n := r.unverified(t); n != 0 {
+		t.Errorf("%d claims left unverified", n)
+	}
+
+	// The other ceilings still bind: verification is not exempt from everything.
+	r2 := newRigWithCeilings(t, 4_000_000, 50, 1, distinctClaims(6), judgeEveryPair(verifier.RelSupports))
+	bump(t, r2, store.BudgetDelta{ToolCallCount: 2})
+	res2, err := r2.v.Run(ctx, r2.sess.ID)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res2.Calls > 0 {
+		t.Errorf("%d calls made past max_tool_calls; verification is exempt from too much",
+			res2.Calls)
+	}
+}
+
+// TestAPassThatComparedNothingLeavesClaimsUnverified.
+//
+// Marking is what drains the work queue, and doing it after a pass that could not
+// adjudicate at all records "we compared these and found nothing" when the truth is "we
+// never compared them". Distinct from a pass whose model answered uselessly — that one
+// HAS asked, and re-asking pays again for the same answer.
+func TestAPassThatComparedNothingLeavesClaimsUnverified(t *testing.T) {
+	ctx := context.Background()
+
+	// Allowance far too small for even one batch.
+	blocked := newRig(t, 400_000, distinctClaims(6), judgeEveryPair(verifier.RelSupports))
+	blocked.v.MaxShareOfBudget = 0.00001
+	res, err := blocked.v.Run(ctx, blocked.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PairsRetrieved == 0 {
+		t.Fatal("no pairs retrieved, so nothing was blocked")
+	}
+	if res.Calls != 0 {
+		t.Fatalf("%d calls made with no allowance", res.Calls)
+	}
+	if n := blocked.unverified(t); n != 6 {
+		t.Errorf("%d of 6 claims left unverified after comparing nothing", n)
+	}
+	if !strings.Contains(res.Degraded, "nothing was compared") {
+		t.Errorf("the reason does not say the claims were left alone: %q", res.Degraded)
+	}
+
+	// A model that ANSWERS uselessly is the other case: the claims are marked, because
+	// re-asking would pay again for the same non-answer.
+	asked := newRig(t, 4_000_000, distinctClaims(6), func(int, string) (string, error) {
+		return "I decline to compare these.", nil
+	})
+	if _, err := asked.v.Run(ctx, asked.sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := asked.unverified(t); n != 0 {
+		t.Errorf("%d claims left unverified after the model was asked and answered badly", n)
+	}
+}
+
+// bump advances a session's unit-independent counters, the way the loop does.
+func bump(t *testing.T, r *rig, d store.BudgetDelta) {
+	t.Helper()
+	if err := r.db.WithTx(context.Background(), func(ctx context.Context, tx store.Tx) error {
+		return tx.ApplyBudgetDelta(ctx, r.sess.ID, d)
+	}); err != nil {
+		t.Fatalf("bump counters: %v", err)
 	}
 }

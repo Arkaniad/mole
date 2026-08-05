@@ -176,7 +176,7 @@ func (l *Ledger) escrowFor(budget int64) int64 {
 // also a TOCTOU bug — the peeked lead is not necessarily the popped one. Here
 // the amount reserved is always for the lead actually dequeued.
 func (l *Ledger) Reserve(ctx context.Context, sessionID string, amount int64) (*core.Reservation, error) {
-	return l.reserveWith(ctx, sessionID, amount, true, nil)
+	return l.reserveWith(ctx, sessionID, amount, allCeilings, nil)
 }
 
 // ReserveOutput reserves for the report, ignoring the unit-independent
@@ -192,10 +192,34 @@ func (l *Ledger) Reserve(ctx context.Context, sessionID string, amount int64) (*
 // spend what Available() then reports. A session that has genuinely run out of
 // money still cannot reserve.
 func (l *Ledger) ReserveOutput(ctx context.Context, sessionID string, amount int64) (*core.Reservation, error) {
-	return l.reserveWith(ctx, sessionID, amount, false, nil)
+	return l.reserveWith(ctx, sessionID, amount, noCeilings, nil)
 }
 
-func (l *Ledger) reserveWith(ctx context.Context, sessionID string, amount int64, enforceCeilings bool, leadID *string) (*core.Reservation, error) {
+// ReserveVerify reserves for a verification call, exempt from MaxLeads.
+//
+// Verification dispatches no leads, and §8.5's lead ceiling exists to stop research
+// running away. Enforcing it here meant that the moment a session hit max_leads — which
+// is a NORMAL ending, not a failure — the Verifier could no longer reserve anything, so
+// the last batch of claims was marked verified with an empty graph. Measured on a live
+// run: 12 of 12 leads used, the final pass wrote 0 edges for 7 claims.
+//
+// MaxToolCalls and MaxWallClock still apply. Those bound total work rather than research
+// fan-out, and verification is bounded independently by its own share of the budget
+// (verifier.MaxShareOfBudget), so the money cannot run away either.
+func (l *Ledger) ReserveVerify(ctx context.Context, sessionID string, amount int64) (*core.Reservation, error) {
+	return l.reserveWith(ctx, sessionID, amount, ceilingsExceptLeads, nil)
+}
+
+// ceilingPolicy selects which §8.5 ceilings a reservation honours.
+type ceilingPolicy int
+
+const (
+	allCeilings ceilingPolicy = iota
+	ceilingsExceptLeads
+	noCeilings
+)
+
+func (l *Ledger) reserveWith(ctx context.Context, sessionID string, amount int64, policy ceilingPolicy, leadID *string) (*core.Reservation, error) {
 	if amount <= 0 {
 		return nil, fmt.Errorf("budget: reserve amount must be positive, got %d", amount)
 	}
@@ -219,9 +243,11 @@ func (l *Ledger) reserveWith(ctx context.Context, sessionID string, amount int64
 		if s.Status.Terminal() {
 			return fmt.Errorf("budget: session %s is %s", sessionID, s.Status)
 		}
-		if enforceCeilings {
+		if policy != noCeilings {
 			if hit, which := s.HitCeiling(now); hit {
-				return fmt.Errorf("%w: session %s hit %s", ErrInsufficientBudget, sessionID, which)
+				if !(policy == ceilingsExceptLeads && which == "max_leads") {
+					return fmt.Errorf("%w: session %s hit %s", ErrInsufficientBudget, sessionID, which)
+				}
 			}
 		}
 		if avail := s.Available(); amount > avail {
@@ -248,7 +274,7 @@ func (l *Ledger) ReserveFor(ctx context.Context, sessionID, leadID string, amoun
 	// touched the in-memory copy, so the stored lead_id stayed NULL — and the
 	// stranded-reservation case this exists to serve is exactly the one where
 	// the in-memory copy is gone.
-	return l.reserveWith(ctx, sessionID, amount, true, &leadID)
+	return l.reserveWith(ctx, sessionID, amount, allCeilings, &leadID)
 }
 
 // SettleResult reports what a settle actually cost against what was held.

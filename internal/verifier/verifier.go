@@ -217,6 +217,24 @@ func (v *Verifier) Run(ctx context.Context, sessionID string) (*Result, error) {
 	}
 	res.PairsJudged = len(verdicts) - len(free)
 
+	// A pass that could not adjudicate ANYTHING must not mark its claims verified.
+	//
+	// Marking is what drains the work queue, and doing it after a pass that wrote no
+	// edges records "we compared these and found nothing" when the truth is "we never
+	// compared them". Measured on a live run: the session hit max_leads, every
+	// reservation was refused, and 7 claims were marked verified against an empty graph.
+	//
+	// Distinct from a pass whose model answered uselessly — that one HAS asked, and
+	// re-asking would pay again for the same answer.
+	blocked := res.Degraded != "" && res.Calls == 0 && res.PairsJudged == 0 &&
+		len(pairs) > 0 && len(free) == 0
+	if blocked {
+		res.Degraded += " (claims left unverified; nothing was compared)"
+		v.logger().WarnContext(ctx, "verifier: no batch could be adjudicated; leaving claims unverified",
+			"pairs", len(pairs), "reason", res.Degraded)
+		return res, nil
+	}
+
 	if err := v.persist(ctx, sessionID, pool, targets, verdicts, res); err != nil {
 		return res, err
 	}
@@ -324,7 +342,7 @@ func (v *Verifier) adjudicate(ctx context.Context, sessionID string, batch []Pai
 		return nil, batch, fmt.Errorf("%w: nothing left to verify with", budget.ErrInsufficientBudget)
 	}
 
-	reservation, rerr := v.Ledger.Reserve(ctx, sessionID, est)
+	reservation, rerr := v.Ledger.ReserveVerify(ctx, sessionID, est)
 	if rerr != nil {
 		return nil, batch, rerr
 	}

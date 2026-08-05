@@ -782,42 +782,52 @@ func runGrounding(
 	if rep == nil {
 		return nil
 	}
-	if rep.Checked == 0 {
-		// Silence here made a skipped pass indistinguishable from no pass at all. On a
-		// live run the allowance (30% of a 9,000-token escrow) was smaller than one
-		// judge call, so grounding declined correctly and said nothing — and the report
-		// carried no indication that the check had not happened.
-		if !o.quiet && !o.asJSON && rep.Degraded != "" {
-			fmt.Printf("   grounding: not run — %s\n", rep.Degraded)
-		}
-		return rep
-	}
-
 	out.GroundChecked = rep.Checked
 	out.GroundConfirmed = rep.Confirmed
 	out.GroundUnsupported = rep.Unsupported
 
 	if !o.quiet && !o.asJSON {
-		fmt.Printf("   grounding: %d claim(s) re-read — %d confirmed, %d unsupported",
-			rep.Checked, rep.Confirmed, rep.Unsupported)
-		if rep.NotFetchable > 0 {
-			fmt.Printf(", %d not re-readable", rep.NotFetchable)
-		}
-		if n := rep.Vanished + rep.Unreachable + rep.Undecided; n > 0 {
-			// Said separately, because none of these is a verdict about a claim: the
-			// page changed, the host was down, or the judge would not answer. Folding
-			// them into "unsupported" would penalize a claim for someone else's edit.
-			fmt.Printf(", %d inconclusive", n)
-		}
-		fmt.Println()
-		for _, r := range rep.Results {
-			if r.Outcome == verifier.GroundUnsupported {
-				// The one outcome a reader must see. A claim whose own source does not
-				// support it is the failure mode §11.5 exists to catch, and it is
-				// invisible in a confidence number.
-				fmt.Printf("     ⚠ %.70s\n", r.Note)
-			}
-		}
+		reportGrounding(rep, o)
 	}
 	return rep
+}
+
+// reportGrounding prints what the pass did, including when it did nothing.
+//
+// Split out so the "did nothing" branches are testable without a store or a network —
+// they are the ones that were silently wrong twice.
+func reportGrounding(rep *verifier.GroundReport, o researchOpts) {
+	if rep.Checked == 0 {
+		switch {
+		case rep.NotFetchable > 0:
+			fmt.Printf("   grounding: not run — %d claim(s) cite pages the search provider "+
+				"supplied, which cannot be re-read without comparing two different "+
+				"extractions\n", rep.NotFetchable)
+		case rep.Degraded != "":
+			fmt.Printf("   grounding: not run — %s\n", rep.Degraded)
+		default:
+			fmt.Println("   grounding: no claim was eligible for a re-read")
+		}
+		return
+	}
+
+	fmt.Printf("   grounding: %d claim(s) re-read — %d confirmed, %d unsupported",
+		rep.Checked, rep.Confirmed, rep.Unsupported)
+	if rep.NotFetchable > 0 {
+		fmt.Printf(", %d not re-readable", rep.NotFetchable)
+	}
+	if n := rep.Vanished + rep.Unreachable + rep.Undecided; n > 0 {
+		// Said separately: none of these is a verdict about a claim. The page changed,
+		// the host was down, or the judge would not answer. Folding them into
+		// "unsupported" would penalize a claim for someone else's edit.
+		fmt.Printf(", %d inconclusive", n)
+	}
+	fmt.Println()
+	for _, r := range rep.Results {
+		if r.Outcome == verifier.GroundUnsupported {
+			// The one outcome a reader must see: a claim whose own source does not
+			// support it is invisible in a confidence number.
+			fmt.Printf("     ⚠ %.70s\n", r.Note)
+		}
+	}
 }
