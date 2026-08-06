@@ -160,33 +160,65 @@ func idfOver(pool []*core.Claim, extra *core.Claim) map[string]float64 {
 	return out
 }
 
-// weigh turns a token set into an IDF-weighted vector.
-func weigh(tokens []string, idf map[string]float64) map[string]float64 {
-	out := map[string]float64{}
+// term is one weighted term of a claim vector.
+type term struct {
+	tok string
+	w   float64
+}
+
+// weigh turns a token set into an IDF-weighted vector, sorted by term.
+//
+// A sorted SLICE rather than a map, because the vector gets summed and floating
+// point addition is not associative. Ranging a map gives Go's deliberately
+// randomized order, so the same two claims scored twice produced sums differing
+// in the last bits — measured at five distinct values over 2000 identical calls.
+//
+// That is not a rounding curiosity. Candidates compares scores with ==, so a
+// one-ULP difference skips the ID tiebreak that exists to keep ties stable, and
+// because the ranked list is then cut to the top N, a flip at the boundary
+// changes which candidates are SELECTED rather than merely their order. A
+// different candidate set is a different pair set, a different batch count, and
+// a different graph — from identical inputs.
+func weigh(tokens []string, idf map[string]float64) []term {
+	// Presence, not frequency: a claim is one sentence, so a repeated word is
+	// grammar rather than emphasis.
+	seen := make(map[string]float64, len(tokens))
 	for _, t := range tokens {
 		w, ok := idf[t]
 		if !ok || w <= 0 {
 			continue
 		}
-		// Presence, not frequency: a claim is one sentence, so a repeated word is
-		// grammar rather than emphasis.
-		out[t] = w
+		seen[t] = w
 	}
+	out := make([]term, 0, len(seen))
+	for t, w := range seen {
+		out = append(out, term{tok: t, w: w})
+	}
+	// The map above is iterated in random order; this is what makes the result
+	// deterministic regardless.
+	sort.Slice(out, func(i, j int) bool { return out[i].tok < out[j].tok })
 	return out
 }
 
-func cosine(a, b map[string]float64) float64 {
+// cosine scores two weighted vectors.
+//
+// A merge of two sorted slices rather than a map lookup per term: deterministic
+// by construction, and cheaper — no hashing, and it touches each term once.
+func cosine(a, b []term) float64 {
 	if len(a) == 0 || len(b) == 0 {
 		return 0
 	}
-	// Iterate the smaller side.
-	if len(b) < len(a) {
-		a, b = b, a
-	}
 	var dot float64
-	for t, wa := range a {
-		if wb, ok := b[t]; ok {
-			dot += wa * wb
+	for i, j := 0, 0; i < len(a) && j < len(b); {
+		switch {
+		case a[i].tok < b[j].tok:
+			i++
+		case a[i].tok > b[j].tok:
+			j++
+		default:
+			dot += a[i].w * b[j].w
+			i++
+			j++
 		}
 	}
 	if dot == 0 {
@@ -195,10 +227,10 @@ func cosine(a, b map[string]float64) float64 {
 	return dot / (norm(a) * norm(b))
 }
 
-func norm(v map[string]float64) float64 {
+func norm(v []term) float64 {
 	var sum float64
-	for _, w := range v {
-		sum += w * w
+	for _, t := range v {
+		sum += t.w * t.w
 	}
 	return math.Sqrt(sum)
 }
