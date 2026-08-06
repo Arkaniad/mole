@@ -481,3 +481,37 @@ func TestAShapeThatMerelyUnmarshalsIsNotAVerdict(t *testing.T) {
 		}
 	}
 }
+
+// TestTheOutputAllowanceFitsAReasoningModel.
+//
+// A reasoning model spends the output budget on its reasoning first and emits content
+// only afterwards, so a ceiling sized for the JSON returns empty content with
+// finish_reason "length". §9.1's planner learned this and set 4000; the adjudicator was
+// left at 1500 + 120/pair, and gemma4:12b judging four pairs reported "1980 completion
+// tokens produced no content" — exactly that formula.
+//
+// Reasoning cost is per CALL, so the base has to carry it. A smaller batch does not
+// divide the overhead, it pays it again.
+func TestTheOutputAllowanceFitsAReasoningModel(t *testing.T) {
+	// The measured floor: what gemma4:12b spent on reasoning alone, before answering.
+	const observedReasoning = 1980
+
+	for _, pairs := range []int{1, 4, 8, 16} {
+		got := maxTokensForBatch(pairs)
+		if got <= observedReasoning {
+			t.Errorf("batch of %d allows %d tokens, at or below the %d a reasoning model "+
+				"was measured spending before it emitted anything", pairs, got, observedReasoning)
+		}
+		// And room for the verdicts on top of the reasoning.
+		if got-observedReasoning < pairs*100 {
+			t.Errorf("batch of %d leaves only %d tokens for %d verdicts after reasoning",
+				pairs, got-observedReasoning, pairs)
+		}
+	}
+
+	// The single-verdict grounding call has the same problem and the same floor.
+	if groundMaxTokens <= observedReasoning {
+		t.Errorf("groundMaxTokens = %d, at or below the measured reasoning cost of %d",
+			groundMaxTokens, observedReasoning)
+	}
+}

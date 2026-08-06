@@ -69,10 +69,15 @@ type groundMaterial struct {
 
 // groundMaxTokens leaves room for a reasoning model's preamble before the verdict.
 //
-// The measured failure it avoids: too small an allowance and a reasoning model
-// spends all of it thinking, returning empty content with finish_reason "length"
+// The measured failure it avoids: too small an allowance and a reasoning model spends
+// all of it thinking, returning empty content with finish_reason "length"
 // (llm.ErrEmptyOutput). Unused output tokens are not billed.
-const groundMaxTokens = 1200
+//
+// Raised to match the adjudicator's base after gemma4:12b burned 1980 tokens on
+// reasoning alone and emitted nothing. This call asks for ONE verdict rather than a
+// batch, so the whole allowance is reasoning headroom — and 1200 was below what a
+// reasoning model spends before it starts answering.
+const groundMaxTokens = 4000
 
 // MaxPassageChars bounds the window that reaches the model.
 //

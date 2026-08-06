@@ -577,12 +577,23 @@ func estimateBatch(unit core.BudgetUnit, pairs int) int64 {
 // maxTokensForBatch leaves room for a verdict per pair plus a reasoning model's
 // preamble.
 //
-// The failure this avoids is measured: a 3B model given too small an output
-// allowance spends it all on reasoning and returns empty content with
-// finish_reason "length" (llm.ErrEmptyOutput). Unused output tokens are not
-// billed, so there is no reason to be tight.
+// The base is what §9.1's planner arrived at for the same reason and this did not,
+// which is the whole bug: a reasoning model spends the output budget on its own
+// reasoning first and emits content only afterwards, so a ceiling sized for the JSON
+// produces empty content with finish_reason "length" (llm.ErrEmptyOutput).
+//
+// Measured, exactly: gemma4:12b judging four pairs reported "1980 completion tokens
+// produced no content", and 1980 was precisely 1500 + 4*120. Half the batches in a
+// re-judge run returned nothing at all.
+//
+// Reasoning cost is per CALL, not per pair, so the base carries it and the per-pair
+// term only covers the verdicts. That also means a smaller batch does not divide the
+// overhead — it pays it again — which is worth knowing before turning
+// llm.verifier-batch-size down to escape a timeout.
+//
+// Generous on purpose: unused output tokens are not billed.
 func maxTokensForBatch(pairs int) int {
-	return 1500 + pairs*120
+	return 4000 + pairs*200
 }
 
 // newPairKey is Pair.Key for two bare IDs, used to index existing edges.
