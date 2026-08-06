@@ -51,16 +51,29 @@ type Supervisor struct {
 	base context.Context
 	stop context.CancelFunc
 
-	mu      sync.Mutex
-	running map[string]*handle
-	closed  bool
-	wg      sync.WaitGroup
+	mu sync.Mutex
+	// sessions holds both running and recently finished handles; see maxFinished.
+	sessions map[string]*handle
+	closed   bool
+	wg       sync.WaitGroup
 }
 
-// handle is one session in flight.
+// maxFinished caps how many completed sessions the supervisor remembers.
+//
+// Finished handles are retained so Wait works on a session that ended between
+// Start and the call — otherwise Wait is a race, which for a daemon whose whole
+// interaction model is "kick off, poll later" makes it useless. Bounded because
+// the daemon is long-lived and the store, not this map, is the durable record.
+const maxFinished = 64
+
+// handle is one session, running or recently finished.
 type handle struct {
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// finished and finishedAt are guarded by Supervisor.mu.
+	finished   bool
+	finishedAt time.Time
 
 	// cancelled records that a human asked for this, so the final status is
 	// "cancelled" rather than the "failed" a context error would otherwise
@@ -81,12 +94,12 @@ func NewSupervisor(r *Runner, max int, log *slog.Logger) *Supervisor {
 	}
 	base, stop := context.WithCancel(context.Background())
 	return &Supervisor{
-		runner:  r,
-		max:     max,
-		log:     log,
-		base:    base,
-		stop:    stop,
-		running: map[string]*handle{},
+		runner:   r,
+		max:      max,
+		log:      log,
+		base:     base,
+		stop:     stop,
+		sessions: map[string]*handle{},
 	}
 }
 
@@ -101,7 +114,7 @@ func (s *Supervisor) Start(ctx context.Context, spec Spec) (*core.Session, error
 		s.mu.Unlock()
 		return nil, ErrShutdown
 	}
-	if len(s.running) >= s.max {
+	if s.liveLocked() >= s.max {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("%w: %d session(s) already running", ErrAtCapacity, s.max)
 	}
@@ -128,12 +141,13 @@ func (s *Supervisor) Start(ctx context.Context, spec Spec) (*core.Session, error
 		s.mu.Unlock()
 		cancel()
 		return nil, ErrShutdown
-	case len(s.running) >= s.max:
+	case s.liveLocked() >= s.max:
 		s.mu.Unlock()
 		cancel()
 		return nil, fmt.Errorf("%w: %d session(s) already running", ErrAtCapacity, s.max)
 	}
-	s.running[sess.ID] = h
+	s.reapLocked()
+	s.sessions[sess.ID] = h
 	s.wg.Add(1)
 	s.mu.Unlock()
 
@@ -158,7 +172,8 @@ func (s *Supervisor) run(ctx context.Context, h *handle, sess *core.Session, spe
 	// worse than the dead code, so both went.
 	s.mu.Lock()
 	h.res, h.err = res, err
-	delete(s.running, sess.ID)
+	h.finished = true
+	h.finishedAt = time.Now()
 	s.mu.Unlock()
 
 	if err != nil {
@@ -173,9 +188,11 @@ func (s *Supervisor) run(ctx context.Context, h *handle, sess *core.Session, spe
 // takes as long as the fetch does, and an MCP caller should not be blocked on it.
 func (s *Supervisor) Cancel(id string) error {
 	s.mu.Lock()
-	h, ok := s.running[id]
-	if ok {
+	h, ok := s.sessions[id]
+	if ok && !h.finished {
 		h.cancelled = true
+	} else {
+		ok = false
 	}
 	s.mu.Unlock()
 
@@ -193,7 +210,7 @@ func (s *Supervisor) Cancel(id string) error {
 // the store can tell them apart.
 func (s *Supervisor) Wait(ctx context.Context, id string) (*Result, error) {
 	s.mu.Lock()
-	h, ok := s.running[id]
+	h, ok := s.sessions[id]
 	s.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNoSuchSession, id)
@@ -214,9 +231,11 @@ func (s *Supervisor) Wait(ctx context.Context, id string) (*Result, error) {
 func (s *Supervisor) Running() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]string, 0, len(s.running))
-	for id := range s.running {
-		out = append(out, id)
+	out := make([]string, 0, len(s.sessions))
+	for id, h := range s.sessions {
+		if !h.finished {
+			out = append(out, id)
+		}
 	}
 	sort.Strings(out)
 	return out
@@ -239,9 +258,11 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	s.closed = true
-	n := len(s.running)
-	for _, h := range s.running {
-		h.cancelled = true
+	n := s.liveLocked()
+	for _, h := range s.sessions {
+		if !h.finished {
+			h.cancelled = true
+		}
 	}
 	s.mu.Unlock()
 
@@ -259,5 +280,35 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		return fmt.Errorf("session: shutdown timed out with %d session(s) still finishing; "+
 			"their holds will be reclaimed by the next boot sweep: %w", n, ctx.Err())
+	}
+}
+
+// liveLocked counts sessions still running. Caller holds s.mu.
+func (s *Supervisor) liveLocked() int {
+	n := 0
+	for _, h := range s.sessions {
+		if !h.finished {
+			n++
+		}
+	}
+	return n
+}
+
+// reapLocked drops the oldest finished handles past maxFinished. Caller holds s.mu.
+func (s *Supervisor) reapLocked() {
+	var done []string
+	for id, h := range s.sessions {
+		if h.finished {
+			done = append(done, id)
+		}
+	}
+	if len(done) <= maxFinished {
+		return
+	}
+	sort.Slice(done, func(i, j int) bool {
+		return s.sessions[done[i]].finishedAt.Before(s.sessions[done[j]].finishedAt)
+	})
+	for _, id := range done[:len(done)-maxFinished] {
+		delete(s.sessions, id)
 	}
 }

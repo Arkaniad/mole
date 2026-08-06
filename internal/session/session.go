@@ -251,13 +251,25 @@ func (r *Runner) Run(ctx context.Context, sess *core.Session, spec Spec) (*Resul
 	res := &Result{Session: sess, Status: core.StatusDone}
 	led := r.ledger()
 
-	r.Actor.SessionID = sess.ID
-	r.Actor.Store = r.Store
+	// A COPY of the actor, per session.
+	//
+	// SessionID is what every claim and fetch outcome is filed under, so mutating
+	// the Runner's own actor would be wrong the moment two sessions run at once —
+	// and the supervisor exists to make that the normal case. One session's claims
+	// would be attributed to another's id, which no amount of budget accounting
+	// would catch, and the fetch caches would be shared across unrelated research.
+	//
+	// Shallow is right: the search, fetch, extract and model clients are stateless
+	// and safe to share, and copying them is what keeps connection pools and rate
+	// limiters global. Only the per-session fields are replaced.
+	actor := *r.Actor
+	actor.SessionID = sess.ID
+	actor.Store = r.Store
 
-	// One cache shared between the loop and the actor, so a lead-level hit and a
+	// One cache shared between the loop and this actor, so a lead-level hit and a
 	// URL-level hit are the same cache and one lead's fetches serve another's.
 	shared := cache.New()
-	r.Actor.Cache = shared
+	actor.Cache = shared
 
 	// The Verifier shares the actor's provider, store and fetcher. §11.1 wants it
 	// over the session's whole claim set, which is why it reads the store rather
@@ -267,11 +279,11 @@ func (r *Runner) Run(ctx context.Context, sess *core.Session, spec Spec) (*Resul
 	vf := &verifier.Verifier{
 		Store:     r.Store,
 		Ledger:    led,
-		LLM:       r.Actor.LLM,
+		LLM:       actor.LLM,
 		Log:       r.logger(),
 		Model:     r.VerifierModel,
 		BatchSize: r.VerifierBatchSize,
-		Grounder:  &verifier.Grounder{Fetch: r.Actor.Fetch, Extract: r.Actor.Extract},
+		Grounder:  &verifier.Grounder{Fetch: actor.Fetch, Extract: actor.Extract},
 	}
 
 	owner := r.Owner
@@ -283,11 +295,11 @@ func (r *Runner) Run(ctx context.Context, sess *core.Session, spec Spec) (*Resul
 		Ledger:     led,
 		Queue:      queue.New(r.Store, 0),
 		Cache:      shared,
-		Pricing:    r.Actor.Pricing,
-		CheapModel: r.Actor.LLM.ModelFor(llm.TierCheap),
-		Planner:    &planner.Planner{LLM: r.Actor.LLM, MaxDepth: spec.MaxDepth},
+		Pricing:    actor.Pricing,
+		CheapModel: actor.LLM.ModelFor(llm.TierCheap),
+		Planner:    &planner.Planner{LLM: actor.LLM, MaxDepth: spec.MaxDepth},
 		Verifier:   vf,
-		Actors:     map[core.ActorType]actors.Actor{core.ActorWeb: r.Actor},
+		Actors:     map[core.ActorType]actors.Actor{core.ActorWeb: &actor},
 		Log:        r.logger(),
 		Owner:      owner,
 		Progress:   r.Progress,
@@ -302,7 +314,7 @@ func (r *Runner) Run(ctx context.Context, sess *core.Session, spec Spec) (*Resul
 	// money set aside at session creation spendable — a run that produced good
 	// claims and could not afford to write them up would have wasted the whole
 	// budget, not just the last call.
-	res.Report, res.Ground = r.finish(ctx, led, vf, sess)
+	res.Report, res.Ground = r.finish(ctx, led, vf, sess, &actor)
 
 	if res.Run != nil {
 		res.Status = res.Run.Status
@@ -326,6 +338,7 @@ func (r *Runner) finish(
 	led *budget.Ledger,
 	vf *verifier.Verifier,
 	sess *core.Session,
+	actor *actors.WebActor,
 ) (*output.Report, *verifier.GroundReport) {
 	// Whether the run was stopped, read BEFORE detaching. Everything below runs
 	// on a live context by design — the payoff for money already spent must not
@@ -373,7 +386,7 @@ func (r *Runner) finish(
 		}
 	}
 
-	gen := &output.Generator{LLM: r.Actor.LLM}
+	gen := &output.Generator{LLM: actor.LLM}
 	var reservation *core.Reservation
 	if cancelled {
 		// Cancel means stop spending. Escrow is still released and every hold
@@ -417,7 +430,7 @@ func (r *Runner) finish(
 				Type:      core.CallLLM,
 				Model:     report.Model,
 				Input:     "report",
-				Cost:      r.priceReport(report),
+				Cost:      priceReport(actor, report),
 			})
 		}
 		if _, serr := led.Settle(ctx, reservation, calls); serr != nil {
@@ -450,8 +463,8 @@ func (r *Runner) ground(
 }
 
 // priceReport turns the generator's token usage into a ledger cost.
-func (r *Runner) priceReport(rep *output.Report) core.Cost {
-	table := r.Actor.Pricing
+func priceReport(actor *actors.WebActor, rep *output.Report) core.Cost {
+	table := actor.Pricing
 	if table == nil {
 		table = pricing.NewTable()
 	}

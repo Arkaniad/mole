@@ -1,0 +1,293 @@
+// Package daemon is the long-lived local server (§5).
+//
+// Research sessions run past an hour; a bare stdio subprocess dies when the
+// coding agent's session closes. So the daemon holds the session, claim and
+// budget state, and a disposable shim forwards to it over a unix socket.
+//
+// The socket is the trust boundary. §5's named-connector design keeps
+// credentials out of the tool call by keeping them daemon-side — which only
+// helps if reaching the daemon is itself privileged, so the listener setup in
+// this file is a security control rather than plumbing (§3.5).
+package daemon
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/lajosdeme/mole/internal/session"
+)
+
+// Handler serves one accepted connection. Slice 5 supplies the MCP one.
+//
+// An interface rather than the MCP server directly, so the listener's security
+// properties can be tested without a protocol, and so a future transport does
+// not have to reimplement them.
+type Handler interface {
+	Serve(ctx context.Context, conn net.Conn)
+}
+
+// HandlerFunc adapts a function to Handler.
+type HandlerFunc func(ctx context.Context, conn net.Conn)
+
+func (f HandlerFunc) Serve(ctx context.Context, conn net.Conn) { f(ctx, conn) }
+
+// Server accepts connections on a unix socket and hands them to a Handler.
+type Server struct {
+	// Socket is the path to listen on.
+	Socket string
+	// Supervisor runs the sessions. Shutdown stops it and waits for holds to be
+	// released before returning.
+	Supervisor *session.Supervisor
+	Handler    Handler
+	Log        *slog.Logger
+
+	// ShutdownGrace bounds how long Serve waits for in-flight connections and
+	// running sessions after its context is cancelled. Zero takes a default.
+	ShutdownGrace time.Duration
+
+	mu    sync.Mutex
+	conns map[net.Conn]struct{}
+}
+
+// DefaultShutdownGrace is how long a stopping daemon waits.
+//
+// Long enough for a session to settle its open reservation, which is what the
+// wait is for: exiting early leaves budget neither spent nor available until the
+// next boot's sweep reclaims it (§9.4).
+const DefaultShutdownGrace = 30 * time.Second
+
+// maxSocketPath is the kernel's limit on a unix socket path.
+//
+// sun_path is 108 bytes on Linux including the terminator. Kept conservative
+// rather than platform-specific: the failure it prevents is a confusing error,
+// and refusing a 100-byte path costs nothing.
+const maxSocketPath = 104
+
+func (s *Server) logger() *slog.Logger {
+	if s.Log != nil {
+		return s.Log
+	}
+	return slog.Default()
+}
+
+// Listen creates the socket with the properties §3.5 requires.
+//
+// Two independent controls, because each alone has a hole:
+//
+//   - The parent directory is created 0700. net.Listen applies the process
+//     umask, so the socket can appear as 0755 and be connectable in the window
+//     between Listen and Chmod. A private directory closes that window, because
+//     the path is unreachable whatever the socket's own mode says.
+//   - The socket is then chmod 0600, so loosening the directory later — by a
+//     careless install script, or by putting the socket somewhere shared — does
+//     not silently expose it.
+//
+// XDG_RUNTIME_DIR is already 0700 and user-owned on Linux, which is why §5.2
+// puts the socket there; this does not assume it.
+func (s *Server) Listen() (net.Listener, error) {
+	if s.Socket == "" {
+		return nil, errors.New("daemon: no socket path")
+	}
+	// sun_path is a fixed-size field in the kernel's address struct — 108 bytes on
+	// Linux, less on some BSDs — and exceeding it fails as "bind: invalid
+	// argument", which says nothing about the length. Worth catching here: the
+	// path comes from a flag or XDG_RUNTIME_DIR, and a long one is a
+	// configuration mistake the user can fix once they know what it is.
+	if n := len(s.Socket); n >= maxSocketPath {
+		return nil, fmt.Errorf(
+			"daemon: socket path is %d bytes, over the %d the kernel allows: %s\n"+
+				"choose a shorter path with --socket", n, maxSocketPath, s.Socket)
+	}
+
+	dir := filepath.Dir(s.Socket)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("daemon: socket directory %s: %w", dir, err)
+	}
+
+	if err := s.clearStaleSocket(); err != nil {
+		return nil, err
+	}
+
+	ln, err := net.Listen("unix", s.Socket)
+	if err != nil {
+		return nil, fmt.Errorf("daemon: listen on %s: %w", s.Socket, err)
+	}
+	if err := os.Chmod(s.Socket, 0o600); err != nil {
+		_ = ln.Close()
+		return nil, fmt.Errorf("daemon: securing %s: %w", s.Socket, err)
+	}
+	return ln, nil
+}
+
+// clearStaleSocket removes a socket file left by a dead daemon, and refuses if
+// one is still alive.
+//
+// Told apart by dialing it. Unlinking without checking would silently steal the
+// socket from a running daemon: the old one keeps its listener on an unlinked
+// inode, every client reaches the new one, and two processes then hold write
+// locks on the same database.
+func (s *Server) clearStaleSocket() error {
+	info, err := os.Stat(s.Socket)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("daemon: %s: %w", s.Socket, err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("daemon: %s exists and is not a socket", s.Socket)
+	}
+
+	conn, derr := net.DialTimeout("unix", s.Socket, 2*time.Second)
+	if derr == nil {
+		_ = conn.Close()
+		return fmt.Errorf("daemon: %s is already served by a running daemon", s.Socket)
+	}
+	// Nothing accepting: the file outlived its process.
+	if err := os.Remove(s.Socket); err != nil {
+		return fmt.Errorf("daemon: removing stale socket %s: %w", s.Socket, err)
+	}
+	s.logger().Info("removed a stale socket left by a previous daemon", "socket", s.Socket)
+	return nil
+}
+
+// Serve accepts until ctx is cancelled, then shuts down.
+//
+// Owns the listener: closes it on the way out and removes the socket file, so a
+// clean stop does not leave a path that the next start has to reason about.
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	s.mu.Lock()
+	s.conns = map[net.Conn]struct{}{}
+	s.mu.Unlock()
+
+	var wg sync.WaitGroup
+	accepting := make(chan struct{})
+
+	// Unblock Accept on cancellation. A unix listener has no deadline that
+	// interacts with context, so closing it is what makes the loop return.
+	go func() {
+		<-ctx.Done()
+		close(accepting)
+		_ = ln.Close()
+	}()
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			select {
+			case <-accepting:
+				// Expected: the goroutine above closed the listener.
+			default:
+				return s.shutdown(&wg, fmt.Errorf("daemon: accept: %w", err))
+			}
+			return s.shutdown(&wg, nil)
+		}
+
+		if err := s.authorize(conn); err != nil {
+			s.logger().Warn("refused a connection", "err", err)
+			_ = conn.Close()
+			continue
+		}
+
+		s.track(conn)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer s.untrack(conn)
+			defer func() { _ = conn.Close() }()
+			s.Handler.Serve(ctx, conn)
+		}()
+	}
+}
+
+// authorize checks the peer is the user who started the daemon (§3.5).
+//
+// Belt and braces over the socket's file permissions. They are the primary
+// control and this is the one that still holds if the socket is moved somewhere
+// shared, if a umask surprise widens it, or if a future transport forgets. Root
+// is refused like anyone else: the daemon's own uid is the only one that
+// matches, because a session started by root would run with root's config and
+// credentials.
+func (s *Server) authorize(conn net.Conn) error {
+	uid, ok, err := peerUID(conn)
+	if err != nil {
+		// Could not ask. Refusing is the safe default for an authorization check
+		// that failed to run.
+		return fmt.Errorf("could not read peer credentials: %w", err)
+	}
+	if !ok {
+		// The platform does not support it. The file mode is still in force.
+		return nil
+	}
+	if self := uint32(os.Getuid()); uid != self {
+		return fmt.Errorf("peer uid %d is not %d", uid, self)
+	}
+	return nil
+}
+
+func (s *Server) track(c net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.conns[c] = struct{}{}
+}
+
+func (s *Server) untrack(c net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.conns, c)
+}
+
+// shutdown closes live connections, waits for their handlers, and stops the
+// supervisor.
+//
+// The supervisor is stopped LAST and waited on, because that is where the money
+// is: its Shutdown returns once every running session has released its budget
+// holds. Closing connections first is what lets those handlers notice and
+// unblock.
+func (s *Server) shutdown(wg *sync.WaitGroup, cause error) error {
+	grace := s.ShutdownGrace
+	if grace <= 0 {
+		grace = DefaultShutdownGrace
+	}
+	deadline := time.Now().Add(grace)
+
+	s.mu.Lock()
+	for c := range s.conns {
+		_ = c.Close()
+	}
+	s.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Until(deadline)):
+		s.logger().Warn("connection handlers did not finish within the shutdown grace")
+	}
+
+	if s.Supervisor != nil {
+		ctx, cancel := context.WithDeadline(context.Background(), deadline)
+		defer cancel()
+		if err := s.Supervisor.Shutdown(ctx); err != nil {
+			s.logger().Warn("supervisor shutdown incomplete", "err", err)
+			if cause == nil {
+				cause = err
+			}
+		}
+	}
+
+	// Remove the path only if it is still ours. Between the listener closing and
+	// here, a new daemon may have started and created its own — unlinking that
+	// one would leave a live daemon nobody can reach.
+	if err := os.Remove(s.Socket); err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.logger().Warn("could not remove the socket", "socket", s.Socket, "err", err)
+	}
+	return cause
+}
