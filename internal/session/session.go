@@ -327,6 +327,11 @@ func (r *Runner) finish(
 	vf *verifier.Verifier,
 	sess *core.Session,
 ) (*output.Report, *verifier.GroundReport) {
+	// Whether the run was stopped, read BEFORE detaching. Everything below runs
+	// on a live context by design — the payoff for money already spent must not
+	// be discarded because research was cancelled — which also means ctx.Err()
+	// stops being readable one line down.
+	cancelled := ctx.Err() != nil
 	ctx = context.WithoutCancel(ctx)
 
 	released, err := led.ReleaseEscrow(ctx, sess.ID)
@@ -342,7 +347,10 @@ func (r *Runner) finish(
 	// exactly the money just released, so it takes a bounded share and leaves the
 	// rest for the answer. A grounding pass that spent the escrow would produce a
 	// well-checked set of claims and no report to put them in.
-	ground := r.ground(ctx, vf, sess.ID, released)
+	var ground *verifier.GroundReport
+	if !cancelled {
+		ground = r.ground(ctx, vf, sess.ID, released)
+	}
 	if r.OnGround != nil && ground != nil {
 		r.OnGround(ground)
 	}
@@ -367,6 +375,14 @@ func (r *Runner) finish(
 
 	gen := &output.Generator{LLM: r.Actor.LLM}
 	var reservation *core.Reservation
+	if cancelled {
+		// Cancel means stop spending. Escrow is still released and every hold
+		// still settles — leaving budget held would be the worst of both — but no
+		// model call is made, so the session emits the evidence it already paid
+		// to collect and no prose. Reuses the same path as "nothing to spend".
+		amount = 0
+		r.notice("session cancelled: writing the evidence without a synthesized answer")
+	}
 	if amount > 0 {
 		reservation, err = led.ReserveOutput(ctx, sess.ID, amount)
 		if err != nil {
