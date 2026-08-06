@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -203,8 +204,20 @@ func LoadCassette(path string) (*Cassette, error) {
 	if err := json.Unmarshal(b, &list); err != nil {
 		return nil, fmt.Errorf("record: parse cassette %s: %w", path, err)
 	}
+	// Re-key from the stored request rather than trusting the recorded Key field.
+	//
+	// The key function is allowed to change — masking prompt fences changed it, and
+	// something else will. Indexing by the stored key would make every existing
+	// cassette silently unmatchable on the day that happens, and the symptom (a run
+	// that replays nothing) looks like a broken recording rather than a changed
+	// hash. Recomputing costs one pass over a file that is already in memory.
 	for _, in := range list {
-		c.interactions[in.Key] = in
+		key := in.Key
+		if u, err := url.Parse(in.Request.URL); err == nil {
+			key = RequestKey(in.Request.Method, u, []byte(in.Request.Body))
+		}
+		in.Key = key
+		c.interactions[key] = in
 	}
 	return c, nil
 }
@@ -355,8 +368,42 @@ func RequestKey(method string, u *url.URL, body []byte) string {
 	h.Write([]byte{0})
 	h.Write([]byte(canonicalURL(u)))
 	h.Write([]byte{0})
-	h.Write(canonicalJSON(body))
+	h.Write(maskFences(canonicalJSON(body)))
 	return hex.EncodeToString(h.Sum(nil)[:16])
+}
+
+// fencePattern matches a §3.2 prompt fence: a tag whose name ends in a 16-hex
+// nonce, as produced by core.PromptFence.
+//
+// Both bracket encodings, because the body being keyed has been through
+// encoding/json, which HTML-escapes `<` and `>` into < and > by default.
+// A pattern written against literal angle brackets matches a hand-written test
+// fixture and nothing that ever crosses the wire — which is exactly the shape of
+// vacuous test this project keeps finding, so the replacement normalizes the
+// bracket form too rather than preserving whichever one it matched.
+var fencePattern = regexp.MustCompile(
+	`(?:<|\\u003c)(/?)([A-Za-z][A-Za-z0-9_]*)-[0-9a-f]{16}(?:>|\\u003e)`)
+
+// maskFences replaces prompt-fence nonces with a constant, for keying only.
+//
+// Without this, replay cannot work at all. Every prompt that wraps untrusted text
+// names its delimiter with a fresh crypto/rand nonce — that is the whole point of
+// §3.2, since a fixed delimiter is one a page can imitate — so every request body
+// is unique per run, and a cassette recorded on Monday cannot match the identical
+// request made on Tuesday. The very first planner call misses and the run produces
+// nothing, which is exactly what `mole corpus` did in replay.
+//
+// The nonce is masked in the KEY only. The prompt actually sent to the model still
+// carries a fresh random fence, and the recorded request body still shows the real
+// one, so nothing about the injection defence changes — two requests that differ
+// only by fence are the same logical request, and this is what says so.
+//
+// Deliberately narrow: a tag name, a hyphen, exactly sixteen lowercase hex digits,
+// a closing bracket. Masking bare hex runs would collide two genuinely different
+// requests whose page content happened to contain a hash, and in a replay harness a
+// collision returns the wrong recorded response — a far worse failure than a miss.
+func maskFences(body []byte) []byte {
+	return fencePattern.ReplaceAll(body, []byte("<${1}${2}-FENCE>"))
 }
 
 // canonicalJSON re-serializes a JSON body with sorted keys so that map

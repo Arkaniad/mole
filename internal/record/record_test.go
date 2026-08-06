@@ -220,3 +220,88 @@ func TestPostBodyIsPreservedForTheRealRequest(t *testing.T) {
 		t.Fatalf("server received %q, want %q", got, body)
 	}
 }
+
+// TestAPromptFenceDoesNotDefeatReplay.
+//
+// §3.2 names every untrusted-content delimiter with a fresh crypto/rand nonce, so
+// two identical requests made a minute apart have different bytes. Since the
+// cassette key hashes the body, no LLM interaction could ever replay: `mole corpus`
+// missed on the very first planner call and reported "ran but produced nothing".
+//
+// The nonce is masked for keying only — the prompt sent to the model still carries
+// a real random fence.
+func TestAPromptFenceDoesNotDefeatReplay(t *testing.T) {
+	u, _ := url.Parse("https://api.anthropic.com/v1/messages")
+
+	// The shape that actually crosses the wire. encoding/json HTML-escapes angle
+	// brackets, so the fence arrives as <tag-…> — a pattern written
+	// against literal brackets matches this test's other case and nothing real,
+	// which is how the first attempt at this fix passed while replay stayed broken.
+	body := func(nonce string) []byte {
+		return []byte(`{"messages":[{"text":"between <question-` + nonce +
+			`> and </question-` + nonce + `>"}]}`)
+	}
+	a := record.RequestKey("POST", u, body("f1b9050687783bcb"))
+	b := record.RequestKey("POST", u, body("00112233445566aa"))
+	if a != b {
+		t.Errorf("two runs of the same request keyed differently:\n  %s\n  %s", a, b)
+	}
+
+	// Literal brackets must fold to the same key as the escaped form, so a client
+	// that does not HTML-escape replays against a cassette recorded by one that does.
+	lit := record.RequestKey("POST", u, []byte(
+		`{"messages":[{"text":"between <question-f1b9050687783bcb> and </question-f1b9050687783bcb>"}]}`))
+	if lit != a {
+		t.Errorf("escaped and literal bracket forms keyed differently:\n  %s\n  %s", lit, a)
+	}
+
+	// Everything that is not a fence must still separate requests, or the harness
+	// replays the wrong recorded response — worse than a miss, because it looks
+	// like a pass.
+	other := record.RequestKey("POST", u, []byte(
+		`{"messages":[{"text":"between <question-f1b9050687783bcb> and a DIFFERENT question"}]}`))
+	if other == a {
+		t.Error("bodies differing outside the fence collided")
+	}
+	// A bare 16-hex run is not a fence. Masking one would collide two requests
+	// whose page content merely contained a hash.
+	h1 := record.RequestKey("POST", u, []byte(`{"text":"sha f1b9050687783bcb"}`))
+	h2 := record.RequestKey("POST", u, []byte(`{"text":"sha 00112233445566aa"}`))
+	if h1 == h2 {
+		t.Error("bare hex runs were masked; only a <tag-NONCE> fence may be")
+	}
+}
+
+// TestACassetteIsReKeyedOnLoad. Cassettes outlive the key function: masking fences
+// changed it, and something else will. Indexing by the recorded Key field would
+// make every existing cassette unmatchable the day that happens, with a symptom
+// (replays nothing) that reads as a bad recording rather than a changed hash.
+//
+// Driven through the replay transport rather than the index, so it asserts the
+// interaction is actually SERVED, not merely present under some key.
+func TestACassetteIsReKeyedOnLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.json")
+	// A stale key, as if written by an older build with a different key function.
+	if err := os.WriteFile(path, []byte(`[{"key":"deadbeefdeadbeefdeadbeefdeadbeef",
+      "request":{"method":"POST","url":"https://api.example.com/v1","body":"{\"a\":1}"},
+      "response":{"status":200,"body":"served from cassette"}}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cas, err := record.LoadCassette(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := record.NewTransport(record.ModeReplay, cas, nil).Client()
+	resp, err := client.Post("https://api.example.com/v1", "application/json",
+		strings.NewReader(`{"a":1}`))
+	if err != nil {
+		t.Fatalf("stale-keyed interaction was not served: %v", err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	if string(got) != "served from cassette" {
+		t.Errorf("body = %q, want the recorded one", got)
+	}
+}
