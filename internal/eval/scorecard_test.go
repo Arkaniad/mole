@@ -24,6 +24,13 @@ type fixture struct {
 
 func newFixture(t *testing.T, budgetAmount int64) *fixture {
 	t.Helper()
+	return newFixtureUnit(t, core.BudgetUSD, budgetAmount)
+}
+
+// newFixtureUnit is newFixture with the budget unit chosen, so a test can check
+// that a metric's Value is expressed in the unit its label claims.
+func newFixtureUnit(t *testing.T, unit core.BudgetUnit, budgetAmount int64) *fixture {
+	t.Helper()
 	ctx := context.Background()
 
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "t.db"), sqlite.Options{})
@@ -39,7 +46,7 @@ func newFixture(t *testing.T, budgetAmount int64) *fixture {
 	sess, err := led.CreateSession(ctx, budget.SessionSpec{
 		Prompt: "a question", Mode: core.ModeReport,
 		ActorTypes: []core.ActorType{core.ActorWeb},
-		BudgetUnit: core.BudgetUSD, Budget: budgetAmount,
+		BudgetUnit: unit, Budget: budgetAmount,
 	})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -141,8 +148,15 @@ func TestCleanSessionPasses(t *testing.T) {
 			}
 		}
 	}
-	if got := metric(t, card, "cost per claim"); got.Value != 20_000 {
-		t.Errorf("cost per claim = %v, want 20000 (40000 over 2 claims)", got.Value)
+	// 40000 micro-dollars over 2 claims = 20000 micros each = $0.02. The Value
+	// must be in the unit its label claims: reporting 20000 next to Unit "usd"
+	// said $20,000 per claim, which is the bug this pins.
+	got := metric(t, card, "cost per claim")
+	if got.Value != 0.02 {
+		t.Errorf("cost per claim = %v, want 0.02 ($0.02 = 40000 micros over 2 claims)", got.Value)
+	}
+	if got.Unit != "usd" {
+		t.Errorf("unit = %q, want \"usd\"", got.Unit)
 	}
 }
 
@@ -161,7 +175,7 @@ func TestBudgetOvershootIsARegression(t *testing.T) {
 	f.spend(t, 10_000, 250_000)
 
 	card := f.score(t)
-	m := metric(t, card, "budget adherence")
+	m := metric(t, card, "budget overshoot")
 	if !m.Regression {
 		t.Errorf("a 150%% overshoot was not flagged: %s", m.Detail)
 	}
@@ -581,5 +595,68 @@ func TestDuplicateCollapseHandlesACliqueNotJustAPair(t *testing.T) {
 	}
 	if m.Value < 39 || m.Value > 41 {
 		t.Errorf("collapse = %.1f%%, want 40%%", m.Value)
+	}
+}
+
+// TestAMetricValueIsInTheUnitItsLabelClaims.
+//
+// Budget amounts are micro-dollars end to end, so an int64 keeps a long session's
+// arithmetic exact. Metric.Value is a float64 next to a Unit string, and putting
+// raw micros beside Unit "usd" reported $0.004315 per claim as "4315.0 usd" — a
+// real measurement wrong by a factor of a million, in the harness whose entire
+// job is reporting numbers accurately. Detail was right the whole time; the
+// headline number is the one that gets quoted.
+func TestAMetricValueIsInTheUnitItsLabelClaims(t *testing.T) {
+	for _, tc := range []struct {
+		unit   core.BudgetUnit
+		spent  int64
+		claims int
+		want   float64
+	}{
+		// The measured case: $0.474687 over 110 claims.
+		{core.BudgetUSD, 474_687, 110, 0.004315},
+		{core.BudgetUSD, 40_000, 2, 0.02},
+		// Tokens are already whole units — dividing them would be the same bug
+		// pointing the other way. The fixture charges a fixed 100 input + 10
+		// output tokens per call whatever USD figure it is handed, so a
+		// token-mode session spends 110: over 2 claims that is 55, not 0.000055.
+		{core.BudgetTokens, 40_000, 2, 55},
+	} {
+		f := newFixtureUnit(t, tc.unit, 10_000_000)
+		f.spend(t, tc.spent, tc.spent)
+		claims := make([]core.Claim, 0, tc.claims)
+		for i := 0; i < tc.claims; i++ {
+			claims = append(claims, goodClaim(
+				fmt.Sprintf("Claim number %d of the set.", i),
+				fmt.Sprintf("https://s%d.example/x", i)))
+		}
+		f.addClaims(t, claims...)
+
+		got := metric(t, f.score(t), "cost per claim")
+		if diff := got.Value - tc.want; diff > 1e-9 || diff < -1e-9 {
+			t.Errorf("%s: cost per claim = %v, want %v", tc.unit, got.Value, tc.want)
+		}
+		if got.Unit != string(tc.unit) {
+			t.Errorf("%s: unit = %q", tc.unit, got.Unit)
+		}
+	}
+}
+
+// TestTheBudgetMetricIsNamedForWhatItMeasures. It reports overshoot, so 0 is the
+// passing value — under the old name a perfect scorecard read "budget adherence
+// 0.0 %", which scans as total failure.
+func TestTheBudgetMetricIsNamedForWhatItMeasures(t *testing.T) {
+	f := newFixture(t, 100_000)
+	f.spend(t, 10_000, 10_000)
+	card := f.score(t)
+
+	m := metric(t, card, "budget overshoot")
+	if m.Value != 0 || m.Regression {
+		t.Errorf("an under-budget session reported %v%% overshoot (regression=%v)", m.Value, m.Regression)
+	}
+	for _, x := range card.Metrics {
+		if x.Name == "budget adherence" {
+			t.Error(`the metric is still published as "budget adherence"`)
+		}
 	}
 }

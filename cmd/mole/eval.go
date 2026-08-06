@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/lajosdeme/mole/internal/eval"
@@ -28,7 +29,7 @@ import (
 
 const evalUsage = `Score a finished session against the §14.3 metrics.
 
-Reports the mechanical metrics — budget adherence, ledger consistency, claim
+Reports the mechanical metrics — budget overshoot, ledger consistency, claim
 integrity — and explicitly names the ones that cannot be computed yet, with
 what each is waiting on. Four of the nine need the Verifier (M4), the
 aggregation gate (M8), or a labelled corpus, and will read "blocked" until
@@ -203,6 +204,14 @@ func printScorecard(card eval.Scorecard, verbose bool) {
 	fmt.Println(" passed — every mechanical check holds.")
 }
 
+// formatMetric renders a metric value at a precision that cannot hide it.
+//
+// A fixed one- or zero-decimal format is fine for a percentage and wrong for
+// money: cost per claim is $0.004315, which "%.1f" prints as "0.0" and "%.0f" as
+// "0". That is the same defect as the micro-dollar bug it replaced — a real
+// measurement displayed as a number it is not — so budget units get the six
+// decimals that micro-dollar precision actually carries, with trailing zeros
+// trimmed so whole amounts still read as whole.
 func formatMetric(m eval.Metric) string {
 	switch m.Unit {
 	case "%":
@@ -212,10 +221,21 @@ func formatMetric(m eval.Metric) string {
 			return "ok"
 		}
 		return "DRIFT"
-	case "calls", "held":
-		return fmt.Sprintf("%.0f", m.Value)
-	default:
-		// A budget unit: render it the way the rest of the CLI does.
+	case "calls", "held", "edges":
 		return fmt.Sprintf("%.0f %s", m.Value, m.Unit)
+	case "":
+		return trimTrailingZeros(strconv.FormatFloat(m.Value, 'f', 6, 64))
+	default:
+		// A budget unit.
+		return trimTrailingZeros(strconv.FormatFloat(m.Value, 'f', 6, 64)) + " " + m.Unit
 	}
+}
+
+// trimTrailingZeros turns "0.004315" into "0.004315" and "26.000000" into "26".
+func trimTrailingZeros(s string) string {
+	if !strings.Contains(s, ".") {
+		return s
+	}
+	s = strings.TrimRight(s, "0")
+	return strings.TrimSuffix(s, ".")
 }

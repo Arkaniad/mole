@@ -228,7 +228,9 @@ func printCorpusReport(rep eval.CorpusReport, baselinePath string) {
 	for _, m := range rep.Aggregate {
 		switch m.Status {
 		case eval.Measured:
-			fmt.Fprintf(w, "%s\t%.1f %s\t%s\n", m.Name, m.Value, m.Unit, m.Detail)
+			// Shared with `mole eval`, so a metric cannot read one way in one
+			// command and another way in the other.
+			fmt.Fprintf(w, "%s\t%s\t%s\n", m.Name, formatMetric(m), m.Detail)
 		case eval.Blocked:
 			fmt.Fprintf(w, "%s\t—\tblocked: %.60s\n", m.Name, m.Reason)
 		default:

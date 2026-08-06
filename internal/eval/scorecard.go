@@ -127,7 +127,7 @@ func Score(ctx context.Context, st store.Store, sessionID string, opts Options) 
 	}
 
 	card.Metrics = append(card.Metrics,
-		budgetAdherence(sess),
+		budgetOvershoot(sess),
 		ledgerConsistency(verify),
 		holdsReleased(verify),
 		claimIntegrity(claims),
@@ -172,12 +172,18 @@ func Score(ctx context.Context, st store.Store, sessionID string, opts Options) 
 // Mechanical metrics
 // ---------------------------------------------------------------------------
 
-// budgetAdherence is §14.3's "max observed overshoot past ceiling. Must be ~0."
+// budgetOvershoot is §14.3's "max observed overshoot past ceiling. Must be ~0."
 //
 // The headline correctness property of the whole system. Everything else here
 // is diagnostic; this one is a contract.
-func budgetAdherence(s *core.Session) Metric {
-	m := Metric{Name: "budget adherence", Status: Measured, Unit: "%"}
+//
+// Named for what it measures. It reported under "budget adherence", where the
+// passing value is 0 and a scorecard's best possible row read "budget adherence
+// 0.0 %" — which scans as total failure. The metric never changed meaning; only
+// a reader's reading of it did, and the test covering it has always been called
+// TestBudgetOvershootIsARegression.
+func budgetOvershoot(s *core.Session) Metric {
+	m := Metric{Name: "budget overshoot", Status: Measured, Unit: "%"}
 
 	over := s.Spent - s.Budget
 	if over <= 0 {
@@ -328,6 +334,23 @@ func sourceConcentration(claims []*core.Claim) Metric {
 // package does not have. Reported under its own name so the two are never
 // confused — optimizing cost per claim alone rewards a model that emits more
 // claims, which is the opposite of the intent.
+// displayAmount converts a stored amount into the unit its label claims.
+//
+// Budget amounts are micro-dollars end to end — an int64 so a long session's
+// arithmetic is exact rather than float drift. Metric.Value is a float64 carrying
+// a Unit string, and putting the raw micros next to Unit "usd" reported
+// $0.004315 per claim as "4315.0 usd": a real measurement off by a factor of a
+// million, in the harness whose only job is reporting numbers accurately.
+//
+// Detail was correct throughout, because it goes through core.FormatAmount. The
+// headline number is what gets quoted.
+func displayAmount(amount int64, unit core.BudgetUnit) float64 {
+	if unit == core.BudgetUSD {
+		return float64(amount) / 1e6
+	}
+	return float64(amount)
+}
+
 func costPerClaim(s *core.Session, claims []*core.Claim) Metric {
 	m := Metric{Name: "cost per claim", Status: Measured, Unit: string(s.BudgetUnit)}
 	if len(claims) == 0 {
@@ -336,7 +359,7 @@ func costPerClaim(s *core.Session, claims []*core.Claim) Metric {
 		return m
 	}
 	per := s.Spent / int64(len(claims))
-	m.Value = float64(per)
+	m.Value = displayAmount(per, s.BudgetUnit)
 	m.Detail = fmt.Sprintf("%s over %d claims = %s each",
 		core.FormatAmount(s.Spent, s.BudgetUnit), len(claims),
 		core.FormatAmount(per, s.BudgetUnit))

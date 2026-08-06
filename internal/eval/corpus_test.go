@@ -54,7 +54,7 @@ func TestACorpusThatCannotBeTrustedIsRejected(t *testing.T) {
 // outright, which is the exact regression the runner exists to catch passing its own gate.
 func TestARunThatProducedNothingFailsTheCorpus(t *testing.T) {
 	clean := eval.Scorecard{Metrics: []eval.Metric{
-		{Name: "budget adherence", Status: eval.Measured, Value: 0},
+		{Name: "budget overshoot", Status: eval.Measured, Value: 0},
 	}}
 
 	cases := map[string]struct {
@@ -66,7 +66,7 @@ func TestARunThatProducedNothingFailsTheCorpus(t *testing.T) {
 		"session failed":        {eval.QuestionResult{Status: "failed", Claims: 3, Card: clean}, true},
 		"could not run at all":  {eval.QuestionResult{Err: "no search provider"}, true},
 		"budget overshot": {eval.QuestionResult{Status: "done", Claims: 4, Card: eval.Scorecard{
-			Metrics: []eval.Metric{{Name: "budget adherence", Status: eval.Measured, Value: 4, Regression: true}},
+			Metrics: []eval.Metric{{Name: "budget overshoot", Status: eval.Measured, Value: 4, Regression: true}},
 		}}, true},
 	}
 	for name, tc := range cases {

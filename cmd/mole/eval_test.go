@@ -8,6 +8,7 @@ import (
 
 	"github.com/lajosdeme/mole/internal/budget"
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/eval"
 )
 
 // TestEvalExitsNonZeroOnARegression. CI runs this command directly, so the exit
@@ -98,6 +99,43 @@ func TestEvalNamesWhatIsNotMeasured(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("scorecard does not mention %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestAMetricIsNotRenderedAsANumberItIsNot.
+//
+// Two bugs in the same row, found together. The stored value was micro-dollars
+// beside Unit "usd", so $0.004315 per claim printed as "4315.0 usd". Correcting
+// the value then exposed the formatter: "%.1f" renders the true figure as "0.0"
+// and "%.0f" as "0" — the same defect pointing the other way, and arguably worse,
+// because a wrong-by-a-million number invites a second look and a zero does not.
+func TestAMetricIsNotRenderedAsANumberItIsNot(t *testing.T) {
+	cases := []struct {
+		name string
+		m    eval.Metric
+		want string
+	}{
+		// The measured figure from a real run.
+		{"small money", eval.Metric{Value: 0.004315, Unit: "usd"}, "0.004315 usd"},
+		{"whole money", eval.Metric{Value: 2, Unit: "usd"}, "2 usd"},
+		{"tokens", eval.Metric{Value: 55, Unit: "tokens"}, "55 tokens"},
+		{"percent", eval.Metric{Value: 25.4, Unit: "%"}, "25.4%"},
+		{"counts keep their unit", eval.Metric{Value: 26, Unit: "calls"}, "26 calls"},
+		{"ledger ok", eval.Metric{Value: 1, Unit: "ok"}, "ok"},
+		{"ledger drift", eval.Metric{Value: 0, Unit: "ok"}, "DRIFT"},
+	}
+	for _, tc := range cases {
+		if got := formatMetric(tc.m); got != tc.want {
+			t.Errorf("%s: formatMetric = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+
+	// The property behind the cases: a non-zero measurement must never render as
+	// zero. This is what a fixed decimal count keeps getting wrong.
+	for _, v := range []float64{0.004315, 0.000001, 0.5} {
+		if got := formatMetric(eval.Metric{Value: v, Unit: "usd"}); strings.HasPrefix(got, "0 ") || got == "0.0 usd" {
+			t.Errorf("a spend of %v rendered as %q", v, got)
 		}
 	}
 }
