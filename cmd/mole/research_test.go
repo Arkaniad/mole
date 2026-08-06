@@ -270,18 +270,40 @@ func TestResearchWiresTheProgressPrinter(t *testing.T) {
 	}
 	body := string(src)
 
-	// The assignment has to exist, and it has to be gated on the output mode —
-	// JSON callers must not get progress lines interleaved with their document.
-	if !strings.Contains(body, "exec.Progress = progressPrinter()") {
-		t.Error("cmdResearch never assigns exec.Progress; the loop's events go nowhere")
+	// All three display callbacks, each with the same failure mode: assigned to a
+	// struct the CLI hands off, so a dropped line is invisible to every other
+	// test. The executor now lives behind session.Runner, which is why these read
+	// "runner." rather than "exec." — the wiring moved, the hazard did not.
+	//
+	// Containment is checked by finding the gate and confirming its block has not
+	// closed before the assignment, rather than by scanning a fixed window of
+	// preceding characters. The window version broke the moment a comment was
+	// added between the two, which tests the comment and not the code.
+	const gate = "if !o.quiet && !o.asJSON {"
+	g := strings.Index(body, gate)
+	if g < 0 {
+		t.Fatalf("the output-mode gate %q is gone", gate)
 	}
-	i := strings.Index(body, "exec.Progress = progressPrinter()")
-	if i < 0 {
-		return
-	}
-	preceding := body[max(0, i-120):i]
-	if !strings.Contains(preceding, "o.quiet") || !strings.Contains(preceding, "o.asJSON") {
-		t.Errorf("the assignment is not gated on --quiet/--json:\n%s", preceding)
+	for _, assign := range []string{
+		"runner.Progress = progressPrinter()",
+		"runner.OnLoop = printProgress",
+		"runner.OnGround = func(",
+	} {
+		i := strings.Index(body, assign)
+		if i < 0 {
+			t.Errorf("cmdResearch never assigns %s; those events go nowhere", assign)
+			continue
+		}
+		if i < g {
+			t.Errorf("%s is assigned before the output-mode gate", assign)
+			continue
+		}
+		// A closing brace at one tab of indent ends the gated block. Reaching one
+		// before the assignment means the assignment sits outside it — so JSON
+		// callers would get progress lines interleaved with their document.
+		if strings.Contains(body[g:i], "\n\t}") {
+			t.Errorf("%s is not inside the --quiet/--json gate", assign)
+		}
 	}
 }
 

@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"github.com/lajosdeme/mole/internal/actors"
-	"github.com/lajosdeme/mole/internal/budget"
-	"github.com/lajosdeme/mole/internal/cache"
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/executor"
@@ -20,9 +18,8 @@ import (
 	"github.com/lajosdeme/mole/internal/output"
 	"github.com/lajosdeme/mole/internal/planner"
 	"github.com/lajosdeme/mole/internal/pricing"
-	"github.com/lajosdeme/mole/internal/queue"
 	"github.com/lajosdeme/mole/internal/record"
-	"github.com/lajosdeme/mole/internal/store"
+	"github.com/lajosdeme/mole/internal/session"
 	"github.com/lajosdeme/mole/internal/tools/extract"
 	"github.com/lajosdeme/mole/internal/tools/fetch"
 	"github.com/lajosdeme/mole/internal/tools/search"
@@ -183,31 +180,41 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	ctx, cancel := context.WithTimeout(ctx, o.timeout+30*time.Second)
 	defer cancel()
 
-	led := budget.New(db, budget.DefaultConfig())
-	sess, err := led.CreateSession(ctx, budget.SessionSpec{
-		Prompt:     question,
+	runner := &session.Runner{
+		Store:             db,
+		Actor:             actor,
+		VerifierModel:     cfg.LLM.VerifierModel,
+		VerifierBatchSize: cfg.LLM.VerifierBatchSize,
+		Owner:             "cli",
+		Notice:            func(msg string) { fmt.Fprintf(os.Stderr, "warning: %s\n", msg) },
+	}
+	if !o.quiet && !o.asJSON {
+		runner.Progress = progressPrinter()
+		// Order matters and is the callbacks' whole purpose: the run summary, then
+		// grounding, then the report. Reading them off Result at the end printed
+		// grounding first.
+		runner.OnLoop = printProgress
+		runner.OnGround = func(rep *verifier.GroundReport) { reportGrounding(rep, o) }
+	}
+
+	spec := session.Spec{
+		Question:   question,
 		Mode:       sessionMode,
-		ActorTypes: []core.ActorType{core.ActorWeb},
 		BudgetUnit: unit,
 		Budget:     amount,
-		// Unit-independent ceilings (§8.5). They bind even when the money
-		// estimate is wrong, which is the case they exist for.
-		// Sized from what the planner can actually produce: an initial fan-out
-		// plus one round of follow-ups per depth level, with headroom. A fixed
-		// 1 was left over from M1, when the CLI ran exactly one lead — the
-		// ceiling worked, which is how the stale value surfaced.
-		MaxToolCalls: int64(maxLeadsFor(o)) * int64(o.maxSources) * 4,
-		MaxLeads:     int64(maxLeadsFor(o)),
-		MaxWallClock: o.timeout,
-	})
+		MaxSources: o.maxSources,
+		MaxDepth:   o.maxDepth,
+		MaxLeads:   maxLeadsFor(o),
+		Timeout:    o.timeout,
+	}
+
+	sess, err := runner.Create(ctx, spec)
 	if o.onSession != nil && sess != nil {
 		o.onSession(sess.ID)
 	}
 	if err != nil {
 		return err
 	}
-	actor.SessionID = sess.ID
-	actor.Store = db
 
 	out := &researchOutput{Question: question, SessionID: sess.ID, Unit: string(unit), Budget: amount}
 
@@ -220,117 +227,27 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 		fmt.Println(" executing ─────────────────────────────────────────")
 	}
 
-	// Recover what a previous crash left behind (§9.4). Both halves: leases,
-	// and the reservations those leads were holding — a stale hold is budget
-	// neither spent nor available, and Ledger.SweepExpired had no caller at all,
-	// so a crash mid-lead understated a session's Available() permanently.
-	//
-	// Unscoped on purpose: boot recovery does not know which sessions were in
-	// flight, and this is the one caller for which that is correct.
-	q := queue.New(db, 0)
-	if n, err := q.Sweep(ctx, ""); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: lease sweep failed: %v\n", err)
-	} else if n > 0 && !o.quiet {
-		fmt.Printf(" recovered %d lead(s) stranded by a previous run\n", n)
-	}
-	if n, err := led.SweepExpired(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: reservation sweep failed: %v\n", err)
-	} else if n > 0 && !o.quiet {
-		fmt.Printf(" released %d stale reservation(s) from a previous run\n", n)
-	}
-	if n, err := led.SweepAbandonedSessions(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: session sweep failed: %v\n", err)
-	} else if n > 0 && !o.quiet {
-		fmt.Printf(" closed %d session(s) abandoned by a previous run\n", n)
-	}
-
-	// One cache shared between the loop and the actor, so a lead-level hit and
-	// a URL-level hit are the same cache and one lead's fetches serve another's.
-	sessionCache := cache.New()
-	actor.Cache = sessionCache
-
-	// The Verifier shares the actor's provider, store and fetcher. §11.1 wants it
-	// over the session's whole claim set, which is why it reads the store rather
-	// than being handed each lead's batch — and the fetcher is the actor's own, so
-	// §11.5's re-read goes through the same robots handling, rate limiter and SSRF
-	// guard as the fetch that produced the claim.
-	vf := &verifier.Verifier{
-		Store:  db,
-		Ledger: led,
-		LLM:    actor.LLM,
-		Log:    actor.Log,
-		// Empty leaves the cheap model in place; set it when the cheap model cannot
-		// tell a contradiction from two unrelated statements.
-		Model: cfg.LLM.VerifierModel,
-		// Zero takes the default. Lower it when a slow model cannot finish eight pair
-		// judgements inside one call: batching is what makes verification affordable,
-		// but the batch is also the unit that has to fit in the client timeout.
-		BatchSize: cfg.LLM.VerifierBatchSize,
-		Grounder:  &verifier.Grounder{Fetch: actor.Fetch, Extract: actor.Extract},
-	}
-
-	exec := &executor.Executor{
-		Store:      db,
-		Ledger:     led,
-		Queue:      q,
-		Cache:      sessionCache,
-		Pricing:    actor.Pricing,
-		CheapModel: actor.LLM.ModelFor(llm.TierCheap),
-		Planner:    &planner.Planner{LLM: actor.LLM, MaxDepth: o.maxDepth},
-		Verifier:   vf,
-		Actors:     map[core.ActorType]actors.Actor{core.ActorWeb: actor},
-		Log:        actor.Log,
-		Owner:      "cli",
-	}
-	if !o.quiet && !o.asJSON {
-		exec.Progress = progressPrinter()
-	}
-
-	runRes, runErr := exec.Run(ctx, sess.ID)
-	if runRes != nil {
-		out.ClaimsVerified = runRes.ClaimsVerified
-		out.Contradictions = runRes.Contradictions
-		out.LeadsRun = runRes.LeadsRun
-		out.LeadsFailed = runRes.LeadsFailed
-		out.LeadsCached = runRes.LeadsCached
-		out.Replans = runRes.Replans
-		out.CacheHits = runRes.CacheStats.Hits
-		out.Claims = runRes.Claims
-		out.StoppedBecause = runRes.StoppedBecause
-		if runRes.Digest != nil {
-			out.OpenQuestions = len(runRes.Digest.Open())
+	// Recover what a previous crash left behind (§9.4), before the loop starts.
+	if rc := runner.Recover(ctx); rc.Any() && !o.quiet {
+		if rc.Leads > 0 {
+			fmt.Printf(" recovered %d lead(s) stranded by a previous run\n", rc.Leads)
 		}
-		if !o.quiet && !o.asJSON {
-			printProgress(runRes)
+		if rc.Reservations > 0 {
+			fmt.Printf(" released %d stale reservation(s) from a previous run\n", rc.Reservations)
+		}
+		if rc.Sessions > 0 {
+			fmt.Printf(" closed %d session(s) abandoned by a previous run\n", rc.Sessions)
 		}
 	}
-	if runErr != nil {
-		out.Error = runErr.Error()
-	}
 
-	// The report is paid from escrow (§8.3). Releasing it here is what makes
-	// the money set aside at session creation spendable — a run that produced
-	// good claims and could not afford to write them up would have wasted the
-	// whole budget, not just the last call.
-	report := generateReport(ctx, db, led, actor, vf, sess, out, o)
-
-	status := core.StatusDone
-	if runRes != nil {
-		status = runRes.Status
+	res, err := runner.Run(ctx, sess, spec)
+	if err != nil {
+		return err
 	}
-	if runErr != nil && status == core.StatusDone {
-		status = core.StatusFailed
-	}
-	if ferr := led.Finish(context.WithoutCancel(ctx), sess.ID, status); ferr != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not finalize session: %v\n", ferr)
-	}
-	out.Status = string(status)
-
-	// The executor already read this with a live context, which is the whole
-	// reason that read exists — re-reading here duplicated it.
-	if runRes != nil {
-		out.Spent = runRes.Spent
-	}
+	fillOutput(out, res)
+	report := res.Report
+	status := res.Status
+	runErr := res.Err
 
 	if o.silent {
 		return nil
@@ -354,131 +271,6 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	return nil
 }
 
-// generateReport synthesizes the answer, charged against released escrow.
-//
-// Never fatal. A failed synthesis costs the prose, not the evidence: the
-// generator falls back to listing verified claims with their citations, which
-// is what the escrow already paid to collect.
-func generateReport(
-	ctx context.Context,
-	db store.Store,
-	led *budget.Ledger,
-	actor *actors.WebActor,
-	vf *verifier.Verifier,
-	sess *core.Session,
-	out *researchOutput,
-	o researchOpts,
-) *output.Report {
-	ctx = context.WithoutCancel(ctx)
-
-	released, err := led.ReleaseEscrow(ctx, sess.ID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not release escrow: %v\n", err)
-	}
-
-	// §11.5.2's grounding pass, between the escrow release and the report.
-	//
-	// Here rather than inside the loop for two reasons. Its candidates are the
-	// claims the REPORT will lean on, which is only knowable once research has
-	// stopped and the graph is complete. And §11.5 puts its spend on the escrow —
-	// which is exactly the money just released, so it takes a bounded share and
-	// leaves the rest for the answer. A grounding pass that spent the escrow would
-	// produce a well-checked set of claims and no report to put them in.
-	groundReport := runGrounding(ctx, vf, sess.ID, released, out, o)
-
-	// Reserve BEFORE generating. The order used to be release → generate →
-	// reserve, which inverts §8.2 and had a concrete failure: after any research
-	// overshoot the reserve was refused, and the report tokens — already spent —
-	// were never written to the ledger. §8.1 says every tool call writes a cost
-	// row, and Verify() still reconciled because the row never existed.
-	//
-	// Bounded by what is actually available, not by what escrow nominally
-	// released: an overshoot may already have eaten into it.
-	amount := released
-	if groundReport != nil {
-		amount -= groundReport.Spent
-	}
-	if sess, err := loadSession(ctx, db, sess.ID); err == nil {
-		if avail := sess.Available(); amount > avail {
-			amount = avail
-		}
-	}
-
-	gen := &output.Generator{LLM: actor.LLM}
-	var reservation *core.Reservation
-	if amount > 0 {
-		reservation, err = led.ReserveOutput(ctx, sess.ID, amount)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not reserve for the report: %v\n", err)
-		}
-	}
-	if reservation == nil {
-		// Nothing to spend. Emit the evidence without prose rather than making
-		// a call whose cost cannot be recorded.
-		gen.LLM = nil
-	}
-
-	report, err := gen.Generate(ctx, db, sess.ID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: report generation failed: %v\n", err)
-		if reservation != nil {
-			if rerr := led.Release(ctx, reservation); rerr != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not release the report hold: %v\n", rerr)
-			}
-		}
-		return nil
-	}
-
-	if reservation != nil {
-		// Settle unconditionally, including a zero cost: an unresolved hold is
-		// budget neither spent nor available.
-		var calls []core.ToolCall
-		if !report.Cost.IsZero() {
-			calls = append(calls, core.ToolCall{
-				SessionID: sess.ID,
-				Role:      core.RoleOutput,
-				Type:      core.CallLLM,
-				Model:     report.Model,
-				Input:     "report",
-				Cost:      priceReport(actor, report),
-			})
-		}
-		if _, serr := led.Settle(ctx, reservation, calls); serr != nil {
-			fmt.Fprintf(os.Stderr, "warning: settling the report failed: %v\n", serr)
-		}
-	}
-
-	out.Report = report.Markdown()
-	out.Degraded = report.Degraded
-	return report
-}
-
-// priceReport turns the generator's token usage into a ledger cost.
-func priceReport(actor *actors.WebActor, r *output.Report) core.Cost {
-	table := actor.Pricing
-	if table == nil {
-		table = pricing.NewTable()
-	}
-	cost, err := table.Cost(r.Model, pricing.Usage{
-		InputTokens:      r.Cost.InputTokens,
-		OutputTokens:     r.Cost.OutputTokens,
-		CacheReadTokens:  r.Cost.CacheReadTokens,
-		CacheWriteTokens: r.Cost.CacheWriteTokens,
-	})
-	if err != nil {
-		// An unpriced model still spent tokens. Recording zero dollars but real
-		// tokens keeps token-mode budgets correct and lets doctor surface the
-		// gap, rather than silently inflating or dropping the charge.
-		cost = core.Cost{
-			InputTokens:      r.Cost.InputTokens,
-			OutputTokens:     r.Cost.OutputTokens,
-			CacheReadTokens:  r.Cost.CacheReadTokens,
-			CacheWriteTokens: r.Cost.CacheWriteTokens,
-		}
-	}
-	return cost
-}
-
 // maxLeadsFor bounds the lead tree from the planner's own fan-out limits, so
 // the ceiling and the plan cannot disagree.
 // plannerDepth translates the flag into the planner's encoding, where zero
@@ -497,20 +289,6 @@ func maxLeadsFor(o researchOpts) int {
 	}
 	return planner.DefaultMaxInitialLeads + depth*planner.DefaultMaxNewLeadsPerReplan + 2
 }
-
-func loadSession(ctx context.Context, db store.Store, id string) (*core.Session, error) {
-	var s *core.Session
-	err := db.Read(ctx, func(ctx context.Context, q store.Queries) error {
-		var err error
-		s, err = q.GetSession(ctx, id)
-		return err
-	})
-	return s, err
-}
-
-// ---------------------------------------------------------------------------
-// Wiring
-// ---------------------------------------------------------------------------
 
 func buildWebActor(cfg *config.Config, rec *record.Recorder, maxSources int, alwaysFetch, quiet bool) (*actors.WebActor, error) {
 	if cfg.Search.Provider == "" {
@@ -674,6 +452,44 @@ type researchOutput struct {
 	Error          string `json:"error,omitempty"`
 }
 
+// fillOutput maps a run's result onto the JSON shape the CLI prints.
+//
+// Every field the daemon will also need is on session.Result; this is the last
+// place that knows about researchOutput.
+func fillOutput(out *researchOutput, res *session.Result) {
+	if res == nil {
+		return
+	}
+	out.Status = string(res.Status)
+	if res.Err != nil {
+		out.Error = res.Err.Error()
+	}
+	if r := res.Run; r != nil {
+		out.ClaimsVerified = r.ClaimsVerified
+		out.Contradictions = r.Contradictions
+		out.LeadsRun = r.LeadsRun
+		out.LeadsFailed = r.LeadsFailed
+		out.LeadsCached = r.LeadsCached
+		out.Replans = r.Replans
+		out.CacheHits = r.CacheStats.Hits
+		out.Claims = r.Claims
+		out.StoppedBecause = r.StoppedBecause
+		out.Spent = r.Spent
+		if r.Digest != nil {
+			out.OpenQuestions = len(r.Digest.Open())
+		}
+	}
+	if g := res.Ground; g != nil {
+		out.GroundChecked = g.Checked
+		out.GroundConfirmed = g.Confirmed
+		out.GroundUnsupported = g.Unsupported
+	}
+	if rep := res.Report; rep != nil {
+		out.Report = rep.Markdown()
+		out.Degraded = rep.Degraded
+	}
+}
+
 // progressPrinter reports each phase as it happens, with elapsed time.
 //
 // Live feedback, not decoration. Planning is one model call that produces no
@@ -780,45 +596,6 @@ func fmtAmount(unit core.BudgetUnit, amount int64) string {
 		return fmt.Sprintf("%d tok", amount)
 	}
 	return core.FormatUSD(amount)
-}
-
-// runGrounding performs §11.5.2's budgeted re-fetch pass and reports it.
-//
-// Bounded by a share of the released escrow, so the report stays affordable. Never
-// fails the run: a fetch that failed, a page that changed, or a judge that would not
-// answer are outcomes worth recording, not reasons to withhold a report.
-func runGrounding(
-	ctx context.Context,
-	vf *verifier.Verifier,
-	sessionID string,
-	releasedEscrow int64,
-	out *researchOutput,
-	o researchOpts,
-) *verifier.GroundReport {
-	if vf == nil || vf.Grounder == nil || releasedEscrow <= 0 {
-		return nil
-	}
-	allowance := int64(float64(releasedEscrow) * verifier.DefaultGroundShareOfEscrow)
-	if allowance <= 0 {
-		return nil
-	}
-
-	rep, err := vf.Ground(ctx, sessionID, allowance)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: grounding pass failed: %v\n", err)
-		return nil
-	}
-	if rep == nil {
-		return nil
-	}
-	out.GroundChecked = rep.Checked
-	out.GroundConfirmed = rep.Confirmed
-	out.GroundUnsupported = rep.Unsupported
-
-	if !o.quiet && !o.asJSON {
-		reportGrounding(rep, o)
-	}
-	return rep
 }
 
 // reportGrounding prints what the pass did, including when it did nothing.
