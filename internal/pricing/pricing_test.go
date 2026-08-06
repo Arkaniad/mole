@@ -165,3 +165,54 @@ func TestRegisterOverridesDefault(t *testing.T) {
 		t.Errorf("overridden rate produced %d micros, want %d", c.USDMicros, want)
 	}
 }
+
+// TestADatedSnapshotPricesAsItsBaseModel.
+//
+// Anthropic ships an alias and a dated snapshot for the same weights at the same
+// price. The table registers the alias, so a config naming the snapshot found no
+// rates — and an unpriced model does not merely cost zero, it makes --usd refuse
+// to start: "no price is registered for claude-haiku-4-5-20251001, so every call
+// would cost nothing". That is exactly what happened on this project's first
+// hosted run.
+func TestADatedSnapshotPricesAsItsBaseModel(t *testing.T) {
+	tbl := pricing.NewTable()
+	u := pricing.Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000}
+
+	base, err := tbl.Cost("claude-haiku-4-5", u)
+	if err != nil {
+		t.Fatalf("base model is unpriced: %v", err)
+	}
+	dated, err := tbl.Cost("claude-haiku-4-5-20251001", u)
+	if err != nil {
+		t.Fatalf("dated snapshot is unpriced: %v", err)
+	}
+	if dated.USDMicros != base.USDMicros {
+		t.Errorf("dated snapshot costs %d micros, base costs %d — same weights, same price",
+			dated.USDMicros, base.USDMicros)
+	}
+	// And the rate itself is right: $1/MTok in + $5/MTok out = $6.
+	if want := int64(6_000_000); base.USDMicros != want {
+		t.Errorf("haiku-4-5 at 1M in + 1M out = %d micros, want %d", base.USDMicros, want)
+	}
+
+	// A suffix that is not a date must NOT be stripped. Folding "-32768" onto a
+	// base name would price one model at another's rates, which is worse than
+	// reporting it unknown.
+	for _, m := range []string{
+		"claude-haiku-4-5-32768",   // context size, not a date
+		"claude-haiku-4-5-2025100", // seven digits
+		"claude-haiku-4-5-99999999",
+		"claude-haiku-4-5-2025ab01",
+	} {
+		if _, ok := tbl.Lookup(m); ok {
+			t.Errorf("%q resolved to a price; only a real -YYYYMMDD suffix may be stripped", m)
+		}
+	}
+
+	// An exact registration must win over the fallback, so a snapshot that ever
+	// does diverge in price can be pinned.
+	tbl.Register("claude-haiku-4-5-20251001", pricing.Rates{Input: 9_000, Output: 9_000})
+	if r, _ := tbl.Lookup("claude-haiku-4-5-20251001"); r.Input != 9_000 {
+		t.Errorf("explicit registration lost to the base-model fallback (input=%d)", r.Input)
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lajosdeme/mole/internal/core"
 )
@@ -115,11 +116,51 @@ func (t *Table) Register(model string, r Rates) {
 // model whose tokens should still be counted and budgeted.
 func (t *Table) RegisterFree(model string) { t.Register(model, Rates{}) }
 
+// Lookup finds rates for a model, falling back to its undated base ID.
+//
+// Anthropic publishes an alias and a dated snapshot that resolve to the same
+// weights and the same price — "claude-haiku-4-5" and "claude-haiku-4-5-20251001"
+// are one model, and the table registers the alias. Without the fallback, a config
+// naming the snapshot prices at nothing, which is worse than it sounds: --usd
+// refuses to run at all rather than bound a session it cannot cost. That is what
+// happened the first time this project pointed at a hosted provider.
+//
+// Exact match first, so a snapshot that ever does diverge in price can be
+// registered explicitly and win.
 func (t *Table) Lookup(model string) (Rates, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	r, ok := t.rates[model]
-	return r, ok
+	if r, ok := t.rates[model]; ok {
+		return r, true
+	}
+	if base, ok := stripDateSuffix(model); ok {
+		r, ok := t.rates[base]
+		return r, ok
+	}
+	return Rates{}, false
+}
+
+// stripDateSuffix removes a trailing -YYYYMMDD, reporting whether it found one.
+//
+// Deliberately strict about the shape: eight digits that parse as a plausible
+// date. A looser rule would fold "gpt-4-32768" onto "gpt-4" and price a model
+// against a different one's rates, and mispricing silently is the failure this
+// whole package exists to prevent.
+func stripDateSuffix(model string) (string, bool) {
+	i := strings.LastIndexByte(model, '-')
+	if i <= 0 || len(model)-i-1 != 8 {
+		return "", false
+	}
+	digits := model[i+1:]
+	for _, c := range digits {
+		if c < '0' || c > '9' {
+			return "", false
+		}
+	}
+	if _, err := time.Parse("20060102", digits); err != nil {
+		return "", false
+	}
+	return model[:i], true
 }
 
 // Models lists registered model IDs, sorted.
