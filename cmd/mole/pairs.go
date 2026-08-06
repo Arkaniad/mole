@@ -318,6 +318,15 @@ func newPairsCompareCmd() *cobra.Command {
 
 			fmt.Printf("agreement: %.0f%%  (%d of %d pair(s) judged by both)\n",
 				100*ag.Rate(), ag.Same, ag.Compared)
+			// The number to act on. Reported second because the raw rate is what a
+			// reader expects to see, and printed always — including when the two are
+			// equal, since "no inert disagreements" is itself the finding.
+			fmt.Printf("  by effect on the graph: %.0f%%  (%d of %d)",
+				100*ag.EffectRate(), ag.SameEffect, ag.Compared)
+			if inert := ag.SameEffect - ag.Same; inert > 0 {
+				fmt.Printf("  — %d disagreement(s) change nothing derived", inert)
+			}
+			fmt.Println()
 			if ag.Unanswered > 0 {
 				fmt.Printf("  %d pair(s) one side did not judge, excluded\n", ag.Unanswered)
 			}
@@ -328,9 +337,16 @@ func newPairsCompareCmd() *cobra.Command {
 			var lines []string
 			for x, ys := range ag.Confusion {
 				for y, n := range ys {
-					if x != y {
-						lines = append(lines, fmt.Sprintf("  %-13s vs %-13s ×%d", x, y, n))
+					if x == y {
+						continue
 					}
+					// Marked, so the one row worth reading does not sit unremarked
+					// among five that do not matter.
+					note := ""
+					if verifier.Relation(x).EffectOf() != verifier.Relation(y).EffectOf() {
+						note = "  <-- changes the graph"
+					}
+					lines = append(lines, fmt.Sprintf("  %-13s vs %-13s ×%d%s", x, y, n, note))
 				}
 			}
 			if len(lines) > 0 {

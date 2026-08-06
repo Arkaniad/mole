@@ -41,6 +41,51 @@ func (r Relation) Valid() bool {
 	return false
 }
 
+// Effect is what a relation actually changes about the graph.
+//
+// Five relations, three effects. The taxonomy the model answers in is finer than
+// the one the system consumes, and that gap is worth naming because it decides how
+// seriously to take a disagreement between two judges.
+//
+// Grep for the edge kinds and the asymmetry is stark. EdgeContradicts is read by
+// confidence derivation (a penalty), by the executor (it queues a follow-up lead),
+// by grounding, by the report's duplicate collapse and by the scorecard.
+// EdgeDuplicateOf drives clustering, and therefore the publisher count that
+// corroboration is computed from. EdgeSupports and EdgeRefines are read in exactly
+// two places: the validity switch in core, and the display order in `mole trace`.
+// Nothing derives anything from them. RelUnrelated produces no edge at all.
+//
+// So "supports" and "refines" and "unrelated" are, today, one answer wearing three
+// hats. Two judges splitting between them have not disagreed about anything the
+// graph will do; two splitting between "contradicts" and "supports" have.
+type Effect string
+
+const (
+	// EffectContradiction penalizes confidence and queues a follow-up lead.
+	EffectContradiction Effect = "contradiction"
+	// EffectDuplicate merges claims into a cluster, changing the publisher count.
+	EffectDuplicate Effect = "duplicate"
+	// EffectInert changes nothing derived. Displayed, never consumed.
+	EffectInert Effect = "inert"
+)
+
+// EffectOf maps a relation to what it changes.
+//
+// Kept beside Edges deliberately: Edges is the function that gives relations their
+// consequences, so if a "supports" edge ever starts feeding a derivation, the two
+// have to be changed together or this becomes a lie.
+func (r Relation) EffectOf() Effect {
+	switch r {
+	case RelContradicts:
+		// Including the case where Edges rewrites it to supersedes on a stale pair,
+		// which is also a penalty.
+		return EffectContradiction
+	case RelDuplicate:
+		return EffectDuplicate
+	}
+	return EffectInert
+}
+
 // Pair is two claims put up for adjudication, in canonical order.
 //
 // A.ID < B.ID always. Not cosmetic: a pair reached from both ends is one pair,

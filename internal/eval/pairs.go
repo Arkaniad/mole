@@ -456,6 +456,19 @@ type Agreement struct {
 	Unanswered int `json:"unanswered"`
 	// Confusion[a][b] is how often the first set said a and the second said b.
 	Confusion map[string]map[string]int `json:"confusion"`
+
+	// SameEffect counts pairs where the two verdicts do the same thing to the graph,
+	// whether or not they used the same word. See verifier.Relation.EffectOf: five
+	// relations collapse to three effects, because "supports", "refines" and
+	// "unrelated" are all read by nothing.
+	//
+	// This is the number to judge a judge by, and it is not a softer version of
+	// Rate. Measured on claude-haiku-4-5 over 37 pairs judged twice: 84% raw, 97%
+	// by effect. Five of the six disagreements were supports/refines/unrelated
+	// shuffles that change nothing downstream; one was contradicts-vs-supports,
+	// which changes a confidence score and queues a research lead. Acting on 84%
+	// would mean rewriting a prompt to chase six problems when there was one.
+	SameEffect int `json:"same_effect"`
 }
 
 func (a Agreement) Rate() float64 {
@@ -463,6 +476,16 @@ func (a Agreement) Rate() float64 {
 		return 0
 	}
 	return float64(a.Same) / float64(a.Compared)
+}
+
+// EffectRate is agreement on what the graph will do, ignoring vocabulary.
+//
+// Always at least Rate: identical verdicts have identical effects.
+func (a Agreement) EffectRate() float64 {
+	if a.Compared == 0 {
+		return 0
+	}
+	return float64(a.SameEffect) / float64(a.Compared)
 }
 
 // Compare two verdict sets over the pairs both judged.
@@ -500,6 +523,9 @@ func CompareVerdicts(a, b *PairSet) Agreement {
 		out.Confusion[p.Model][q.Model]++
 		if p.Model == q.Model {
 			out.Same++
+		}
+		if verifier.Relation(p.Model).EffectOf() == verifier.Relation(q.Model).EffectOf() {
+			out.SameEffect++
 		}
 	}
 	return out
