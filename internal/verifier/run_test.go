@@ -212,7 +212,7 @@ func distinctClaims(n int) []core.Claim {
 // canonicalizing. One call per pair costs roughly a third of what the session spent
 // on the research itself. Batched at 8 it is seven calls.
 func TestBatchingIsWhatMakesVerificationAffordable(t *testing.T) {
-	r := newRig(t, 2_000_000, distinctClaims(13), judgeEveryPair(verifier.RelUnrelated))
+	r := newRig(t, 2_000_000, distinctClaims(13), judgeEveryPair(verifier.RelNeither))
 	r.v.BatchSize = 8
 
 	res, err := r.v.Run(context.Background(), r.sess.ID)
@@ -240,7 +240,7 @@ func TestBatchingIsWhatMakesVerificationAffordable(t *testing.T) {
 // TestEveryPairReachesExactlyOneCall. A batching bug that skips the tail is
 // invisible: the pass reports success having never compared the last pairs.
 func TestEveryPairReachesExactlyOneCall(t *testing.T) {
-	r := newRig(t, 2_000_000, distinctClaims(11), judgeEveryPair(verifier.RelSupports))
+	r := newRig(t, 2_000_000, distinctClaims(11), judgeEveryPair(verifier.RelNeither))
 	r.v.BatchSize = 3
 
 	res, err := r.v.Run(context.Background(), r.sess.ID)
@@ -268,7 +268,7 @@ func TestEveryPairReachesExactlyOneCall(t *testing.T) {
 func TestVerificationCannotOutspendItsShare(t *testing.T) {
 	// A small budget and many claims, so the share cap binds before the work runs
 	// out.
-	r := newRig(t, 40_000, distinctClaims(20), judgeEveryPair(verifier.RelUnrelated))
+	r := newRig(t, 40_000, distinctClaims(20), judgeEveryPair(verifier.RelNeither))
 	r.v.BatchSize = 2
 	r.v.MaxShareOfBudget = 0.1 // 4000 tokens
 
@@ -299,7 +299,7 @@ func TestVerificationCannotOutspendItsShare(t *testing.T) {
 // settle skipped because a call errored leaves budget neither spent nor available.
 func TestNothingIsLeftHeld(t *testing.T) {
 	cases := map[string]func(int, string) (string, error){
-		"all judged":   judgeEveryPair(verifier.RelSupports),
+		"all judged":   judgeEveryPair(verifier.RelNeither),
 		"prose":        func(int, string) (string, error) { return "I decline.", nil },
 		"empty":        func(int, string) (string, error) { return "", nil },
 		"transient":    func(int, string) (string, error) { return "", llm.ErrOverloaded },
@@ -361,7 +361,7 @@ func TestATransientErrorSkipsOneBatchOnly(t *testing.T) {
 		if call == 0 {
 			return "", llm.ErrOverloaded
 		}
-		return judgeEveryPair(verifier.RelSupports)(call, prompt)
+		return judgeEveryPair(verifier.RelNeither)(call, prompt)
 	})
 	r.v.BatchSize = 3
 
@@ -419,7 +419,7 @@ func TestEdgesAndVerifiedFlagLandTogether(t *testing.T) {
 // TestUnrelatedVerdictsWriteNoEdges. The common answer, and storing it would grow
 // the edge table quadratically with rows recording absence.
 func TestUnrelatedVerdictsWriteNoEdges(t *testing.T) {
-	r := newRig(t, 2_000_000, distinctClaims(6), judgeEveryPair(verifier.RelUnrelated))
+	r := newRig(t, 2_000_000, distinctClaims(6), judgeEveryPair(verifier.RelNeither))
 	res, err := r.v.Run(context.Background(), r.sess.ID)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -469,7 +469,7 @@ func TestIdenticalClaimsCostNothing(t *testing.T) {
 // TestVerifierSpendIsAttributedToTheVerifier, so `mole trace` can answer what
 // verification cost — the number that says whether the graph is worth its price.
 func TestVerifierSpendIsAttributedToTheVerifier(t *testing.T) {
-	r := newRig(t, 2_000_000, distinctClaims(6), judgeEveryPair(verifier.RelSupports))
+	r := newRig(t, 2_000_000, distinctClaims(6), judgeEveryPair(verifier.RelNeither))
 	if _, err := r.v.Run(context.Background(), r.sess.ID); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestAContradictionFromAnEarlierPassIsNotForgotten(t *testing.T) {
 		if call == 0 {
 			return judgeEveryPair(verifier.RelContradicts)(call, prompt)
 		}
-		return judgeEveryPair(verifier.RelUnrelated)(call, prompt)
+		return judgeEveryPair(verifier.RelNeither)(call, prompt)
 	})
 
 	if _, err := r.v.Run(ctx, r.sess.ID); err != nil {
@@ -702,7 +702,7 @@ func TestAContradictionFromAnEarlierPassIsNotForgotten(t *testing.T) {
 	clean := newRig(t, 2_000_000, []core.Claim{
 		{Text: target, Source: "https://a.example/x"},
 		{Text: target, Source: "https://c.example/z"},
-	}, judgeEveryPair(verifier.RelUnrelated))
+	}, judgeEveryPair(verifier.RelNeither))
 	if _, err := clean.v.Run(ctx, clean.sess.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -734,7 +734,7 @@ func TestPastTheStoreLimitClaimsStillGetVerified(t *testing.T) {
 			Source: fmt.Sprintf("https://s%03d.example/p", i),
 		})
 	}
-	r := newRig(t, 40_000_000, claims, judgeEveryPair(verifier.RelUnrelated))
+	r := newRig(t, 40_000_000, claims, judgeEveryPair(verifier.RelNeither))
 	r.v.BatchSize = 8
 	r.v.MaxShareOfBudget = 0.9
 
@@ -960,7 +960,7 @@ func TestTheConfiguredStalenessGapReachesFollowUps(t *testing.T) {
 // one instance's lifetime.
 func TestTheShareCapCountsTheSessionNotTheProcess(t *testing.T) {
 	ctx := context.Background()
-	r := newRig(t, 400_000, distinctClaims(24), judgeEveryPair(verifier.RelUnrelated))
+	r := newRig(t, 400_000, distinctClaims(24), judgeEveryPair(verifier.RelNeither))
 	r.v.BatchSize = 2
 	r.v.MaxShareOfBudget = 0.05 // 20_000
 
@@ -1030,7 +1030,10 @@ func TestTheShareCapCountsTheSessionNotTheProcess(t *testing.T) {
 func TestHittingMaxLeadsDoesNotBlockVerification(t *testing.T) {
 	ctx := context.Background()
 	// maxLeads 1, and consume it, so the session sits exactly where the live run did.
-	r := newRigWithCeilings(t, 4_000_000, 1, 500, distinctClaims(6), judgeEveryPair(verifier.RelSupports))
+	// duplicate_of, not the catch-all: this test asserts that edges get written, and
+	// only duplicate_of and contradicts produce any. Contradicts would queue follow-up
+	// leads, which is the very ceiling under test.
+	r := newRigWithCeilings(t, 4_000_000, 1, 500, distinctClaims(6), judgeEveryPair(verifier.RelDuplicate))
 	bump(t, r, store.BudgetDelta{LeadCount: 1})
 	sess := r.reload(t)
 	if hit, which := sess.HitCeiling(time.Now()); !hit || which != "max_leads" {
@@ -1053,7 +1056,7 @@ func TestHittingMaxLeadsDoesNotBlockVerification(t *testing.T) {
 	}
 
 	// The other ceilings still bind: verification is not exempt from everything.
-	r2 := newRigWithCeilings(t, 4_000_000, 50, 1, distinctClaims(6), judgeEveryPair(verifier.RelSupports))
+	r2 := newRigWithCeilings(t, 4_000_000, 50, 1, distinctClaims(6), judgeEveryPair(verifier.RelDuplicate))
 	bump(t, r2, store.BudgetDelta{ToolCallCount: 2})
 	res2, err := r2.v.Run(ctx, r2.sess.ID)
 	if err != nil {
@@ -1075,7 +1078,7 @@ func TestAPassThatComparedNothingLeavesClaimsUnverified(t *testing.T) {
 	ctx := context.Background()
 
 	// Allowance far too small for even one batch.
-	blocked := newRig(t, 400_000, distinctClaims(6), judgeEveryPair(verifier.RelSupports))
+	blocked := newRig(t, 400_000, distinctClaims(6), judgeEveryPair(verifier.RelNeither))
 	blocked.v.MaxShareOfBudget = 0.00001
 	res, err := blocked.v.Run(ctx, blocked.sess.ID)
 	if err != nil {

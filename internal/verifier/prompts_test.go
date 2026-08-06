@@ -599,3 +599,78 @@ func TestThePromptStatesTheVerdictCount(t *testing.T) {
 		t.Error("the count is hardcoded: a batch of 8 claims to be 3")
 	}
 }
+
+// TestThePromptOffersOnlyTheRelationsTheGraphReads.
+//
+// Five relations were offered until a labelled pair set priced the extra two: over 37
+// pairs, eight of claude-haiku-4-5's nine errors were choosing among
+// supports/refines/unrelated, and every one built an edge nothing reads.
+func TestThePromptOffersOnlyTheRelationsTheGraphReads(t *testing.T) {
+	prompt, _ := adjudicateUserPrompt(testBatch(2))
+
+	for _, rel := range []Relation{RelContradicts, RelDuplicate, RelNeither} {
+		if !strings.Contains(prompt, `"`+string(rel)+`"`) {
+			t.Errorf("the prompt does not offer %q", rel)
+		}
+	}
+	// The retired ones must not appear anywhere — not as an option, and not in the
+	// JSON shape example, which is where a stale "supports" would sit unnoticed and
+	// be copied straight back.
+	for _, rel := range []Relation{RelSupports, RelRefines, RelUnrelated} {
+		if strings.Contains(prompt, string(rel)) {
+			t.Errorf("the prompt still mentions the retired relation %q", rel)
+		}
+	}
+}
+
+// TestARetiredRelationIsFoldedNotDiscarded.
+//
+// A model answering "supports" out of habit has made a real judgement about a real
+// pair, and it means exactly what "neither" means. Rejecting it as an invalid relation
+// would throw away a verdict over vocabulary and report the pair as unjudged, which
+// reads as model uncertainty rather than as our own migration.
+func TestARetiredRelationIsFoldedNotDiscarded(t *testing.T) {
+	batch := testBatch(4)
+	raw := `{"verdicts":[` +
+		`{"pair":1,"relation":"supports","why":"a"},` +
+		`{"pair":2,"relation":"refines","why":"b"},` +
+		`{"pair":3,"relation":"unrelated","why":"c"},` +
+		`{"pair":4,"relation":"contradicts","why":"d"}]}`
+
+	judged, unjudged, err := parseVerdicts(raw, batch)
+	if err != nil {
+		t.Fatalf("retired relations were rejected outright: %v", err)
+	}
+	if len(judged) != 4 || len(unjudged) != 0 {
+		t.Fatalf("%d judged, %d unjudged; want 4 and 0", len(judged), len(unjudged))
+	}
+	for i, want := range []Relation{RelNeither, RelNeither, RelNeither, RelContradicts} {
+		if got := judged[i].Relation; got != want {
+			t.Errorf("verdict %d normalized to %q, want %q", i+1, got, want)
+		}
+	}
+
+	// Edges guards the same fold independently. Feeding it parseVerdicts output would
+	// prove nothing — that is already normalized — so the retired relations are handed
+	// to it directly, which is the only way an un-normalized Judged can exist.
+	retired := []Judged{
+		{Pair: batch[0], Relation: RelSupports},
+		{Pair: batch[1], Relation: RelRefines},
+		{Pair: batch[2], Relation: RelUnrelated},
+		{Pair: batch[3], Relation: RelContradicts},
+	}
+	if n := len(Edges("s1", retired, 0)); n != 1 {
+		t.Errorf("%d edges from 3 retired-inert + 1 contradicts, want 1; a retired "+
+			"relation is storing an edge the taxonomy no longer admits", n)
+	}
+
+	// "supersedes" is still refused. It is derived from PublishedAt (§11.2), and
+	// widening Valid to accept retired names must not have widened it to accept a
+	// relation the model was never allowed to claim.
+	if RelSupports.Normalize() != RelNeither {
+		t.Error("Normalize does not fold supports")
+	}
+	if Relation("supersedes").Valid() {
+		t.Error("supersedes became valid; a model can now invent a publication date")
+	}
+}

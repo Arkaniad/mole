@@ -261,7 +261,7 @@ func TestUnrelatedProducesNoEdge(t *testing.T) {
 	a := &core.Claim{ID: "c_a", Text: "One thing."}
 	b := &core.Claim{ID: "c_b", Text: "Another thing."}
 	edges := Edges("s_1", []Judged{
-		{Pair: newPair(a, b), Relation: RelUnrelated, Weight: 0.9},
+		{Pair: newPair(a, b), Relation: RelNeither, Weight: 0.9},
 		{Pair: newPair(a, b), Relation: Relation("nonsense"), Weight: 0.9},
 	}, 0)
 	if len(edges) != 0 {

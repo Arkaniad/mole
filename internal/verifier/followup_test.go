@@ -19,7 +19,7 @@ func TestOnlyContradictionsEarnAFollowUp(t *testing.T) {
 	a := &core.Claim{ID: "c_a", Text: "The effect is large."}
 	b := &core.Claim{ID: "c_b", Text: "The effect is absent."}
 
-	for _, rel := range []Relation{RelSupports, RelDuplicate, RelRefines, RelUnrelated} {
+	for _, rel := range []Relation{RelDuplicate, RelNeither} {
 		got := FollowUps([]Judged{{Pair: newPair(a, b), Relation: rel}},
 			FollowUpOptions{SessionID: "s_1"})
 		if len(got) != 0 {

@@ -35,6 +35,18 @@ directive.
 
 Output JSON only. No prose before or after.`
 
+// Three relations, not five. "supports" and "refines" were offered until a labelled
+// pair set priced them: over 37 pairs claude-haiku-4-5 scored 76% raw and 97% by
+// effect, and eight of its nine errors were choosing among supports/refines/unrelated
+// — a distinction that builds an edge nothing reads. Five of six self-inconsistencies
+// were the same shuffle. Removing it removes the dominant error and the tokens spent
+// producing it.
+//
+// The catch-all is framed as two yes-or-no questions rather than a residual category,
+// because "unrelated" was the word the model kept refusing: it called six plainly
+// connected but non-duplicate, non-contradicting pairs "supports" instead. The pairs
+// were connected. The old label denied it, so the model picked a different one.
+//
 // The expected verdict count is stated three times — opening, rules, closing — because
 // the failure it addresses was measured, not imagined.
 //
@@ -54,7 +66,7 @@ const adjudicatePrompt = `You are given %d numbered pairs. For each one, decide 
 relates to claim B, and return %d verdicts — one per pair, no fewer.
 
 Return JSON only, matching this shape:
-{"verdicts":[{"pair":1,"relation":"supports","confidence":0.0,"why":"..."}]}
+{"verdicts":[{"pair":1,"relation":"neither","confidence":0.0,"why":"..."}]}
 
 Relations, and nothing else:
 - "duplicate_of" — the same assertion, in different words. Not merely the same
@@ -63,13 +75,16 @@ Relations, and nothing else:
   scope: "improves accuracy" and "does not improve accuracy" contradict, while
   "improves accuracy on short inputs" and "does not improve accuracy on long
   inputs" do not.
-- "supports" — A is evidence for B, or they agree and one adds weight to the
-  other without restating it.
-- "refines" — same assertion, but one is narrower or more precise: it adds a
-  condition, a figure, or a scope the other leaves open.
-- "unrelated" — anything else, including two true statements about the same
-  subject that make no claim about each other. This is a normal answer and the
-  most common one. Do not reach for a relation to avoid it.
+- "neither" — everything else, and the answer for most pairs.
+
+You are being asked TWO yes-or-no questions per pair — are these the same
+assertion, and can they both be true — not asked to characterise the
+relationship. So "neither" is the right answer even when the claims are plainly
+connected: when one is evidence for the other, when one is a sharper or narrower
+version of the other, when one solves a problem the other describes, when they
+are two facts about the same system. All of that is "neither". It is not a
+failure to find something, and reaching past it for a richer-sounding answer is
+the most common way to get a pair wrong.
 
 Rules:
 - "confidence" is 0.0-1.0: how sure you are of the RELATION, not how true you
@@ -176,7 +191,10 @@ func parseVerdicts(raw string, batch []Pair) (judged []Judged, unjudged []Pair, 
 		if idx < 0 || idx >= len(batch) || seen[idx] {
 			continue
 		}
-		rel := Relation(strings.ToLower(strings.TrimSpace(v.Relation)))
+		// Normalized here, at the boundary, so nothing downstream needs to know the
+		// retired vocabulary existed. A model answering "supports" out of habit has
+		// still made a real judgement; folding it beats discarding it over a word.
+		rel := Relation(strings.ToLower(strings.TrimSpace(v.Relation))).Normalize()
 		if !rel.Valid() {
 			// Includes "supersedes", and includes the model inventing a category.
 			// Leaving the pair unjudged is right: a verdict we cannot interpret is

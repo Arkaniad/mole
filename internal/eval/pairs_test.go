@@ -72,16 +72,20 @@ func TestEveryRelationHasADeliberateEffect(t *testing.T) {
 	want := map[verifier.Relation]verifier.Effect{
 		verifier.RelContradicts: verifier.EffectContradiction,
 		verifier.RelDuplicate:   verifier.EffectDuplicate,
-		verifier.RelSupports:    verifier.EffectInert,
-		verifier.RelRefines:     verifier.EffectInert,
-		verifier.RelUnrelated:   verifier.EffectInert,
+		verifier.RelNeither:     verifier.EffectInert,
+		// Retired, and still mapped: labels and claim_edges rows written before the
+		// taxonomy shrank carry these, and scoring an old labelled set against a new
+		// judge run works only because both sides land on the same effect.
+		verifier.RelSupports:  verifier.EffectInert,
+		verifier.RelRefines:   verifier.EffectInert,
+		verifier.RelUnrelated: verifier.EffectInert,
 	}
 	for rel, eff := range want {
 		if got := rel.EffectOf(); got != eff {
 			t.Errorf("%s has effect %q, want %q", rel, got, eff)
 		}
 	}
-	if len(want) != 5 {
+	if len(want) != 6 {
 		t.Fatal("a relation was added or removed without updating this table")
 	}
 }

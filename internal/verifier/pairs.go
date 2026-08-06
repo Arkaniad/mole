@@ -25,39 +25,76 @@ import (
 //     invites invention.
 type Relation string
 
+// The relations a model is asked for. Three, because three is what the graph reads.
 const (
-	RelSupports    Relation = "supports"
 	RelContradicts Relation = "contradicts"
 	RelDuplicate   Relation = "duplicate_of"
-	RelRefines     Relation = "refines"
-	RelUnrelated   Relation = "unrelated"
+	// RelNeither is the catch-all, and the most common answer by a wide margin.
+	//
+	// Named "neither" rather than "unrelated" on purpose. Two claims can be closely
+	// related — one evidence for the other, one a sharper version of the other — and
+	// still belong here, because duplication and contradiction are the only
+	// distinctions anything downstream acts on. Asking a model to file an obviously
+	// supporting pair under "unrelated" fights its own sense of the words, and the
+	// measurement says it loses that fight: it reached for "supports" on six pairs
+	// that were nothing of the kind.
+	RelNeither Relation = "neither"
+)
+
+// Retired relations, still accepted on the way in.
+//
+// These were offered to the model until the labelled pair set showed what they cost.
+// Over 37 pairs, claude-haiku-4-5 scored 76% raw and 97% by effect: eight of its nine
+// errors were choosing between "supports", "refines" and "unrelated", and every one of
+// those built an edge nothing reads. Five of six self-inconsistencies were the same
+// shuffle. The distinction bought nothing and was the dominant source of error.
+//
+// Kept parseable for two reasons that outlive the change: claim_edges rows written
+// before this carry the old kinds, and a model that answers "supports" out of habit
+// should have its verdict normalized rather than thrown away — the effect is
+// identical, and discarding it would lose a real judgement over vocabulary.
+const (
+	RelSupports  Relation = "supports"
+	RelRefines   Relation = "refines"
+	RelUnrelated Relation = "unrelated"
 )
 
 func (r Relation) Valid() bool {
 	switch r {
-	case RelSupports, RelContradicts, RelDuplicate, RelRefines, RelUnrelated:
+	case RelContradicts, RelDuplicate, RelNeither,
+		RelSupports, RelRefines, RelUnrelated:
 		return true
 	}
 	return false
 }
 
+// Normalize folds a retired relation onto the one that replaced it.
+//
+// Applied at parse time so that nothing past the boundary has to know the old
+// vocabulary existed.
+func (r Relation) Normalize() Relation {
+	switch r {
+	case RelSupports, RelRefines, RelUnrelated:
+		return RelNeither
+	}
+	return r
+}
+
 // Effect is what a relation actually changes about the graph.
 //
-// Five relations, three effects. The taxonomy the model answers in is finer than
-// the one the system consumes, and that gap is worth naming because it decides how
-// seriously to take a disagreement between two judges.
+// The live taxonomy is now one relation per effect, so for anything the model says
+// today this is a rename. It earns its place on the boundary: retired relations still
+// arrive from claim_edges rows and from stored pair-set dumps, and comparing a
+// five-relation graph against a three-relation one is exactly the measurement that
+// justified shrinking the taxonomy in the first place.
 //
-// Grep for the edge kinds and the asymmetry is stark. EdgeContradicts is read by
-// confidence derivation (a penalty), by the executor (it queues a follow-up lead),
-// by grounding, by the report's duplicate collapse and by the scorecard.
-// EdgeDuplicateOf drives clustering, and therefore the publisher count that
-// corroboration is computed from. EdgeSupports and EdgeRefines are read in exactly
-// two places: the validity switch in core, and the display order in `mole trace`.
-// Nothing derives anything from them. RelUnrelated produces no edge at all.
-//
-// So "supports" and "refines" and "unrelated" are, today, one answer wearing three
-// hats. Two judges splitting between them have not disagreed about anything the
-// graph will do; two splitting between "contradicts" and "supports" have.
+// The asymmetry it was written to expose, kept because it is the reason the vocabulary
+// is the size it is. EdgeContradicts is read by confidence derivation (a penalty), by
+// the executor (it queues a follow-up lead), by grounding, by the report's duplicate
+// collapse and by the scorecard. EdgeDuplicateOf drives clustering, and therefore the
+// publisher count corroboration is computed from. EdgeSupports and EdgeRefines were
+// read in exactly two places: the validity switch in core, and the display order in
+// `mole trace`.
 type Effect string
 
 const (
@@ -270,7 +307,13 @@ func Edges(sessionID string, verdicts []Judged, stalenessGap time.Duration) []co
 
 	var out []core.ClaimEdge
 	for _, v := range verdicts {
-		if v.Relation == RelUnrelated || !v.Relation.Valid() {
+		// Normalized rather than compared against RelNeither alone. Every verdict
+		// reaching the one production caller has already been folded by parseVerdicts,
+		// so this is a guard on an exported boundary, not a live path: Valid still
+		// accepts the retired names, which makes an un-normalized Judged representable,
+		// and a "supports" arriving here would otherwise store an edge that the
+		// taxonomy no longer admits.
+		if v.Relation.Normalize() == RelNeither || !v.Relation.Valid() {
 			continue
 		}
 

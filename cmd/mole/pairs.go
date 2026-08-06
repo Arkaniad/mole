@@ -185,11 +185,14 @@ func pctOrDash(v float64, ok bool) string {
 	return fmt.Sprintf("%.0f%%", 100*v)
 }
 
+// relationNames is what a person labelling a pair set may write. The three live
+// relations only: the retired ones still parse, but offering them here would invite
+// new labels in a vocabulary the judge is no longer asked to produce, which scores as
+// a mistake the judge could not have avoided.
 func relationNames() []string {
 	return []string{
-		string(verifier.RelSupports), string(verifier.RelContradicts),
-		string(verifier.RelDuplicate), string(verifier.RelRefines),
-		string(verifier.RelUnrelated),
+		string(verifier.RelContradicts), string(verifier.RelDuplicate),
+		string(verifier.RelNeither),
 	}
 }
 
