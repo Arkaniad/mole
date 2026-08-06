@@ -20,6 +20,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/lajosdeme/mole/internal/core"
 	"time"
 )
 
@@ -35,6 +37,16 @@ type Config struct {
 	// rather than documented in a README, so a missing value is caught before
 	// it becomes a ban.
 	ContactEmail string `json:"contact_email,omitempty"`
+
+	// MaxSessionUSD caps what one session started over MCP may be given, in
+	// micro-dollars. Zero means no ceiling.
+	//
+	// On the command line the budget is a number a person typed. Over MCP it is a
+	// number an agent chose, and nothing else bounds it — a coding agent that
+	// misreads its own instructions can ask for a thousand dollars as easily as
+	// three. The ceiling is the daemon's, not the caller's, which is the point:
+	// it is the one limit the caller cannot raise.
+	MaxSessionUSD int64 `json:"max_session_usd,omitempty"`
 
 	// Budget defaults applied when a session does not specify.
 	DefaultBudgetUnit string `json:"default_budget_unit,omitempty"`
@@ -321,6 +333,32 @@ func Fields() []Field {
 			get:  func(c *Config) string { return c.LLM.VerifierModel },
 			set: func(c *Config, v string) error {
 				c.LLM.VerifierModel = strings.TrimSpace(v)
+				return nil
+			},
+		},
+		{
+			Name: "daemon.max-session-usd",
+			Help: "ceiling on what one MCP-started session may spend, e.g. 2.50; unset means no ceiling",
+			get: func(c *Config) string {
+				if c.MaxSessionUSD == 0 {
+					return ""
+				}
+				return core.FormatUSD(c.MaxSessionUSD)
+			},
+			set: func(c *Config, v string) error {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					c.MaxSessionUSD = 0
+					return nil
+				}
+				amount, err := core.ParseUSD(v)
+				if err != nil {
+					return err
+				}
+				if amount < 0 {
+					return errors.New("a ceiling cannot be negative")
+				}
+				c.MaxSessionUSD = amount
 				return nil
 			},
 		},

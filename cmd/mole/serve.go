@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -11,15 +12,24 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/lajosdeme/mole/internal/config"
+	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/daemon"
+	"github.com/lajosdeme/mole/internal/mcpserver"
 	"github.com/lajosdeme/mole/internal/session"
 	"github.com/spf13/cobra"
 )
 
 // defaultServeMaxSources matches the CLI's --max-sources default. The daemon has
 // no per-call flag for it yet; the MCP tool surface carries it in slice 5.
-const defaultServeMaxSources = 5
+const (
+	defaultServeMaxSources = 5
+	defaultServeMaxDepth   = 2
+	defaultServeMaxLeads   = 12
+	defaultServeTimeout    = 20 * time.Minute
+)
 
 // DefaultSocketName is the socket's basename under the runtime directory.
 const DefaultSocketName = "mole.sock"
@@ -120,10 +130,34 @@ func cmdServe(ctx context.Context, o serveOpts) error {
 	}
 
 	sup := session.NewSupervisor(runner, o.maxSessions, actor.Log)
-	srv := &daemon.Server{
-		Socket:        o.socket,
+
+	// One MCP server for the daemon, connected to each accepted connection
+	// separately. Its tools close over the supervisor and the store, so every
+	// connection shares the same state — which is the point: a session started
+	// through one shim is visible through the next.
+	mcpSrv := mcpserver.New(mcpserver.Deps{
 		Supervisor:    sup,
-		Handler:       daemon.HandlerFunc(notYetServing),
+		Store:         db,
+		MaxSessionUSD: cfg.MaxSessionUSD,
+		MaxSources:    defaultServeMaxSources,
+		MaxDepth:      defaultServeMaxDepth,
+		MaxLeads:      defaultServeMaxLeads,
+		Timeout:       defaultServeTimeout,
+		Log:           actor.Log,
+	})
+
+	srv := &daemon.Server{
+		Socket:     o.socket,
+		Supervisor: sup,
+		Handler: daemon.HandlerFunc(func(ctx context.Context, c net.Conn) {
+			// Run, not Connect: each connection has its own transport and its own
+			// session, and Run blocks until that session ends — which is exactly the
+			// lifetime the daemon already gives a handler goroutine.
+			if err := mcpSrv.Run(ctx, &mcp.IOTransport{Reader: c, Writer: c}); err != nil &&
+				!errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
+				actor.Log.Warn("mcp session ended with an error", "err", err)
+			}
+		}),
 		Log:           actor.Log,
 		ShutdownGrace: o.grace,
 	}
@@ -142,6 +176,11 @@ func cmdServe(ctx context.Context, o serveOpts) error {
 	fmt.Printf("mole daemon listening on %s\n", o.socket)
 	fmt.Printf("  database  %s (holding the single writer)\n", o.dbPath)
 	fmt.Printf("  sessions  up to %d at once\n", o.maxSessions)
+	if cfg.MaxSessionUSD > 0 {
+		fmt.Printf("  ceiling   %s per session\n", core.FormatUSD(cfg.MaxSessionUSD))
+	} else {
+		fmt.Println("  ceiling   none — set one with: mole config set daemon.max-session-usd")
+	}
 	fmt.Println("  stop with Ctrl-C; running sessions are cancelled and their budget released")
 
 	if err := srv.Serve(ctx, ln); err != nil {
@@ -149,15 +188,4 @@ func cmdServe(ctx context.Context, o serveOpts) error {
 	}
 	fmt.Println("daemon stopped")
 	return nil
-}
-
-// notYetServing answers a connection before the MCP server exists.
-//
-// A message rather than silence or a closed socket: everything under it — the
-// listener's permissions, peer checks, the supervisor, shutdown that waits for
-// budget holds — is real and running, and somebody who connects should be told
-// which part is missing rather than left guessing whether the daemon is broken.
-func notYetServing(_ context.Context, c net.Conn) {
-	_, _ = c.Write([]byte("mole: the daemon is running but speaks no protocol yet " +
-		"(MCP arrives in M7 slice 5)\n"))
 }
