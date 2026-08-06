@@ -85,3 +85,57 @@ func TestEveryRelationHasADeliberateEffect(t *testing.T) {
 		t.Fatal("a relation was added or removed without updating this table")
 	}
 }
+
+// TestScoreSeparatesInertErrorsFromRealOnes is TestAgreementSeparates... for the
+// labelled path.
+//
+// Measured on claude-haiku-4-5 against 37 blind labels: 76% raw, 97% by effect.
+// Eight of nine errors were calling an unrelated pair "supports" or "refines" —
+// an edge nothing reads. The ninth was a false contradiction, which spends a
+// confidence penalty and a research lead. Those are not the same mistake and a
+// single accuracy figure cannot tell them apart.
+func TestScoreSeparatesInertErrorsFromRealOnes(t *testing.T) {
+	ps := &eval.PairSet{Pairs: []eval.LabelledPair{
+		{Pair: "a", Model: "unrelated", Label: "unrelated", Judged: true},    // correct
+		{Pair: "b", Model: "supports", Label: "unrelated", Judged: true},     // inert error
+		{Pair: "c", Model: "refines", Label: "supports", Judged: true},       // inert error
+		{Pair: "d", Model: "contradicts", Label: "unrelated", Judged: true},  // REAL error
+		{Pair: "e", Model: "unrelated", Label: "duplicate_of", Judged: true}, // REAL error
+	}}
+
+	s := eval.ScorePairs(ps)
+	if s.Labelled != 5 {
+		t.Fatalf("Labelled = %d, want 5", s.Labelled)
+	}
+	if s.Correct != 1 {
+		t.Errorf("Correct = %d, want 1", s.Correct)
+	}
+	if s.CorrectEffect != 3 {
+		t.Errorf("CorrectEffect = %d, want 3 (the correct one plus two inert errors)", s.CorrectEffect)
+	}
+	if got := s.EffectAccuracy(); got < 0.59 || got > 0.61 {
+		t.Errorf("EffectAccuracy = %.3f, want 0.6", got)
+	}
+
+	// A missed duplicate_of is a real error, not an inert one: it leaves two claims
+	// in separate clusters and inflates the publisher count corroboration is built
+	// from. Scoring it as inert would hide a confidence inflation bug.
+	only := &eval.PairSet{Pairs: []eval.LabelledPair{
+		{Pair: "e", Model: "unrelated", Label: "duplicate_of", Judged: true},
+	}}
+	if s := eval.ScorePairs(only); s.CorrectEffect != 0 {
+		t.Errorf("a missed duplicate_of scored as effect-correct (CorrectEffect=%d)", s.CorrectEffect)
+	}
+
+	// Unlabelled and unjudged pairs must stay excluded from both counts, or the
+	// effect figure becomes the softer number it must never be.
+	padded := &eval.PairSet{Pairs: append([]eval.LabelledPair{
+		{Pair: "x", Model: "supports", Label: "", Judged: true},   // unlabelled
+		{Pair: "y", Model: "", Label: "unrelated", Judged: false}, // never asked
+	}, ps.Pairs...)}
+	p := eval.ScorePairs(padded)
+	if p.Labelled != 5 || p.CorrectEffect != 3 {
+		t.Errorf("padding changed the score: Labelled=%d CorrectEffect=%d, want 5 and 3",
+			p.Labelled, p.CorrectEffect)
+	}
+}

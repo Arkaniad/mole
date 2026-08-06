@@ -241,6 +241,23 @@ type PairScore struct {
 	// over-reports: of the pairs it called X, how many were X.
 	Precision map[string]float64 `json:"precision"`
 	Recall    map[string]float64 `json:"recall"`
+
+	// CorrectEffect counts verdicts that do the right thing to the graph even when
+	// they used the wrong word, on the same reasoning as Agreement.SameEffect.
+	//
+	// Measured on claude-haiku-4-5 over 37 labelled pairs: 76% raw, 97% by effect.
+	// Eight of its nine errors were calling an unrelated pair "supports" or
+	// "refines", which builds an edge nothing reads. The ninth was a false
+	// contradiction, which costs a confidence penalty and a research lead.
+	CorrectEffect int `json:"correct_effect"`
+}
+
+// EffectAccuracy is accuracy over what the graph will do, ignoring vocabulary.
+func (s PairScore) EffectAccuracy() float64 {
+	if s.Labelled == 0 {
+		return 0
+	}
+	return float64(s.CorrectEffect) / float64(s.Labelled)
 }
 
 // ScorePairs compares the model's verdicts against the labels.
@@ -281,6 +298,9 @@ func ScorePairs(ps *PairSet) PairScore {
 		if model == label {
 			s.Correct++
 			hit[label]++
+		}
+		if verifier.Relation(model).EffectOf() == verifier.Relation(label).EffectOf() {
+			s.CorrectEffect++
 		}
 	}
 

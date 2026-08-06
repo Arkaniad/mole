@@ -124,6 +124,12 @@ func newPairsScoreCmd() *cobra.Command {
 func printPairScore(s eval.PairScore) {
 	fmt.Printf("adjudicator accuracy: %.0f%%  (%d of %d labelled pair(s))\n",
 		100*s.Accuracy(), s.Correct, s.Labelled)
+	fmt.Printf("  by effect on the graph: %.0f%%  (%d of %d)",
+		100*s.EffectAccuracy(), s.CorrectEffect, s.Labelled)
+	if inert := s.CorrectEffect - s.Correct; inert > 0 {
+		fmt.Printf("  — %d error(s) build an edge nothing reads", inert)
+	}
+	fmt.Println()
 	if s.Unlabelled > 0 {
 		// Counted, never guessed at: a score over whichever pairs someone got round to
 		// labelling, reported as the score, is how a test set starts lying.
@@ -153,9 +159,14 @@ func printPairScore(s eval.PairScore) {
 	var lines []string
 	for model, truths := range s.Confusion {
 		for truth, n := range truths {
-			if model != truth {
-				lines = append(lines, fmt.Sprintf("  said %-13s was really %-13s ×%d", model, truth, n))
+			if model == truth {
+				continue
 			}
+			note := ""
+			if verifier.Relation(model).EffectOf() != verifier.Relation(truth).EffectOf() {
+				note = "  <-- changes the graph"
+			}
+			lines = append(lines, fmt.Sprintf("  said %-13s was really %-13s ×%d%s", model, truth, n, note))
 		}
 	}
 	if len(lines) > 0 {
