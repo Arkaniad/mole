@@ -1,10 +1,14 @@
 package verifier
 
 import (
+	"bytes"
+	"context"
+	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/llm"
 )
 
 func testBatch(n int) []Pair {
@@ -513,5 +517,46 @@ func TestTheOutputAllowanceFitsAReasoningModel(t *testing.T) {
 	if groundMaxTokens <= observedReasoning {
 		t.Errorf("groundMaxTokens = %d, at or below the measured reasoning cost of %d",
 			groundMaxTokens, observedReasoning)
+	}
+}
+
+// TestAShortBatchIsReportedNotSwallowed pins the diagnostic.
+//
+// A truncated batch is not an error at either call site — parseVerdicts salvages the
+// verdicts that arrived and reports the rest as unjudged — so nothing forces the loss
+// to be visible. It was invisible for two rounds of tuning, and both times the ceiling
+// was raised by guessing rather than from the numbers the response already carried.
+func TestAShortBatchIsReportedNotSwallowed(t *testing.T) {
+	batch := []Pair{
+		{A: &core.Claim{ID: "a1", Text: "one"}, B: &core.Claim{ID: "b1", Text: "two"}},
+		{A: &core.Claim{ID: "a2", Text: "three"}, B: &core.Claim{ID: "b2", Text: "four"}},
+	}
+	resp := &llm.Response{
+		StopReason: "length",
+		Usage:      llm.Usage{OutputTokens: 4400},
+	}
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	logShortBatch(context.Background(), log, batch, resp, 1)
+
+	out := buf.String()
+	if out == "" {
+		t.Fatal("one verdict for a batch of two logged nothing")
+	}
+	// The three numbers that tell truncation apart from a model with no opinion. A
+	// warning without them says only that something was lost.
+	for _, want := range []string{"unanswered=1", "stop_reason=length", "output_tokens=4400", "ceiling="} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log line is missing %q, so it cannot distinguish a ceiling from a\n"+
+				"model that declined to answer:\n%s", want, out)
+		}
+	}
+
+	// A complete batch stays quiet, or the signal is worthless.
+	buf.Reset()
+	logShortBatch(context.Background(), log, batch, resp, 2)
+	if buf.Len() != 0 {
+		t.Errorf("a fully answered batch logged a warning: %s", buf.String())
 	}
 }

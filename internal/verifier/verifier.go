@@ -426,6 +426,7 @@ func (v *Verifier) adjudicate(ctx context.Context, sessionID string, batch []Pai
 	if perr != nil {
 		v.logger().WarnContext(ctx, "verifier: batch returned no usable verdicts", "err", perr)
 	}
+	logShortBatch(ctx, v.logger(), batch, resp, len(judged))
 	return judged, unjudged, nil
 }
 
@@ -594,6 +595,32 @@ func estimateBatch(unit core.BudgetUnit, pairs int) int64 {
 // Generous on purpose: unused output tokens are not billed.
 func maxTokensForBatch(pairs int) int {
 	return 4000 + pairs*200
+}
+
+// logShortBatch reports a batch that came back with fewer verdicts than pairs.
+//
+// This existed as a silent loss twice over. A truncated response is not an error at
+// either call site — parseVerdicts salvages what arrived and reports the rest as
+// unjudged, which is the right behaviour — so a run that answered nine of sixteen
+// pairs printed nothing about the seven, and the ceiling that caused it was
+// indistinguishable from a model that simply had no opinion.
+//
+// Both readings lead somewhere different. Guessing between them is how
+// maxTokensForBatch was mis-sized twice, so the numbers needed to tell them apart
+// are logged rather than inferred: stop_reason "length" with output_tokens at the
+// ceiling is truncation, and anything else is the model.
+func logShortBatch(ctx context.Context, log *slog.Logger, batch []Pair, resp *llm.Response, judged int) {
+	if resp == nil || judged >= len(batch) {
+		return
+	}
+	log.WarnContext(ctx, "verifier: batch answered fewer pairs than it was asked",
+		"pairs", len(batch),
+		"verdicts", judged,
+		"unanswered", len(batch)-judged,
+		"stop_reason", resp.StopReason,
+		"output_tokens", resp.Usage.OutputTokens,
+		"ceiling", maxTokensForBatch(len(batch)),
+	)
 }
 
 // newPairKey is Pair.Key for two bare IDs, used to index existing edges.

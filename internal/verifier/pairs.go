@@ -355,6 +355,7 @@ func JudgePairs(ctx context.Context, p llm.Provider, model string, pairs []Pair,
 		if perr != nil {
 			log.WarnContext(ctx, "judge: no usable verdicts", "err", perr)
 		}
+		logShortBatch(ctx, log, batch, resp, len(got))
 		judged = append(judged, got...)
 		unjudged = append(unjudged, missed...)
 	}
