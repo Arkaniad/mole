@@ -21,6 +21,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/pricing"
 	"github.com/lajosdeme/mole/internal/session"
 	"github.com/lajosdeme/mole/internal/store"
 )
@@ -53,6 +54,14 @@ type Deps struct {
 	// MaxSessionUSD caps a single session's budget in micro-dollars. Zero means
 	// no ceiling. See config.MaxSessionUSD for why this exists.
 	MaxSessionUSD int64
+
+	// LLM answers research.ask. Nil disables synthesis: an ask then returns the
+	// relevant claims with citations and no prose, which is the honest response
+	// when no call can be made.
+	LLM llmProvider
+	// Pricing turns an ask's token usage into a ledger cost. Nil takes the
+	// default table.
+	Pricing *pricing.Table
 
 	// Defaults applied when a call does not specify.
 	MaxSources int
@@ -105,6 +114,14 @@ func New(d Deps) *mcp.Server {
 			"nothing further is spent: the remaining research, the grounding pass and the " +
 			"report synthesis are all skipped.",
 	}, d.cancel)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "research.ask",
+		Description: "Ask a NEW question against a finished session's research, without " +
+			"researching again. Retrieval-only and cheap: it re-reads claims that were " +
+			"already gathered and paid for. Use it when your own context was compacted, " +
+			"or to follow up on something the original question did not cover.",
+	}, d.ask)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "research.sessions.list",

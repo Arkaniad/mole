@@ -15,6 +15,7 @@ import (
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/llm"
 	"github.com/lajosdeme/mole/internal/mcpserver"
+	"github.com/lajosdeme/mole/internal/pricing"
 	"github.com/lajosdeme/mole/internal/session"
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/store/sqlite"
@@ -59,6 +60,11 @@ type rig struct {
 // breaks every caller.
 func connect(t *testing.T, maxUSD int64) *rig {
 	t.Helper()
+	return connectWith(t, maxUSD, nil)
+}
+
+func connectWith(t *testing.T, maxUSD int64, answerer llm.Provider) *rig {
+	t.Helper()
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "t.db"), sqlite.Options{})
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -83,6 +89,8 @@ func connect(t *testing.T, maxUSD int64) *rig {
 	srv := mcpserver.New(mcpserver.Deps{
 		Supervisor:    sup,
 		Store:         db,
+		LLM:           answerer,
+		Pricing:       stubPricing(),
 		MaxSessionUSD: maxUSD,
 		MaxSources:    3,
 		MaxDepth:      1,
@@ -139,6 +147,17 @@ func errText(res *mcp.CallToolResult) string {
 	return b.String()
 }
 
+// stubPricing prices the test model.
+//
+// Without it an ask costs exactly zero: an unknown model records its tokens and
+// prices them at nothing, which is the right production behaviour and makes any
+// assertion about spend vacuous.
+func stubPricing() *pricing.Table {
+	tbl := pricing.NewTable()
+	tbl.Register("stub-model", pricing.Rates{Input: 1_000, Output: 5_000})
+	return tbl
+}
+
 // --- tests ------------------------------------------------------------------
 
 // TestTheAdvertisedToolsAreTheOnesWeAgreedToShip.
@@ -162,7 +181,7 @@ func TestTheAdvertisedToolsAreTheOnesWeAgreedToShip(t *testing.T) {
 	sort.Strings(got)
 
 	want := []string{
-		"research.cancel", "research.report", "research.result",
+		"research.ask", "research.cancel", "research.report", "research.result",
 		"research.sessions.list", "research.status",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
