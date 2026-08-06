@@ -3,6 +3,7 @@ package verifier
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -558,5 +559,43 @@ func TestAShortBatchIsReportedNotSwallowed(t *testing.T) {
 	logShortBatch(context.Background(), log, batch, resp, 2)
 	if buf.Len() != 0 {
 		t.Errorf("a fully answered batch logged a warning: %s", buf.String())
+	}
+}
+
+// TestThePromptStatesTheVerdictCount pins the count that "judge every pair" left implicit.
+//
+// A model that has answered two of eight cannot tell it is unfinished from "every pair";
+// it can from "return 8 verdicts". gemma4:12b stopped voluntarily at two, then at one.
+func TestThePromptStatesTheVerdictCount(t *testing.T) {
+	for _, n := range []int{1, 3, 8} {
+		prompt, _ := adjudicateUserPrompt(testBatch(n))
+		count := fmt.Sprintf("%d", n)
+
+		// Stated at the top, and again at the very end — the instruction nearest the
+		// point where the model was quitting.
+		if !strings.Contains(prompt, "given "+count+" numbered pairs") {
+			t.Errorf("batch of %d does not open by stating the count:\n%s", n, prompt)
+		}
+		// Restated in the rules and again in the line introducing the data block. NOT
+		// after the block: TestClaimTextCannotForgeAPairBoundary requires the closing
+		// fence tag to be the last thing in the prompt, and it caught an earlier version
+		// of this change that put the reminder below it.
+		if !strings.Contains(prompt, "must have "+count+" entries") {
+			t.Errorf("batch of %d does not restate the count in the rules:\n%s", n, prompt)
+		}
+		if !strings.Contains(prompt, "Answer with all "+count+" verdicts.") {
+			t.Errorf("batch of %d does not restate the count before the data block:\n%s", n, prompt)
+		}
+		// A count that disagrees with the batch is worse than none: it invites the model
+		// to invent a verdict for a pair it was never shown.
+		if !strings.Contains(prompt, "return "+count+" verdicts — one per pair") {
+			t.Errorf("batch of %d does not state the count up front:\n%s", n, prompt)
+		}
+	}
+
+	// And the count must track the batch, not a constant that happens to match one size.
+	eight, _ := adjudicateUserPrompt(testBatch(8))
+	if strings.Contains(eight, "given 3 numbered pairs") {
+		t.Error("the count is hardcoded: a batch of 8 claims to be 3")
 	}
 }

@@ -1330,8 +1330,12 @@ func (v *verifierLLM) Complete(_ context.Context, req llm.Request) (*llm.Respons
 	}
 	resp := &llm.Response{Model: "fake-model", Usage: llm.Usage{InputTokens: 300, OutputTokens: 60}}
 
-	// Adjudication prompts are the ones carrying a pairs block.
-	if strings.Contains(prompt, "how claim A relates to claim B") {
+	// Adjudication prompts are the ones carrying a pairs block. Keyed to the fence
+	// tag rather than a sentence: this matched "how claim A relates to claim B" until
+	// a reflow put a newline mid-phrase, and three tests then reported that the
+	// verifier never adjudicated at all when in fact only the fixture had stopped
+	// recognising it. The tag is structural, so prose edits cannot silently unhook it.
+	if strings.Contains(prompt, "<pairs-") {
 		v.adjudged++
 		var b strings.Builder
 		b.WriteString(`{"verdicts":[`)
