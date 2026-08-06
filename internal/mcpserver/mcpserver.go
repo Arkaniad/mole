@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,9 +52,11 @@ type Deps struct {
 	// worst possible behaviour for a caller told to poll.
 	Store store.Store
 
-	// MaxSessionUSD caps a single session's budget in micro-dollars. Zero means
-	// no ceiling. See config.MaxSessionUSD for why this exists.
-	MaxSessionUSD int64
+	// MaxSessionUSD and MaxSessionTokens cap a single session's budget in their
+	// respective units. Zero means no ceiling. See config.MaxSessionUSD for why
+	// these exist, and checkCeiling for why having only one set is refused.
+	MaxSessionUSD    int64
+	MaxSessionTokens int64
 
 	// LLM answers research.ask. Nil disables synthesis: an ask then returns the
 	// relevant claims with citations and no prose, which is the honest response
@@ -172,11 +175,8 @@ func (d Deps) report(ctx context.Context, _ *mcp.CallToolRequest, in ReportIn) (
 	}
 	// The daemon's ceiling, not the caller's. Checked before the session row is
 	// written so a refused request costs nothing and leaves nothing behind.
-	if unit == core.BudgetUSD && d.MaxSessionUSD > 0 && amount > d.MaxSessionUSD {
-		return nil, ReportOut{}, fmt.Errorf(
-			"budget %s is over this daemon's per-session ceiling of %s "+
-				"(raise it with: mole config set daemon.max-session-usd)",
-			core.FormatUSD(amount), core.FormatUSD(d.MaxSessionUSD))
+	if err := d.checkCeiling(unit, amount); err != nil {
+		return nil, ReportOut{}, err
 	}
 
 	spec := session.Spec{
@@ -184,8 +184,13 @@ func (d Deps) report(ctx context.Context, _ *mcp.CallToolRequest, in ReportIn) (
 		Mode:       core.ModeReport,
 		BudgetUnit: unit,
 		Budget:     amount,
-		MaxSources: orDefault(in.MaxSources, d.MaxSources),
-		MaxDepth:   orDefault(in.MaxDepth, d.MaxDepth),
+		// Clamped, not just defaulted. These multiply into §8.5's MaxToolCalls
+		// (leads x sources x 4), so an unclamped max_sources of a million disables
+		// the one ceiling that is supposed to bind when the money estimate is
+		// wrong — and points a million fetches at arbitrary hosts from the user's
+		// address while doing it.
+		MaxSources: clampToDefault(in.MaxSources, d.MaxSources, MaxSourcesCeiling),
+		MaxDepth:   clampToDefault(in.MaxDepth, d.MaxDepth, MaxDepthCeiling),
 		MaxLeads:   d.MaxLeads,
 		Timeout:    d.Timeout,
 	}
@@ -327,7 +332,6 @@ func (d Deps) result(ctx context.Context, _ *mcp.CallToolRequest, in SessionRef)
 	var (
 		claims []*core.Claim
 		edges  []*core.ClaimEdge
-		report string
 	)
 	if err := d.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
 		var rerr error
@@ -343,13 +347,21 @@ func (d Deps) result(ctx context.Context, _ *mcp.CallToolRequest, in SessionRef)
 	out := ResultOut{
 		SessionID:   sess.ID,
 		Status:      string(sess.Status),
-		ReportMD:    report,
+		ReportMD:    sess.Report,
 		TotalClaims: len(claims),
 		TotalEdges:  len(edges),
 	}
-	if sess.Status == core.StatusRunning {
+	switch {
+	case sess.Status == core.StatusRunning:
 		out.Note = "This session is still running; the claims below are what it has " +
 			"gathered so far and the report is not written yet."
+	case sess.ReportDegraded != "":
+		// Said plainly rather than left as an empty or thin report_md. A caller
+		// that cannot tell "nothing was found" from "synthesis failed and the
+		// evidence is still here" will draw the wrong conclusion from the same
+		// empty string.
+		out.Note = "The report is incomplete: " + sess.ReportDegraded +
+			". The claims below are the evidence it was built from."
 	}
 
 	for i, c := range claims {
@@ -545,8 +557,14 @@ func parseBudget(b Budget) (core.BudgetUnit, int64, error) {
 		}
 		return unit, v, nil
 	case core.BudgetTokens:
-		var v int64
-		if _, err := fmt.Sscanf(amount, "%d", &v); err != nil {
+		// ParseInt, not fmt.Sscanf. Sscanf stops at the first character it cannot
+		// use and reports success for what it read: "1,000,000" scans as 1 and
+		// "1e6" as 1, with a nil error. A caller asking for a million tokens would
+		// get a one-token session, watch it end instantly as exhausted, and be
+		// told research was running. The USD branch never had this because
+		// core.ParseUSD rejects trailing junk.
+		v, err := strconv.ParseInt(amount, 10, 64)
+		if err != nil {
 			return "", 0, fmt.Errorf("budget.amount %q is not a whole number of tokens", amount)
 		}
 		if v <= 0 {
@@ -560,11 +578,66 @@ func parseBudget(b Budget) (core.BudgetUnit, int64, error) {
 	}
 }
 
-func orDefault(v, def int) int {
-	if v > 0 {
-		return v
+// Ceilings on what a caller may ask for per lead and per session.
+//
+// Generous — a legitimate agent will never reach them — and finite, which is the
+// point: every value here is multiplied into a resource bound.
+const (
+	MaxSourcesCeiling = 25
+	MaxDepthCeiling   = 5
+)
+
+// checkCeiling enforces the daemon's per-session budget ceiling.
+//
+// Per UNIT, because dollars and tokens are not convertible without knowing which
+// model will run, and a guessed exchange rate is a ceiling nobody can reason
+// about.
+//
+// The last branch is the one that matters. Enforcing only the unit that happens
+// to have a ceiling leaves the other as an open door: the first version checked
+// USD alone, and a caller asking for 99,999,999,999 TOKENS sailed past a $1.00
+// ceiling documented as "the one limit the caller cannot raise". Configuring one
+// ceiling and not the other is a misconfiguration, and the safe reading of a
+// misconfigured limit is refusal.
+func (d Deps) checkCeiling(unit core.BudgetUnit, amount int64) error {
+	switch unit {
+	case core.BudgetUSD:
+		if d.MaxSessionUSD > 0 && amount > d.MaxSessionUSD {
+			return fmt.Errorf("budget %s is over this daemon's per-session ceiling of %s "+
+				"(raise it with: mole config set daemon.max-session-usd)",
+				core.FormatUSD(amount), core.FormatUSD(d.MaxSessionUSD))
+		}
+		if d.MaxSessionUSD == 0 && d.MaxSessionTokens > 0 {
+			return errors.New("this daemon caps token budgets but not dollar ones; " +
+				"set daemon.max-session-usd before starting a usd session")
+		}
+	case core.BudgetTokens:
+		if d.MaxSessionTokens > 0 && amount > d.MaxSessionTokens {
+			return fmt.Errorf("budget %d tokens is over this daemon's per-session "+
+				"ceiling of %d (raise it with: mole config set daemon.max-session-tokens)",
+				amount, d.MaxSessionTokens)
+		}
+		if d.MaxSessionTokens == 0 && d.MaxSessionUSD > 0 {
+			return errors.New("this daemon caps dollar budgets but not token ones; " +
+				"set daemon.max-session-tokens before starting a token session")
+		}
 	}
-	return def
+	return nil
+}
+
+// clampToDefault takes the caller's value when it is set and sane, the daemon's
+// default when it is not, and never more than max.
+func clampToDefault(v, def, max int) int {
+	if v <= 0 {
+		v = def
+	}
+	if v > max {
+		return max
+	}
+	if v <= 0 {
+		return 1
+	}
+	return v
 }
 
 func version() string { return "0.1.0" }

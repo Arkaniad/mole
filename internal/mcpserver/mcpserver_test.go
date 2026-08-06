@@ -65,6 +65,16 @@ func connect(t *testing.T, maxUSD int64) *rig {
 
 func connectWith(t *testing.T, maxUSD int64, answerer llm.Provider) *rig {
 	t.Helper()
+	return connectFull(t, maxUSD, 0, answerer)
+}
+
+func connectCeilings(t *testing.T, maxUSD, maxTokens int64) *rig {
+	t.Helper()
+	return connectFull(t, maxUSD, maxTokens, nil)
+}
+
+func connectFull(t *testing.T, maxUSD, maxTokens int64, answerer llm.Provider) *rig {
+	t.Helper()
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "t.db"), sqlite.Options{})
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -87,15 +97,16 @@ func connectWith(t *testing.T, maxUSD int64, answerer llm.Provider) *rig {
 	})
 
 	srv := mcpserver.New(mcpserver.Deps{
-		Supervisor:    sup,
-		Store:         db,
-		LLM:           answerer,
-		Pricing:       stubPricing(),
-		MaxSessionUSD: maxUSD,
-		MaxSources:    3,
-		MaxDepth:      1,
-		MaxLeads:      4,
-		Timeout:       time.Minute,
+		Supervisor:       sup,
+		Store:            db,
+		LLM:              answerer,
+		Pricing:          stubPricing(),
+		MaxSessionUSD:    maxUSD,
+		MaxSessionTokens: maxTokens,
+		MaxSources:       3,
+		MaxDepth:         1,
+		MaxLeads:         4,
+		Timeout:          time.Minute,
 	})
 
 	st, ct := mcp.NewInMemoryTransports()
@@ -187,14 +198,10 @@ func TestTheAdvertisedToolsAreTheOnesWeAgreedToShip(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("advertised tools:\n  got  %v\n  want %v", got, want)
 	}
-	// The three that need another milestone must be absent, by name.
-	for _, absent := range []string{"research.dataset", "research.analyze_local", "research.connectors.list"} {
-		for _, g := range got {
-			if g == absent {
-				t.Errorf("%s is advertised but its milestone has not landed", absent)
-			}
-		}
-	}
+	// No separate absence loop: the exact-match above already fails if any of
+	// research.dataset, research.analyze_local or research.connectors.list
+	// appears. A second check that cannot fire unless the first one already did
+	// reads like a property and pins nothing.
 	// Every tool needs a description an agent can route on.
 	for _, tool := range res.Tools {
 		if len(tool.Description) < 40 {
@@ -454,5 +461,150 @@ func writeClaims(t *testing.T, db store.Store, sessionID string, n int) {
 		return tx.InsertClaims(ctx, claims)
 	}); err != nil {
 		t.Fatalf("insert claims: %v", err)
+	}
+}
+
+// TestResultReturnsTheReportThatWasPaidFor.
+//
+// §5.1 defines research.result as returning {report_md, claims[], edges[]}, and
+// the MCP flow — report, poll status, result — has no other moment where the
+// answer reaches the caller. It shipped returning "" for every session: the
+// handler declared a `report` variable, never assigned it, and no test looked at
+// report_md at all. Underneath, nothing persisted a report anywhere, so the
+// daemon generated one, paid for it out of escrow, and dropped it.
+func TestResultReturnsTheReportThatWasPaidFor(t *testing.T) {
+	r := connect(t, 0)
+
+	var rep mcpserver.ReportOut
+	r.call(t, "research.report", map[string]any{
+		"prompt": "a question",
+		"budget": map[string]any{"unit": "usd", "amount": "0.50"},
+	}, &rep)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_, _ = r.sup.Wait(ctx, rep.SessionID)
+	for i := 0; i < 200 && len(r.sup.Running()) > 0; i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	var out mcpserver.ResultOut
+	r.call(t, "research.result", map[string]any{"session_id": rep.SessionID}, &out)
+
+	if out.ReportMD == "" {
+		t.Error("report_md is empty for a finished session; the answer the session " +
+			"paid to produce never reaches the caller")
+	}
+	// And it must be the session's own answer, not a placeholder.
+	if !strings.Contains(out.ReportMD, "a question") {
+		t.Errorf("report_md does not mention the question it answers:\n%.300s", out.ReportMD)
+	}
+	// A degraded report says so, so an empty answer can be told from a failed one.
+	if out.Note == "" && out.Status != string(core.StatusDone) {
+		t.Errorf("status %q with no note explaining the report", out.Status)
+	}
+}
+
+// TestTheCeilingCannotBeBypassedByChangingUnit.
+//
+// The original check read `unit == core.BudgetUSD && ...`, so a caller asking in
+// TOKENS skipped it entirely: a 99,999,999,999-token session was accepted under
+// a $1.00 ceiling documented as "the one limit the caller cannot raise". The
+// test that was supposed to cover this only ever sent usd.
+func TestTheCeilingCannotBeBypassedByChangingUnit(t *testing.T) {
+	r := connectCeilings(t, 1_000_000, 100_000) // $1.00 / 100k tokens
+
+	for name, budget := range map[string]map[string]any{
+		"usd over":    {"unit": "usd", "amount": "50.00"},
+		"tokens over": {"unit": "tokens", "amount": "99999999999"},
+	} {
+		if res := r.call(t, "research.report", map[string]any{
+			"prompt": "expensive", "budget": budget,
+		}, nil); !res.IsError {
+			t.Errorf("%s: accepted %v past the ceiling", name, budget)
+		}
+	}
+
+	// Both units still work under their ceilings.
+	for name, budget := range map[string]map[string]any{
+		"usd under":    {"unit": "usd", "amount": "0.25"},
+		"tokens under": {"unit": "tokens", "amount": "50000"},
+	} {
+		if res := r.call(t, "research.report", map[string]any{
+			"prompt": "fine", "budget": budget,
+		}, nil); res.IsError {
+			t.Errorf("%s: refused %v under the ceiling: %s", name, budget, errText(res))
+		}
+	}
+
+	// Configuring one ceiling and not the other is a misconfiguration, and the
+	// safe reading of a misconfigured limit is refusal — otherwise the unset unit
+	// is exactly the open door this test exists for.
+	half := connectCeilings(t, 1_000_000, 0)
+	if res := half.call(t, "research.report", map[string]any{
+		"prompt": "x", "budget": map[string]any{"unit": "tokens", "amount": "5"},
+	}, nil); !res.IsError {
+		t.Error("a token session was accepted on a daemon that caps only dollars")
+	}
+}
+
+// TestATokenAmountIsParsedWholeOrRefused.
+//
+// fmt.Sscanf stops at the first character it cannot use and reports success for
+// what it read, so "1,000,000" scanned as 1 with a nil error. A caller asking for
+// a million tokens got a one-token session, watched it end instantly as
+// exhausted, and was told research was running.
+func TestATokenAmountIsParsedWholeOrRefused(t *testing.T) {
+	r := connect(t, 0)
+	for _, amount := range []string{"1e6", "1,000,000", "2.50", "100 000", "12abc"} {
+		res := r.call(t, "research.report", map[string]any{
+			"prompt": "a question",
+			"budget": map[string]any{"unit": "tokens", "amount": amount},
+		}, nil)
+		if !res.IsError {
+			t.Errorf("%q was accepted; it would silently truncate", amount)
+		}
+	}
+	var out mcpserver.ReportOut
+	if res := r.call(t, "research.report", map[string]any{
+		"prompt": "a question",
+		"budget": map[string]any{"unit": "tokens", "amount": "50000"},
+	}, &out); res.IsError {
+		t.Fatalf("a plain integer was refused: %s", errText(res))
+	}
+	if out.Budget != 50_000 {
+		t.Errorf("budget = %d, want 50000", out.Budget)
+	}
+}
+
+// TestCallerFanOutIsClamped. max_sources and max_depth multiply into §8.5's
+// MaxToolCalls, so an unclamped million disables the ceiling that exists to bind
+// when the money estimate is wrong.
+func TestCallerFanOutIsClamped(t *testing.T) {
+	r := connect(t, 0)
+	var out mcpserver.ReportOut
+	if res := r.call(t, "research.report", map[string]any{
+		"prompt":      "a question",
+		"budget":      map[string]any{"unit": "usd", "amount": "0.50"},
+		"max_sources": 1_000_000,
+		"max_depth":   1_000,
+	}, &out); res.IsError {
+		t.Fatalf("report: %s", errText(res))
+	}
+
+	var sess *core.Session
+	if err := r.db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		var err error
+		sess, err = q.GetSession(ctx, out.SessionID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// leads x sources x 4, with sources clamped.
+	if max := int64(mcpserver.MaxSourcesCeiling) * 4 * sess.MaxLeads; sess.MaxToolCalls > max {
+		t.Errorf("MaxToolCalls = %d, over the clamped maximum %d", sess.MaxToolCalls, max)
+	}
+	if sess.MaxToolCalls > 10_000 {
+		t.Errorf("MaxToolCalls = %d — a caller disabled §8.5's ceiling", sess.MaxToolCalls)
 	}
 }

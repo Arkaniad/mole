@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
@@ -75,11 +76,6 @@ type handle struct {
 	finished   bool
 	finishedAt time.Time
 
-	// cancelled records that a human asked for this, so the final status is
-	// "cancelled" rather than the "failed" a context error would otherwise
-	// produce. The two mean different things to somebody reading the list.
-	cancelled bool
-
 	res *Result
 	err error
 }
@@ -140,10 +136,12 @@ func (s *Supervisor) Start(ctx context.Context, spec Spec) (*core.Session, error
 	case s.closed:
 		s.mu.Unlock()
 		cancel()
+		s.abandon(ctx, sess)
 		return nil, ErrShutdown
 	case s.liveLocked() >= s.max:
 		s.mu.Unlock()
 		cancel()
+		s.abandon(ctx, sess)
 		return nil, fmt.Errorf("%w: %d session(s) already running", ErrAtCapacity, s.max)
 	}
 	s.reapLocked()
@@ -155,12 +153,74 @@ func (s *Supervisor) Start(ctx context.Context, spec Spec) (*core.Session, error
 	return sess, nil
 }
 
+// abandon finalizes a session that was created but will never run.
+//
+// Start writes the row before taking the slot, so both re-check branches can
+// refuse a session that already exists — with escrow held and status "running".
+// Nothing would ever finalize it: the supervisor never knew about it, so
+// Running() omits it while sessions.list and research.status report it running
+// forever, and research.cancel answers "this session is not running (status
+// running); nothing to cancel". SweepAbandonedSessions would reclaim it, but
+// that runs once at daemon boot, so in a long-lived daemon it never does.
+//
+// Reproduced 12 times out of 12 by two concurrent research.report calls against
+// the last free slot.
+func (s *Supervisor) abandon(ctx context.Context, sess *core.Session) {
+	if sess == nil {
+		return
+	}
+	// WithoutCancel: the caller's request context may already be gone, and a
+	// status write that fails here recreates exactly the orphan being prevented.
+	if err := s.runner.ledger().Finish(
+		context.WithoutCancel(ctx), sess.ID, core.StatusFailed); err != nil {
+		s.log.Warn("could not finalize a session refused after creation",
+			"session", sess.ID, "err", err)
+	}
+}
+
 func (s *Supervisor) run(ctx context.Context, h *handle, sess *core.Session, spec Spec) {
 	defer s.wg.Done()
 	defer close(h.done)
 	defer h.cancel()
 
+	// A panic in one session must not take the process with it.
+	//
+	// The pipeline this runs is model-driven parsing end to end, and the daemon's
+	// whole proposition is that sessions run concurrently — so a per-session
+	// fault becoming a process fault would strand every OTHER session's open
+	// reservation, with no settle and no release, until the next boot's sweep.
+	// Ordered before the defers above so the handle is still closed and the
+	// session still finalized.
+	defer func() {
+		if p := recover(); p != nil {
+			s.log.Error("session panicked", "session", sess.ID, "panic", p,
+				"stack", string(debug.Stack()))
+			// Release before finalizing: the pipeline died mid-flight, so its own
+			// settle never ran and the reservation it was holding is money neither
+			// spent nor available on a session that is now over.
+			if n, rerr := s.runner.ledger().ReleaseSessionHolds(
+				context.WithoutCancel(ctx), sess.ID); rerr != nil {
+				s.log.Warn("could not release holds after a panic", "session", sess.ID, "err", rerr)
+			} else if n > 0 {
+				s.log.Warn("released holds stranded by a panic", "session", sess.ID, "holds", n)
+			}
+			s.finalize(ctx, sess, core.StatusFailed)
+			s.mu.Lock()
+			h.err = fmt.Errorf("session: panicked: %v", p)
+			h.finished = true
+			h.finishedAt = time.Now()
+			s.mu.Unlock()
+		}
+	}()
+
 	res, err := s.runner.Run(ctx, sess, spec)
+	if err != nil {
+		// Runner.Run returns early — before its own led.Finish — when its
+		// preconditions fail. Without this the row stays "running" with escrow
+		// held, and the supervisor only logs. A second write is harmless;
+		// SetSessionStatus is idempotent.
+		s.finalize(ctx, sess, core.StatusFailed)
+	}
 
 	// No status write here. The executor already derives one from the context
 	// (statusForContext: cancelled for a cancellation, exhausted for a deadline)
@@ -189,9 +249,7 @@ func (s *Supervisor) run(ctx context.Context, h *handle, sess *core.Session, spe
 func (s *Supervisor) Cancel(id string) error {
 	s.mu.Lock()
 	h, ok := s.sessions[id]
-	if ok && !h.finished {
-		h.cancelled = true
-	} else {
+	if ok && h.finished {
 		ok = false
 	}
 	s.mu.Unlock()
@@ -259,11 +317,7 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 	}
 	s.closed = true
 	n := s.liveLocked()
-	for _, h := range s.sessions {
-		if !h.finished {
-			h.cancelled = true
-		}
-	}
+
 	s.mu.Unlock()
 
 	s.stop()
@@ -280,6 +334,21 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		return fmt.Errorf("session: shutdown timed out with %d session(s) still finishing; "+
 			"their holds will be reclaimed by the next boot sweep: %w", n, ctx.Err())
+	}
+}
+
+// finalize writes a terminal status, best effort.
+//
+// The backstop for "a session's status must end terminal". Every path that can
+// leave a row running goes through here, because the alternative — a permanently
+// running row with escrow held — is invisible until somebody wonders why their
+// budget is short.
+func (s *Supervisor) finalize(ctx context.Context, sess *core.Session, status core.SessionStatus) {
+	if sess == nil {
+		return
+	}
+	if err := s.runner.ledger().Finish(context.WithoutCancel(ctx), sess.ID, status); err != nil {
+		s.log.Warn("could not finalize session", "session", sess.ID, "err", err)
 	}
 }
 

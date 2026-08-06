@@ -247,6 +247,12 @@ func TestShutdownWaitsForHoldsToBeReleased(t *testing.T) {
 		t.Fatal("the run never reached a model call")
 	}
 
+	// Establish that something WAS held, or the assertion below passes against a
+	// fixture that never reserved. The cancel test does this and explains why.
+	if h := heldNow(t, db, sess.ID); h <= 0 {
+		t.Fatalf("nothing was held mid-call (%d); this test cannot observe a strand", h)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if err := sup.Shutdown(ctx); err != nil {
@@ -325,6 +331,9 @@ func TestACancelledSessionSkipsThePaidSteps(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the run never reached a model call")
 	}
+	if h := heldNow(t, db, sess.ID); h <= 0 {
+		t.Fatalf("nothing was held mid-call (%d); the release assertion below is vacuous", h)
+	}
 	if err := sup.Cancel(sess.ID); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
@@ -348,6 +357,7 @@ func TestACancelledSessionSkipsThePaidSteps(t *testing.T) {
 
 	// The other half of the bargain: skipping the spend must not skip the
 	// release. A cancel that saved money by leaving it held has saved nothing.
+	// (Held > 0 was established above, before the cancel.)
 	if h := heldNow(t, db, sess.ID); h != 0 {
 		t.Errorf("%d still held after a cancelled run", h)
 	}
@@ -371,4 +381,134 @@ func TestACancelledSessionSkipsThePaidSteps(t *testing.T) {
 			t.Errorf("an uncancelled run reported skipping its paid steps: %q", n)
 		}
 	}
+}
+
+// TestASessionRefusedAfterCreationIsNotLeftRunning.
+//
+// Start writes the session row BEFORE it takes the slot, so a refusal after that
+// point leaves a row nothing will ever finalize: escrow held, status "running",
+// invisible to the supervisor but reported running forever by the store, and
+// research.cancel answering "this session is not running (status running);
+// nothing to cancel". SweepAbandonedSessions reclaims such rows, but only at
+// daemon boot, so a long-lived daemon never does.
+//
+// The concurrency is load-bearing. A sequential Start at capacity is caught by
+// the CHEAP pre-check, before Create, and creates nothing — a first version of
+// this test did that, and removing the fix left it green. Only two Starts racing
+// for the last slot reach the post-Create branch this pins.
+func TestASessionRefusedAfterCreationIsNotLeftRunning(t *testing.T) {
+	p := newBlockingPlanner()
+	sup, db := newSupervisor(t, p, 2)
+
+	// Occupy one of two slots.
+	first, err := sup.Start(context.Background(), testSpec())
+	if err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	select {
+	case <-p.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run never reached a model call")
+	}
+
+	// Two callers race for the last slot: both pass the pre-check, both Create.
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var refused int
+	var started []string
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s, err := sup.Start(context.Background(), testSpec())
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				refused++
+				return
+			}
+			started = append(started, s.ID)
+		}()
+	}
+	wg.Wait()
+
+	var sessions []*core.Session
+	if err := db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		var rerr error
+		sessions, rerr = q.ListSessions(ctx, 100)
+		return rerr
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	live := map[string]bool{first.ID: true}
+	for _, id := range started {
+		live[id] = true
+	}
+	for _, s := range sessions {
+		if live[s.ID] {
+			continue
+		}
+		if s.Status == core.StatusRunning {
+			t.Errorf("session %s was refused after creation but is still %q with %d escrow "+
+				"held; nothing will ever finalize it (refused=%d, rows=%d)",
+				s.ID, s.Status, s.Escrow, refused, len(sessions))
+		}
+	}
+
+	close(p.release)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_, _ = sup.Wait(ctx, first.ID)
+}
+
+// TestAPanickingSessionDoesNotTakeTheProcessWithIt.
+//
+// The daemon's proposition is that sessions run concurrently, so a per-session
+// fault must not be a process fault: a panic would strand every OTHER session's
+// open reservation — no settle, no release — until the next boot's sweep.
+func TestAPanickingSessionDoesNotTakeTheProcessWithIt(t *testing.T) {
+	sup, db := newSupervisor(t, panicPlanner{}, 2)
+
+	sess, err := sup.Start(context.Background(), testSpec())
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	// Reaching here at all means the panic did not kill the test process.
+	_, _ = sup.Wait(ctx, sess.ID)
+
+	var got core.SessionStatus
+	for i := 0; i < 200; i++ {
+		cur, err := loadSession(t, db, sess.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = cur.Status
+		if got.Terminal() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !got.Terminal() {
+		t.Errorf("a panicked session is still %q; its escrow is held forever", got)
+	}
+	if h := heldNow(t, db, sess.ID); h != 0 {
+		t.Errorf("%d still held after a panicked session", h)
+	}
+	// The supervisor keeps working.
+	if _, err := sup.Start(context.Background(), testSpec()); err != nil {
+		t.Errorf("the supervisor stopped accepting work after a panic: %v", err)
+	}
+}
+
+// panicPlanner panics where a model call would be, which is where model-driven
+// parsing actually lives.
+type panicPlanner struct{}
+
+func (panicPlanner) Name() string               { return "panic" }
+func (panicPlanner) ModelFor(t llm.Tier) string { return "stub-model" }
+func (panicPlanner) Complete(context.Context, llm.Request) (*llm.Response, error) {
+	panic("planner exploded")
 }

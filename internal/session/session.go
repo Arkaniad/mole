@@ -322,6 +322,19 @@ func (r *Runner) Run(ctx context.Context, sess *core.Session, spec Spec) (*Resul
 	if res.Err != nil && res.Status == core.StatusDone {
 		res.Status = core.StatusFailed
 	}
+
+	// Persist the answer before finalizing.
+	//
+	// It used to live only in memory: the CLI printed it and the daemon paid for
+	// it out of escrow and dropped it, so §5.1's research.result — the step where
+	// an MCP caller receives the answer — could only ever return an empty string.
+	if res.Report != nil {
+		if err := r.Store.WithTx(context.WithoutCancel(ctx), func(ctx context.Context, tx store.Tx) error {
+			return tx.SetSessionReport(ctx, sess.ID, res.Report.Markdown(), res.Report.Degraded)
+		}); err != nil {
+			r.notice("could not store the report: %v", err)
+		}
+	}
 	if err := led.Finish(context.WithoutCancel(ctx), sess.ID, res.Status); err != nil {
 		r.notice("could not finalize session: %v", err)
 	}

@@ -508,6 +508,25 @@ func (l *Ledger) SweepAbandonedSessions(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// ReleaseSessionHolds releases every hold a session still carries.
+//
+// For a session that ended without running its own settle path — a panic in the
+// pipeline is the case it was written for. Waiting out the reservation TTL there
+// leaves money reading as held on a session that is already finished, and the
+// next sweep that would reclaim it runs at daemon boot.
+//
+// Distinct from Release, which resolves one reservation the caller is holding,
+// and from SweepExpired, which is TTL-gated and global.
+func (l *Ledger) ReleaseSessionHolds(ctx context.Context, sessionID string) (int, error) {
+	var n int
+	err := l.st.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		var err error
+		n, err = tx.ReleaseSessionHolds(ctx, sessionID)
+		return err
+	})
+	return n, err
+}
+
 // SweepExpired releases holds whose TTL has passed. Run it on daemon boot and
 // periodically thereafter; it is the reservation half of crash recovery.
 func (l *Ledger) SweepExpired(ctx context.Context) (int, error) {

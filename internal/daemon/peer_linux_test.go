@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -65,18 +66,33 @@ func TestPeerCredentialsAreActuallyRead(t *testing.T) {
 	}
 }
 
-// TestAuthorizeRefusesAForeignUID exercises the branch a same-user test cannot
-// reach, by checking the comparison rather than the syscall.
-func TestAuthorizeRefusesAForeignUID(t *testing.T) {
-	if uint32(os.Getuid()) == 0 {
-		t.Skip("running as root; the comparison below would not be meaningful")
+// TestAForeignUIDIsRefused covers the §3.5 control itself.
+//
+// The test that used to sit here was named for this and did something else: it
+// handed authorize a net.Pipe, which makes peerUID report "unsupported", and
+// asserted the connection was ALLOWED. The uid comparison — the entire point —
+// had no coverage, and could not have, because every connection a test makes
+// carries the test's own uid. Hence authorizeUID, which takes the decision's
+// inputs directly.
+func TestAForeignUIDIsRefused(t *testing.T) {
+	self := uint32(os.Getuid())
+
+	if err := authorizeUID(self+1, true, nil, self); err == nil {
+		t.Error("a connection from another uid was allowed")
 	}
-	// A non-unix conn makes peerUID report unsupported, which must NOT be treated
-	// as a denial — the file mode is still the control there.
-	c1, c2 := net.Pipe()
-	defer func() { _ = c1.Close(); _ = c2.Close() }()
-	s := &Server{Socket: "x"}
-	if err := s.authorize(c1); err != nil {
+	if err := authorizeUID(0, true, nil, self); err == nil && self != 0 {
+		t.Error("a root connection was allowed; root's config and credentials are not ours")
+	}
+	if err := authorizeUID(self, true, nil, self); err != nil {
+		t.Errorf("our own uid was refused: %v", err)
+	}
+	// A check that could not run is a refusal, not a pass.
+	if err := authorizeUID(0, false, errors.New("boom"), self); err == nil {
+		t.Error("a failed credential read was treated as authorization")
+	}
+	// An unsupported platform falls back to the file mode rather than denying
+	// every connection — a denial dressed as security.
+	if err := authorizeUID(0, false, nil, self); err != nil {
 		t.Errorf("an unsupported platform was treated as a denial: %v", err)
 	}
 }

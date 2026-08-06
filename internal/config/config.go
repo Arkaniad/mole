@@ -48,6 +48,16 @@ type Config struct {
 	// it is the one limit the caller cannot raise.
 	MaxSessionUSD int64 `json:"max_session_usd,omitempty"`
 
+	// MaxSessionTokens caps a token-unit session started over MCP. Zero means no
+	// ceiling.
+	//
+	// Separate from MaxSessionUSD because the two units are not convertible
+	// without knowing which model will run: §8 makes the unit load-bearing, and a
+	// guessed exchange rate would be a ceiling nobody could reason about. Having
+	// only one of the two set is treated as a misconfiguration rather than an
+	// open door — see mcpserver.checkCeiling.
+	MaxSessionTokens int64 `json:"max_session_tokens,omitempty"`
+
 	// Budget defaults applied when a session does not specify.
 	DefaultBudgetUnit string `json:"default_budget_unit,omitempty"`
 	DefaultBudgetUSD  string `json:"default_budget_usd,omitempty"`
@@ -359,6 +369,32 @@ func Fields() []Field {
 					return errors.New("a ceiling cannot be negative")
 				}
 				c.MaxSessionUSD = amount
+				return nil
+			},
+		},
+		{
+			Name: "daemon.max-session-tokens",
+			Help: "ceiling on tokens for one MCP-started session; unset means no ceiling",
+			get: func(c *Config) string {
+				if c.MaxSessionTokens == 0 {
+					return ""
+				}
+				return strconv.FormatInt(c.MaxSessionTokens, 10)
+			},
+			set: func(c *Config, v string) error {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					c.MaxSessionTokens = 0
+					return nil
+				}
+				n, err := strconv.ParseInt(v, 10, 64)
+				if err != nil {
+					return fmt.Errorf("not a whole number of tokens: %w", err)
+				}
+				if n < 0 {
+					return errors.New("a ceiling cannot be negative")
+				}
+				c.MaxSessionTokens = n
 				return nil
 			},
 		},

@@ -93,7 +93,12 @@ func TestTheSocketIsNotReachableByOtherUsers(t *testing.T) {
 // keeps its listener on an unlinked inode, every client reaches the new one, and
 // two processes then hold write locks on the same database.
 func TestAStaleSocketIsReplacedAndALiveOneIsNot(t *testing.T) {
-	dir := t.TempDir()
+	// A private subdirectory: Listen refuses a directory group or other can
+	// reach, and t.TempDir() is 0755 under the usual umask.
+	dir := filepath.Join(t.TempDir(), "priv")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "mole.sock")
 
 	// Stale: a socket file with nothing accepting on it.
@@ -247,4 +252,51 @@ func TestListenRejectsAnOverlongPathClearly(t *testing.T) {
 	if strings.Contains(msg, "invalid argument") {
 		t.Errorf("the raw kernel error leaked through instead of an explanation: %v", err)
 	}
+}
+
+// TestListenRefusesADirectoryOtherUsersCanReach.
+//
+// os.MkdirAll does NOT make an existing directory private — it returns nil
+// without touching mode or owner. So Listen's claim that a private parent closes
+// the umask window between net.Listen and Chmod held only for a directory it
+// created itself, and the common case is one that already exists:
+// `--socket /tmp/mole.sock` on a 1777 /tmp produced a 0755 socket,
+// world-connectable until Chmod ran.
+//
+// The original test only ever used a directory Listen created, which is why the
+// gap shipped.
+func TestListenRefusesADirectoryOtherUsersCanReach(t *testing.T) {
+	for _, mode := range []os.FileMode{0o755, 0o770, 0o707} {
+		dir := filepath.Join(t.TempDir(), "shared")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		// MkdirAll honours the umask, so set the mode explicitly.
+		if err := os.Chmod(dir, mode); err != nil {
+			t.Fatal(err)
+		}
+
+		s := &daemon.Server{Socket: filepath.Join(dir, "m.sock"), Handler: echoHandler()}
+		ln, err := s.Listen()
+		if err == nil {
+			_ = ln.Close()
+			t.Errorf("mode %#o: Listen accepted a directory other users can reach", mode)
+			continue
+		}
+		if !strings.Contains(err.Error(), "socket directory") {
+			t.Errorf("mode %#o: unclear error: %v", mode, err)
+		}
+	}
+
+	// And a private one is still accepted, or the check is just a refusal.
+	dir := filepath.Join(t.TempDir(), "priv")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := &daemon.Server{Socket: filepath.Join(dir, "m.sock"), Handler: echoHandler()}
+	ln, err := s.Listen()
+	if err != nil {
+		t.Fatalf("a 0700 directory was refused: %v", err)
+	}
+	_ = ln.Close()
 }

@@ -80,7 +80,7 @@ func strPtr(v sql.NullString) *string {
 
 const sessionCols = `id, prompt, mode, actor_types, budget_unit, budget, spent, held, escrow,
 	max_tool_calls, max_leads, max_wallclock_ns, tool_call_count, lead_count,
-	status, created_at, updated_at`
+	status, created_at, updated_at, report_md, report_degraded`
 
 func (t *queries) InsertSession(ctx context.Context, s *core.Session) error {
 	if err := s.Validate(); err != nil {
@@ -94,11 +94,11 @@ func (t *queries) InsertSession(ctx context.Context, s *core.Session) error {
 
 	_, err := t.q.ExecContext(ctx, `
 		INSERT INTO sessions (`+sessionCols+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		s.ID, s.Prompt, string(s.Mode), core.EncodeActorTypes(s.ActorTypes),
 		string(s.BudgetUnit), s.Budget, s.Spent, s.Held, s.Escrow,
 		s.MaxToolCalls, s.MaxLeads, int64(s.MaxWallClock), s.ToolCallCount, s.LeadCount,
-		string(s.Status), toMicros(s.CreatedAt), toMicros(s.UpdatedAt))
+		string(s.Status), toMicros(s.CreatedAt), toMicros(s.UpdatedAt), s.Report, s.ReportDegraded)
 	if err != nil {
 		return fmt.Errorf("sqlite: insert session: %w", err)
 	}
@@ -119,7 +119,7 @@ func scanSession(sc interface{ Scan(...any) error }) (*core.Session, error) {
 	err := sc.Scan(&s.ID, &s.Prompt, &mode, &actorTypes, &budgetUnit,
 		&s.Budget, &s.Spent, &s.Held, &s.Escrow,
 		&s.MaxToolCalls, &s.MaxLeads, &wallclockNS, &s.ToolCallCount, &s.LeadCount,
-		&status, &created, &updated)
+		&status, &created, &updated, &s.Report, &s.ReportDegraded)
 	if err != nil {
 		return nil, err
 	}
@@ -165,6 +165,16 @@ func (t *queries) ListSessions(ctx context.Context, limit int) ([]*core.Session,
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+func (t *queries) SetSessionReport(ctx context.Context, id, reportMD, degraded string) error {
+	res, err := t.q.ExecContext(ctx,
+		`UPDATE sessions SET report_md = ?, report_degraded = ?, updated_at = ? WHERE id = ?`,
+		reportMD, degraded, toMicros(time.Now()), id)
+	if err != nil {
+		return fmt.Errorf("sqlite: set report: %w", err)
+	}
+	return requireOneRow(res, "session")
 }
 
 func (t *queries) SetSessionStatus(ctx context.Context, id string, status core.SessionStatus) error {
@@ -302,12 +312,30 @@ func (t *queries) SumHeldReservations(ctx context.Context, sessionID string) (in
 // ExpireStaleReservations releases holds whose lease has passed. This is the
 // reservation half of crash recovery: a worker that died mid-run leaves budget
 // held forever otherwise.
+// ReleaseSessionHolds releases every held reservation for one session.
+//
+// Not TTL-gated, unlike ExpireStaleReservations. It exists for the case where a
+// session ends abruptly and its own settle path never ran — a panic in the
+// pipeline, principally — where waiting out the reservation TTL means the money
+// reads as held on a session that is already finished.
+func (t *queries) ReleaseSessionHolds(ctx context.Context, sessionID string) (int, error) {
+	return t.releaseHeld(ctx,
+		`SELECT id, session_id, amount FROM reservations
+		 WHERE status = 'held' AND session_id = ?`, sessionID)
+}
+
 func (t *queries) ExpireStaleReservations(ctx context.Context, now time.Time) (int, error) {
-	rows, err := t.q.QueryContext(ctx,
+	return t.releaseHeld(ctx,
 		`SELECT id, session_id, amount FROM reservations
 		 WHERE status = 'held' AND expires_at < ?`, toMicros(now))
+}
+
+// releaseHeld resolves and credits back every reservation the query returns.
+func (t *queries) releaseHeld(ctx context.Context, query string, args ...any) (int, error) {
+	now := time.Now()
+	rows, err := t.q.QueryContext(ctx, query, args...)
 	if err != nil {
-		return 0, fmt.Errorf("sqlite: scan stale reservations: %w", err)
+		return 0, fmt.Errorf("sqlite: scan held reservations: %w", err)
 	}
 
 	type stale struct {

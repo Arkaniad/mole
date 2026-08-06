@@ -136,14 +136,17 @@ func cmdServe(ctx context.Context, o serveOpts) error {
 	// connection shares the same state — which is the point: a session started
 	// through one shim is visible through the next.
 	mcpSrv := mcpserver.New(mcpserver.Deps{
-		Supervisor:    sup,
-		Store:         db,
-		MaxSessionUSD: cfg.MaxSessionUSD,
-		MaxSources:    defaultServeMaxSources,
-		MaxDepth:      defaultServeMaxDepth,
-		MaxLeads:      defaultServeMaxLeads,
-		Timeout:       defaultServeTimeout,
-		Log:           actor.Log,
+		Supervisor:       sup,
+		Store:            db,
+		MaxSessionUSD:    cfg.MaxSessionUSD,
+		MaxSessionTokens: cfg.MaxSessionTokens,
+		LLM:              actor.LLM,
+		Pricing:          actor.Pricing,
+		MaxSources:       defaultServeMaxSources,
+		MaxDepth:         defaultServeMaxDepth,
+		MaxLeads:         defaultServeMaxLeads,
+		Timeout:          defaultServeTimeout,
+		Log:              actor.Log,
 	})
 
 	srv := &daemon.Server{

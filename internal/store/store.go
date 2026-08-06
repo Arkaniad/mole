@@ -163,11 +163,17 @@ type Tx interface {
 
 	InsertSession(ctx context.Context, s *core.Session) error
 	SetSessionStatus(ctx context.Context, id string, status core.SessionStatus) error
+	// SetSessionReport stores the rendered answer and why it is degraded, if it is.
+	SetSessionReport(ctx context.Context, id, reportMD, degraded string) error
 	ApplyBudgetDelta(ctx context.Context, sessionID string, d BudgetDelta) error
 
 	InsertReservation(ctx context.Context, r *core.Reservation) error
 	ResolveReservation(ctx context.Context, id string, status core.ReservationStatus, at time.Time) error
 	ExpireStaleReservations(ctx context.Context, now time.Time) (int, error)
+	// ReleaseSessionHolds releases every held reservation for one session,
+	// regardless of TTL. For a session that ended without running its own settle
+	// path.
+	ReleaseSessionHolds(ctx context.Context, sessionID string) (int, error)
 
 	InsertToolCall(ctx context.Context, tc *core.ToolCall) error
 

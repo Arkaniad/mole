@@ -198,6 +198,16 @@ type Session struct {
 	Status    SessionStatus
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// Report is the session's rendered answer, written when it finalizes.
+	//
+	// Persisted because §5.1's research.result is defined as returning it, and
+	// the MCP flow — report, poll status, result — has no other moment where the
+	// answer reaches the caller. Before this it lived only in memory: the CLI
+	// printed it, and the daemon paid for it out of escrow and dropped it.
+	Report string
+	// ReportDegraded says why the prose is missing or unsynthesized, so an empty
+	// Report can be told from a failed one.
+	ReportDegraded string
 }
 
 // Available is the spendable balance: everything not already spent, held by an
