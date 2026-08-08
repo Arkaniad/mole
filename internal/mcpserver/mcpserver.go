@@ -58,6 +58,10 @@ type Deps struct {
 	MaxSessionUSD    int64
 	MaxSessionTokens int64
 
+	// Version is the binary's version, reported to MCP clients in the server
+	// handshake. Empty reports "dev".
+	Version string
+
 	// LLM answers research.ask. Nil disables synthesis: an ask then returns the
 	// relevant claims with citations and no prose, which is the honest response
 	// when no call can be made.
@@ -65,6 +69,9 @@ type Deps struct {
 	// Pricing turns an ask's token usage into a ledger cost. Nil takes the
 	// default table.
 	Pricing *pricing.Table
+
+	// AskTimeout bounds one research.ask. Zero takes DefaultAskTimeout.
+	AskTimeout time.Duration
 
 	// Defaults applied when a call does not specify.
 	MaxSources int
@@ -87,7 +94,7 @@ func New(d Deps) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "mole",
 		Title:   "mole — deep research",
-		Version: version(),
+		Version: d.version(),
 	}, nil)
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -344,12 +351,15 @@ func (d Deps) result(ctx context.Context, _ *mcp.CallToolRequest, in SessionRef)
 		return nil, ResultOut{}, err
 	}
 
+	// Totals count non-nil entries, for the same reason the loops below do: a nil
+	// is not a claim, and "showing 500 of 502" when two of those were nil invites
+	// a caller to go looking for two claims that never existed.
 	out := ResultOut{
 		SessionID:   sess.ID,
 		Status:      string(sess.Status),
 		ReportMD:    sess.Report,
-		TotalClaims: len(claims),
-		TotalEdges:  len(edges),
+		TotalClaims: countNonNil(claims),
+		TotalEdges:  countNonNil(edges),
 	}
 	switch {
 	case sess.Status == core.StatusRunning:
@@ -364,11 +374,15 @@ func (d Deps) result(ctx context.Context, _ *mcp.CallToolRequest, in SessionRef)
 			". The claims below are the evidence it was built from."
 	}
 
-	for i, c := range claims {
+	// Count what is EMITTED, not the slice index. A nil entry is skipped but still
+	// advances i, so indexing the cap returns fewer than MaxClaimsReturned claims
+	// and reports the shortfall as truncation — under-delivering and mislabelling
+	// it in the same step.
+	for _, c := range claims {
 		if c == nil {
 			continue
 		}
-		if i >= MaxClaimsReturned {
+		if len(out.Claims) >= MaxClaimsReturned {
 			out.Truncated = true
 			break
 		}
@@ -385,11 +399,11 @@ func (d Deps) result(ctx context.Context, _ *mcp.CallToolRequest, in SessionRef)
 		}
 		out.Claims = append(out.Claims, cl)
 	}
-	for i, e := range edges {
+	for _, e := range edges {
 		if e == nil {
 			continue
 		}
-		if i >= MaxEdgesReturned {
+		if len(out.Edges) >= MaxEdgesReturned {
 			out.Truncated = true
 			break
 		}
@@ -640,4 +654,26 @@ func clampToDefault(v, def, max int) int {
 	return v
 }
 
-func version() string { return "0.1.0" }
+// version reports what the daemon tells an MCP client it is.
+//
+// Deps.Version carries the binary's real version, stamped by the linker in
+// cmd/mole. The fallback is "dev" rather than a number: a hardcoded "0.1.0"
+// stayed put through every release and told a client something false, and an
+// unset version that says so is more useful than a stale one that does not.
+func (d Deps) version() string {
+	if v := strings.TrimSpace(d.Version); v != "" {
+		return v
+	}
+	return "dev"
+}
+
+// countNonNil counts the non-nil entries of a slice of pointers.
+func countNonNil[T any](xs []*T) int {
+	n := 0
+	for _, x := range xs {
+		if x != nil {
+			n++
+		}
+	}
+	return n
+}

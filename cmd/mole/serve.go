@@ -149,6 +149,7 @@ func cmdServe(ctx context.Context, o serveOpts) error {
 		MaxLeads:         defaultServeMaxLeads,
 		Timeout:          defaultServeTimeout,
 		Log:              actor.Log,
+		Version:          version,
 	})
 
 	srv := &daemon.Server{

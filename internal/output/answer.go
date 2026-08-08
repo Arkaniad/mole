@@ -75,7 +75,7 @@ func (g *Generator) Answer(ctx context.Context, st store.Store, sessionID, quest
 	// to THIS question rather than by the session's own ordering. Without it the
 	// prompt is the same top-N a report would use, and the follow-up question has
 	// no bearing on what the model is shown.
-	relevant := relevantTo(question, claims, gen.MaxClaims)
+	relevant := relevantTo(ctx, question, claims, gen.MaxClaims)
 	if len(relevant) == 0 {
 		// Not an error and not a model call. Retrieval found no claim sharing a
 		// content word with the question, and paying a model to say so is worse
@@ -104,7 +104,7 @@ func (g *Generator) Answer(ctx context.Context, st store.Store, sessionID, quest
 	}
 
 	fence := fenceToken()
-	resp, err := gen.LLM.Complete(ctx, llm.Request{
+	gen.writeBody(ctx, llm.Request{
 		// Cheap tier: arranging two dozen already-verified claims into an answer
 		// is a smaller job than synthesizing a whole session, and §13's promise is
 		// that this is cheap.
@@ -112,34 +112,8 @@ func (g *Generator) Answer(ctx context.Context, st store.Store, sessionID, quest
 		System:    askSystemPrompt,
 		Messages:  []llm.Message{llm.User(askPrompt(fence, question, sess.Prompt, findings, index))},
 		MaxTokens: gen.MaxTokens,
-	})
-	if resp != nil {
-		rep.Model = resp.Model
-		rep.Cost = core.Cost{
-			InputTokens:      resp.Usage.InputTokens,
-			OutputTokens:     resp.Usage.OutputTokens,
-			CacheReadTokens:  resp.Usage.CacheReadTokens,
-			CacheWriteTokens: resp.Usage.CacheWriteTokens,
-		}
-	}
-	if err != nil {
-		rep.Body = fallbackBody(question, findings, index)
-		rep.Degraded = "answer failed: " + err.Error()
-		return rep, nil
-	}
-	if resp.Refused {
-		rep.Body = fallbackBody(question, findings, index)
-		rep.Degraded = "model refused to answer (" + resp.RefusalCategory + ")"
-		return rep, nil
-	}
-	// Same validation as a report body: a forged citation or a pasted fragment of
-	// the instructions is worse than the evidence listing available for nothing.
-	if problem := validateBody(resp.Text, findings, rep.Citations); problem != nil {
-		rep.Body = fallbackBody(question, findings, index)
-		rep.Degraded = "answer rejected — " + problem.Error()
-		return rep, nil
-	}
-	rep.Body = strings.TrimSpace(resp.Text)
+	}, rep, wording{noun: "answer", verb: "answer"},
+		fallbackBody(question, findings, index))
 	return rep, nil
 }
 
@@ -152,12 +126,17 @@ func (g *Generator) Answer(ctx context.Context, st store.Store, sessionID, quest
 //
 // The question becomes a synthetic claim with no ID, so it cannot match a real
 // one and cannot be returned as its own candidate.
-func relevantTo(question string, claims []*core.Claim, n int) []*core.Claim {
+func relevantTo(ctx context.Context, question string, claims []*core.Claim, n int) []*core.Claim {
 	if n <= 0 {
 		n = DefaultAskClaims
 	}
 	target := &core.Claim{Text: question}
-	got, err := verifier.LexicalRetriever{}.Candidates(context.Background(), target, claims, n)
+	// The caller's context rather than a fresh Background. This changes nothing
+	// today — LexicalRetriever.Candidates discards the parameter — so it is
+	// plumbing, not a fix: it means the day ranking becomes cancellable (it is
+	// CPU-bound over up to ten thousand claims) the caller's deadline is already
+	// where it needs to be, instead of a Background that silently outlives it.
+	got, err := verifier.LexicalRetriever{}.Candidates(ctx, target, claims, n)
 	if err != nil {
 		return nil
 	}

@@ -13,6 +13,7 @@ package output
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/llm"
+	"github.com/lajosdeme/mole/internal/pricing"
 	"github.com/lajosdeme/mole/internal/store"
 )
 
@@ -57,7 +59,23 @@ type Report struct {
 
 	// Degraded explains why the report is thin, when it is. Surfaced rather
 	// than left for a reader to infer from a short answer.
+	//
+	// A CLOSED SET of stable phrases, and that is a security property rather
+	// than tidiness. Degraded is copied into research.ask and research.result
+	// and therefore lands in an MCP caller's context, so anything interpolated
+	// into it is something an untrusted party can write there. Two things were:
+	// provider errors, which carry llm.Config.BaseURL verbatim and so disclose
+	// an internal endpoint; and body-validation errors, which quote the model's
+	// output — text derived from fetched pages, meaning attacker-controlled
+	// content would arrive in an agent's context outside any §3.2 fence.
 	Degraded string
+	// DegradedDetail is the unabridged reason: provider errors, rejected text,
+	// whatever a person debugging this needs.
+	//
+	// It NEVER crosses the MCP boundary. It is for logs, the CLI, and tests —
+	// all places where the reader already has the daemon's own trust. Keep it
+	// out of every wire struct in internal/mcpserver.
+	DegradedDetail string
 }
 
 // MaxClaimChars bounds a single claim's text in the prompt.
@@ -157,12 +175,36 @@ func (g *Generator) Generate(ctx context.Context, st store.Store, sessionID stri
 	}
 
 	fence := fenceToken()
-	resp, err := gen.LLM.Complete(ctx, llm.Request{
+	gen.writeBody(ctx, llm.Request{
 		Tier:      llm.TierStrong,
 		System:    reportSystemPrompt,
 		Messages:  []llm.Message{llm.User(reportPrompt(fence, sess.Prompt, findings, index))},
 		MaxTokens: gen.MaxTokens,
-	})
+	}, rep, wording{noun: "synthesis", verb: "synthesize"},
+		fallbackBody(sess.Prompt, findings, index))
+	return rep, nil
+}
+
+// wording is what Generate and Answer disagree about when a call fails.
+type wording struct {
+	noun string // "synthesis" / "answer" — as in "synthesis failed"
+	verb string // "synthesize" / "answer" — as in "model refused to synthesize"
+}
+
+// writeBody makes the model call, records its cost, and sets rep.Body from the
+// response — falling back to the evidence listing on any failure.
+//
+// Shared by Generate and Answer, and the sharing is the point: this is where
+// both of them were bitten by the same two defects, each needing the same fix
+// applied twice. A response can be nil with a nil error, and the guard above the
+// dereference did not cover it; and the degraded reason interpolated provider
+// and model text into a string that crosses the MCP boundary.
+//
+// A failed synthesis costs the prose, not the evidence. Verified claims with
+// citations are a real answer — less readable, not less true — and the budget
+// already paid to collect them.
+func (gen *Generator) writeBody(ctx context.Context, req llm.Request, rep *Report, w wording, fallback string) {
+	resp, err := gen.LLM.Complete(ctx, req)
 	if resp != nil {
 		rep.Model = resp.Model
 		rep.Cost = core.Cost{
@@ -172,29 +214,35 @@ func (g *Generator) Generate(ctx context.Context, st store.Store, sessionID stri
 			CacheWriteTokens: resp.Usage.CacheWriteTokens,
 		}
 	}
-	if err != nil {
-		// The claims are still worth returning. A failed synthesis should cost
-		// the prose, not the evidence.
-		rep.Body = fallbackBody(sess.Prompt, findings, index)
-		rep.Degraded = "synthesis failed: " + err.Error()
-		return rep, nil
-	}
-	if resp.Refused {
-		rep.Body = fallbackBody(sess.Prompt, findings, index)
-		rep.Degraded = "model refused to synthesize (" + resp.RefusalCategory + ")"
-		return rep, nil
+	if err == nil && resp == nil {
+		// The nil guard above concedes resp can be nil, which makes every
+		// dereference below reachable — inside a daemon serving other sessions.
+		err = errors.New("the model provider returned nothing")
 	}
 
-	// Check what came back before printing it. The prompt is not a guarantee, and a
-	// body carrying a forged citation or a fragment of its own instructions is worse
-	// than the evidence listing that is already available for nothing.
-	if problem := validateBody(resp.Text, findings, rep.Citations); problem != nil {
-		rep.Body = fallbackBody(sess.Prompt, findings, index)
-		rep.Degraded = "synthesis rejected — " + problem.Error()
-		return rep, nil
+	switch {
+	case err != nil:
+		rep.Body = fallback
+		rep.Degraded = w.noun + " failed"
+		rep.DegradedDetail = err.Error()
+	case resp.Refused:
+		rep.Body = fallback
+		rep.Degraded = "model refused to " + w.verb + " (" + resp.RefusalCategory + ")"
+	default:
+		// Check what came back before printing it. The prompt is not a guarantee,
+		// and a body carrying a forged citation or a fragment of its own
+		// instructions is worse than the evidence listing already available for
+		// nothing.
+		if problem := validateBody(resp.Text, rep.Findings, rep.Citations); problem != nil {
+			rep.Body = fallback
+			// The reason, not the whole error: safeReason drops the quoted model
+			// output that only the detail should carry.
+			rep.Degraded = w.noun + " rejected — " + safeReason(problem)
+			rep.DegradedDetail = problem.Error()
+			return
+		}
+		rep.Body = strings.TrimSpace(resp.Text)
 	}
-	rep.Body = strings.TrimSpace(resp.Text)
-	return rep, nil
 }
 
 // fallbackBody lists the claims without synthesis.
@@ -382,3 +430,25 @@ func truncate(s string, max int) string {
 }
 
 func fenceToken() string { return core.PromptFence() }
+
+// Price turns a report's token usage into a ledger cost.
+//
+// Lives here rather than beside either caller because both the session runner
+// and research.ask need exactly this, and they had a copy each — identical down
+// to the comment, which is how two copies stay in step right up until one of
+// them does not. A nil table takes the default.
+func Price(table *pricing.Table, rep *Report) core.Cost {
+	if table == nil {
+		table = pricing.NewTable()
+	}
+	cost, err := table.Cost(rep.Model, pricing.Usage{
+		InputTokens:  rep.Cost.InputTokens,
+		OutputTokens: rep.Cost.OutputTokens,
+	})
+	if err != nil {
+		// Unknown model: record the tokens, price them at zero. A row with real
+		// token counts and no money still reconciles; a missing row does not.
+		return rep.Cost
+	}
+	return cost
+}

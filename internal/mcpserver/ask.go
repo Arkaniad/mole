@@ -14,7 +14,6 @@ import (
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/llm"
 	"github.com/lajosdeme/mole/internal/output"
-	"github.com/lajosdeme/mole/internal/pricing"
 )
 
 // AskAllowance bounds what one research.ask call may spend, in micro-dollars.
@@ -128,7 +127,7 @@ func (d Deps) Ask(ctx context.Context, in AskIn) (AskOut, error) {
 			// relying on the loop never being started.
 			MaxToolCalls: 1,
 			MaxLeads:     0,
-			MaxWallClock: askTimeout,
+			MaxWallClock: d.askTimeout(),
 		})
 		if err != nil {
 			return AskOut{}, fmt.Errorf("could not open an ask session: %w", err)
@@ -155,10 +154,27 @@ func (d Deps) Ask(ctx context.Context, in AskIn) (AskOut, error) {
 	}
 
 	// Reads the SOURCE session's claims; spends the ask session's budget.
-	rep, err := gen.Answer(ctx, d.Store, src.ID, question)
+	//
+	// The deadline is applied HERE and not only written into the session spec.
+	// MaxWallClock is checked by the executor loop, and an ask never enters it —
+	// so until this line the constant below documented a bound that nothing
+	// enforced, and a provider that accepted the connection and then stopped
+	// responding would hang the call forever with the reservation still held.
+	askCtx, cancel := context.WithTimeout(ctx, d.askTimeout())
+	defer cancel()
+
+	rep, err := gen.Answer(askCtx, d.Store, src.ID, question)
 	if err != nil {
 		d.closeAsk(ctx, led, askSess, reservation, nil, core.StatusFailed)
 		return AskOut{}, err
+	}
+
+	// Logged, never returned. The detail can carry the provider's endpoint or the
+	// model output that validation just rejected, and this reply lands verbatim in
+	// a caller's context. See output.Report.Degraded.
+	if rep.DegradedDetail != "" {
+		d.Log.Warn("ask degraded", "session", src.ID,
+			"reason", rep.Degraded, "detail", rep.DegradedDetail)
 	}
 
 	spent := d.closeAsk(ctx, led, askSess, reservation, rep, core.StatusDone)
@@ -203,8 +219,20 @@ func (d Deps) ask(ctx context.Context, _ *mcp.CallToolRequest, in AskIn) (*mcp.C
 	return nil, out, err
 }
 
-// askTimeout bounds the ask session's wall clock. One model call.
-const askTimeout = 5 * time.Minute
+// DefaultAskTimeout bounds an ask's wall clock. One model call; five minutes is
+// generous for it and short enough that a wedged provider does not pin a
+// reservation until the abandonment sweep. Enforced on the context in Ask.
+const DefaultAskTimeout = 5 * time.Minute
+
+// askTimeout is Deps.AskTimeout, or the default. Overridable so the enforcement
+// can be tested in milliseconds instead of five minutes — a bound nothing can
+// afford to exercise is a bound nobody checks.
+func (d Deps) askTimeout() time.Duration {
+	if d.AskTimeout > 0 {
+		return d.AskTimeout
+	}
+	return DefaultAskTimeout
+}
 
 // closeAsk settles the reservation and finalizes the ask session.
 //
@@ -234,7 +262,7 @@ func (d Deps) closeAsk(
 				Type:      core.CallLLM,
 				Model:     rep.Model,
 				Input:     "ask",
-				Cost:      d.priceAsk(rep),
+				Cost:      output.Price(d.Pricing, rep),
 			})
 		}
 		settled, err := led.Settle(ctx, reservation, calls)
@@ -251,23 +279,6 @@ func (d Deps) closeAsk(
 		d.Log.Warn("could not finalize an ask session", "session", askSess.ID, "err", err)
 	}
 	return spent
-}
-
-func (d Deps) priceAsk(rep *output.Report) core.Cost {
-	table := d.Pricing
-	if table == nil {
-		table = pricing.NewTable()
-	}
-	cost, err := table.Cost(rep.Model, pricing.Usage{
-		InputTokens:  rep.Cost.InputTokens,
-		OutputTokens: rep.Cost.OutputTokens,
-	})
-	if err != nil {
-		// Unknown model: record the tokens, price them at zero. A row with real
-		// counts and no money still reconciles; a missing row does not.
-		return rep.Cost
-	}
-	return cost
 }
 
 // llmProvider is the subset of the provider an ask needs. Declared so Deps can

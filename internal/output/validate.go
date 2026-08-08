@@ -1,6 +1,7 @@
 package output
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -32,11 +33,33 @@ import (
 // every citation mole prints.
 
 // bodyProblem describes why a synthesis was rejected.
+//
+// Split in two because the reason travels further than the evidence for it.
+// Reason is a closed vocabulary — fixed phrasing, and any interpolation is a
+// number or a rune from the lookalike list — so it is safe to hand an MCP
+// caller. Detail may quote the model's own output, which is text derived from
+// fetched pages; putting that in a caller's context outside a §3.2 fence would
+// deliver exactly the content validation just refused.
 type bodyProblem struct {
 	Reason string
+	Detail string
 }
 
-func (p bodyProblem) Error() string { return p.Reason }
+func (p bodyProblem) Error() string {
+	if p.Detail != "" {
+		return p.Reason + ": " + p.Detail
+	}
+	return p.Reason
+}
+
+// safeReason extracts the caller-safe half of a validation failure.
+func safeReason(err error) string {
+	var p bodyProblem
+	if errors.As(err, &p) && p.Reason != "" {
+		return p.Reason
+	}
+	return "the answer did not pass validation"
+}
 
 // validateBody checks a synthesized body against the citations it was given.
 //
@@ -44,7 +67,7 @@ func (p bodyProblem) Error() string { return p.Reason }
 func validateBody(body string, findings []Finding, citations []Citation) error {
 	trimmed := strings.TrimSpace(body)
 	if trimmed == "" {
-		return bodyProblem{"synthesis returned nothing"}
+		return bodyProblem{Reason: "synthesis returned nothing"}
 	}
 
 	// Lookalike brackets first. bracketGroups scans ASCII '[' only, so a citation
@@ -52,7 +75,7 @@ func validateBody(body string, findings []Finding, citations []Citation) error {
 	// reader sees a citation to source 9 where one source exists. A report has no
 	// legitimate reason to contain any of these.
 	if r, found := lookalikeBracket(trimmed); found {
-		return bodyProblem{fmt.Sprintf(
+		return bodyProblem{Reason: fmt.Sprintf(
 			"the answer uses %q as a bracket, which is not a citation and is not checked as one", r)}
 	}
 
@@ -71,19 +94,23 @@ func validateBody(body string, findings []Finding, citations []Citation) error {
 			// numbered citations and nothing else, and a link in the body is
 			// page-derived text reaching the answer outside the citation mechanism
 			// — which is the one thing §13's numbering exists to prevent.
-			return bodyProblem{fmt.Sprintf(
-				"the answer contains a citation-shaped marker that is not a citation: [%.60s]", g)}
+			// The only problem here whose evidence is model output. The reason
+			// says what happened; the marker itself stays in Detail.
+			return bodyProblem{
+				Reason: "the answer contains a citation-shaped marker that is not a citation",
+				Detail: fmt.Sprintf("[%.60s]", g),
+			}
 		}
 		for _, n := range ns {
 			if n < 1 || n > len(citations) {
-				return bodyProblem{fmt.Sprintf(
+				return bodyProblem{Reason: fmt.Sprintf(
 					"the answer cites source [%d], and only %d source(s) exist", n, len(citations))}
 			}
 		}
 		valid += len(ns)
 	}
 	if valid == 0 {
-		return bodyProblem{"the answer cites nothing; every factual sentence was required to carry a citation"}
+		return bodyProblem{Reason: "the answer cites nothing; every factual sentence was required to carry a citation"}
 	}
 
 	// Degeneracy takes TWO weak signals together, because either alone produced a
@@ -105,7 +132,7 @@ func validateBody(body string, findings []Finding, citations []Citation) error {
 	prose := len(strings.TrimSpace(stripMarkers(trimmed)))
 	floor := medianFinding(findings)
 	if len(findings) > 1 && cited*2 < len(findings) && floor > 0 && prose < floor {
-		return bodyProblem{fmt.Sprintf(
+		return bodyProblem{Reason: fmt.Sprintf(
 			"the answer cites %d of %d findings in %d characters of prose, less than a single "+
 				"typical finding (%d) — it has not arranged the material",
 			cited, len(findings), prose, floor)}

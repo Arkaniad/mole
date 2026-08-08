@@ -31,7 +31,6 @@ import (
 	"github.com/lajosdeme/mole/internal/llm"
 	"github.com/lajosdeme/mole/internal/output"
 	"github.com/lajosdeme/mole/internal/planner"
-	"github.com/lajosdeme/mole/internal/pricing"
 	"github.com/lajosdeme/mole/internal/queue"
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/verifier"
@@ -329,6 +328,14 @@ func (r *Runner) Run(ctx context.Context, sess *core.Session, spec Spec) (*Resul
 	// it out of escrow and dropped it, so §5.1's research.result — the step where
 	// an MCP caller receives the answer — could only ever return an empty string.
 	if res.Report != nil {
+		// Only the closed-set reason is persisted — it is what research.result
+		// hands an MCP caller. The detail is logged instead, because it can carry
+		// a provider endpoint or rejected model output and neither belongs in
+		// another agent's context. See output.Report.Degraded.
+		if d := res.Report.DegradedDetail; d != "" {
+			r.logger().Warn("report degraded",
+				"session", sess.ID, "reason", res.Report.Degraded, "detail", d)
+		}
 		if err := r.Store.WithTx(context.WithoutCancel(ctx), func(ctx context.Context, tx store.Tx) error {
 			return tx.SetSessionReport(ctx, sess.ID, res.Report.Markdown(), res.Report.Degraded)
 		}); err != nil {
@@ -443,7 +450,7 @@ func (r *Runner) finish(
 				Type:      core.CallLLM,
 				Model:     report.Model,
 				Input:     "report",
-				Cost:      priceReport(actor, report),
+				Cost:      output.Price(actor.Pricing, report),
 			})
 		}
 		if _, serr := led.Settle(ctx, reservation, calls); serr != nil {
@@ -473,24 +480,6 @@ func (r *Runner) ground(
 		return nil
 	}
 	return rep
-}
-
-// priceReport turns the generator's token usage into a ledger cost.
-func priceReport(actor *actors.WebActor, rep *output.Report) core.Cost {
-	table := actor.Pricing
-	if table == nil {
-		table = pricing.NewTable()
-	}
-	cost, err := table.Cost(rep.Model, pricing.Usage{
-		InputTokens:  rep.Cost.InputTokens,
-		OutputTokens: rep.Cost.OutputTokens,
-	})
-	if err != nil {
-		// Unknown model: record the tokens, price them at zero. A row with real
-		// token counts and no money still reconciles; a missing row does not.
-		return rep.Cost
-	}
-	return cost
 }
 
 func (r *Runner) loadSession(ctx context.Context, id string) (*core.Session, error) {
