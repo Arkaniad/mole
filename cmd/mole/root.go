@@ -115,6 +115,7 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(
 		newResearchCmd(),
+		newAskCmd(),
 		newServeCmd(),
 		newEvalCmd(),
 		newCorpusCmd(),

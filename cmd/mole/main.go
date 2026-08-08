@@ -54,9 +54,15 @@ func defaultDBPath() string {
 	return filepath.Join(base, "mole", "mole.db")
 }
 
-// openDBWrite opens and migrates. Only commands that actually write should use
-// it — migrating takes the write lock, and the daemon may be holding it.
-func openDBWrite(ctx context.Context, path string) (*sqlite.DB, error) {
+// openDBMigrate opens and applies any pending migrations.
+//
+// The migration is the reason this is a separate door. Ordinary writes from two
+// processes are fine — see openDBNoMigrate — but changing the schema underneath
+// a daemon that is mid-run is not, because its prepared statements and its Go
+// structs were built against the old one. So migrating is reserved for the
+// commands whose job it is (`migrate`) or that own the database for their whole
+// run (`serve`).
+func openDBMigrate(ctx context.Context, path string) (*sqlite.DB, error) {
 	db, err := sqlite.Open(path, sqlite.Options{})
 	if err != nil {
 		return nil, err
@@ -68,16 +74,20 @@ func openDBWrite(ctx context.Context, path string) (*sqlite.DB, error) {
 	return db, nil
 }
 
-// openDBRead opens without migrating.
+// openDBNoMigrate opens an existing database at the expected schema version,
+// leaving the schema alone. The returned DB can still write.
 //
-// This is the distinction that lets the CLI coexist with a running daemon.
-// SQLite in WAL mode allows any number of concurrent readers alongside one
-// writer, so `mole trace` never blocks and is never blocked — but only if it
-// does not try to write. Migrating on every open (the obvious shortcut) would
-// have every read command contend for the writer against the daemon.
+// This is what lets the CLI coexist with a running daemon, and the reason is
+// narrower than it looks. SQLite in WAL mode allows any number of readers
+// alongside a writer, and serialises writers per TRANSACTION via a file lock
+// held across processes — not per connection. The daemon opens the database and
+// keeps it open, but between transactions it holds no lock at all, so a second
+// process writing short transactions is not blocked in any way a person could
+// perceive; busy_timeout absorbs the overlap. `mole ask` writes on this basis.
 //
-// Instead of migrating, it checks the schema version and says what to run.
-func openDBRead(ctx context.Context, path string) (*sqlite.DB, error) {
+// What is genuinely unsafe is migrating under a live daemon, so this does not:
+// it checks the schema version and says what to run.
+func openDBNoMigrate(ctx context.Context, path string) (*sqlite.DB, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil, fmt.Errorf("no database at %s (run: mole migrate)", path)
 	}
@@ -130,7 +140,7 @@ func newMigrateCmd() *cobra.Command {
 }
 
 func cmdMigrate(ctx context.Context, path string) error {
-	db, err := openDBWrite(ctx, path)
+	db, err := openDBMigrate(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -166,7 +176,7 @@ func cmdDoctor(ctx context.Context, path string) error {
 	r := &checks{}
 	report := r.require
 
-	db, err := openDBRead(ctx, path)
+	db, err := openDBNoMigrate(ctx, path)
 	if err != nil {
 		report(false, "state db", err.Error())
 		return errors.New("doctor found problems")
@@ -329,7 +339,7 @@ func newSessionsCmd() *cobra.Command {
 }
 
 func cmdSessions(ctx context.Context, path string, limit int) error {
-	db, err := openDBRead(ctx, path)
+	db, err := openDBNoMigrate(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -378,7 +388,7 @@ func newTraceCmd() *cobra.Command {
 }
 
 func cmdTrace(ctx context.Context, path, sessionID string) error {
-	db, err := openDBRead(ctx, path)
+	db, err := openDBNoMigrate(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -518,7 +528,7 @@ func newDevCmd() *cobra.Command {
 }
 
 func cmdDevSeed(ctx context.Context, path string) error {
-	db, err := openDBWrite(ctx, path)
+	db, err := openDBMigrate(ctx, path)
 	if err != nil {
 		return err
 	}

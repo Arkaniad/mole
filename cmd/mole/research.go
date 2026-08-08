@@ -33,10 +33,9 @@ import (
 // queue of leads, replan against a rolling digest as evidence arrives, and
 // synthesize a cited report from escrow held back at session start.
 //
-// It runs in-process and holds the database's single writer for its lifetime.
-// That is the same position the daemon will take in M7; until then there is
-// nothing to attach to, so Ctrl-C settles what was spent and stops rather than
-// detaching.
+// It runs in-process rather than attaching to the daemon: there is no protocol
+// for handing a running session to a terminal and streaming its progress back,
+// so Ctrl-C settles what was spent and stops rather than detaching.
 
 // researchUsage is the prose cobra cannot generate. The flag list is
 // deliberately absent: it is derived from the definitions below, so it cannot
@@ -166,7 +165,7 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 		fmt.Printf("cassette %s (%s)\n", rec.Path, rec.Mode)
 	}
 
-	db, err := openDBWrite(ctx, o.dbPath)
+	db, err := openDBMigrate(ctx, o.dbPath)
 	if err != nil {
 		return err
 	}

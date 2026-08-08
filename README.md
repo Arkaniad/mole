@@ -11,16 +11,18 @@ A Planner–Executor–Verifier deep research agent with budget as a first-class
 primitive. Web research, academic literature, and local-data analysis behind one
 Actor interface, exposed to coding agents over MCP.
 
-**Status: M3 complete — the research loop runs end to end.** Decompose → fetch →
-mine claims → digest → replan → report, with the budget ledger binding at every
-step. Verified against a live provider rather than only fakes: a nine-lead run
-held to 114,654 of 400,000 tokens with 0% overshoot, replanned twice, served
-eight sources from cache without a fetch, and reconciled a 40-call ledger.
+**Status: M7 complete — the loop runs end to end and coding agents can drive
+it.** Decompose → fetch → mine claims → digest → cross-check → replan → report,
+with the budget ledger binding at every step, behind a local daemon speaking MCP
+over a unix socket. Verified against a live provider rather than only fakes: a
+nine-lead run held to 114,654 of 400,000 tokens with 0% overshoot, replanned
+twice, served eight sources from cache without a fetch, and reconciled a 40-call
+ledger.
 
-What is not done: M2's question corpus, and M4's Verifier — so claims are
-extracted, quote-checked against their source, and cited, but not yet
-cross-checked against each other. See [the milestone table](#milestones) and
-[known gaps](#known-gaps).
+What is not done: M2's question corpus, and the Verifier's contradiction
+*recall* — its precision is measured, but no labelled set of true contradictions
+exists to measure against. M5's executor pool, M6, M8 and M9 are untouched. See
+[the milestone table](#milestones) and [known gaps](#known-gaps).
 
 Full design: [`mole-architecture-sketch.md`](./mole-architecture-sketch.md).
 
@@ -77,6 +79,24 @@ Running an actual research question needs a search key and a model:
 ./bin/mole eval --last --verbose               # score the run against §14.3
 ```
 
+Once a run has finished, its claims can be re-questioned without researching
+again — retrieval plus one model call, no search and no fetch (§13):
+
+```bash
+./bin/mole ask <session-id> "how does it compare to MegaByte?"
+./bin/mole ask <session-id> "..." --json       # answer, claims and citations
+```
+
+An ask costs cents and is charged to a small session of its own rather than to
+the run it queries — that run's ledger is settled, and §8 does not allow cost
+rows against a closed account, so the ask shows up in `mole sessions` separately.
+This is the same operation an agent gets over MCP as `research.ask`.
+
+`ask` writes, and it is safe to run against a live daemon. SQLite serialises
+writers per *transaction*, not per connection, so the daemon holds no lock
+between its own transactions and an ask's are short. The one command that should
+not be run against a running daemon is `mole migrate`.
+
 No model key is needed if `ant auth login` has run or a local runtime is up —
 `doctor` says which one it found. `--usd` and `--tokens` are mutually exclusive
 and there is no built-in default: a number nobody chose is still money spent.
@@ -123,7 +143,7 @@ tokens: 104403 in · 10251 out · 0 cache-read · 0 cache-write
 ledger: consistent (40 calls)
 ```
 
-Real output from a live run, so there is no `verifier` row — M4 has not landed.
+Real output from a live run predating M4, so there is no `verifier` row.
 The 2%/97% split is the number the rolling digest exists to protect: planning cost
 scales with the number of *replans*, not the number of leads (§9.1).
 
@@ -149,11 +169,16 @@ The role breakdown is a single `GROUP BY` over the ledger — the entire reason
 | `internal/planner` | Decomposition, the rolling digest, replan |
 | `internal/queue` | Lease-based lead queue: heartbeat, crash recovery |
 | `internal/executor` | The loop — sub-budgets, error policy, replan batching |
+| `internal/verifier` | Claim graph: clustering, contradiction adjudication, grounding |
 | `internal/cache` | Artifact-level result-returning cache (URL, DOI, query) |
-| `internal/output` | Report synthesis and citation rendering |
+| `internal/output` | Report synthesis, `ask` answers, citation rendering |
+| `internal/session` | Runner and supervisor — session lifecycle, crash recovery |
+| `internal/daemon` | Unix socket listener, peer credential checks, graceful stop |
+| `internal/mcpserver` | The MCP tool surface the daemon speaks |
 | `internal/eval` | Mechanical scorecard, citation re-verification |
 | `internal/config` | Config file and environment resolution |
-| `cmd/mole` | CLI: `research`, `eval`, `stats`, `trace`, `sessions`, `doctor`, `config`, `migrate`, `dev` |
+| `cmd/mole` | CLI: `research`, `ask`, `serve`, `eval`, `stats`, `trace`, `sessions`, `doctor`, `config`, `migrate`, `dev` |
+| `cmd/mole-mcp` | The disposable stdio shim — pumps bytes to the daemon's socket |
 
 ### Decisions worth knowing before you read the code
 
@@ -250,10 +275,10 @@ The suites that carry weight:
 | M1 | WebActor end to end + fetch failure classification | **done** |
 | M2 | Eval harness + `mole stats --fetch` | scorer **done**, corpus (§14.2) open |
 | M3 | Planner loop, rolling digest, error policy | **done** |
-| M4 | Claim graph + Verifier | |
+| M4 | Claim graph + Verifier | **done**, contradiction recall unmeasured |
 | M5 | Executor pool | |
 | M6 | AcademicActor | |
-| M7 | MCP daemon + stdio shim | |
+| M7 | MCP daemon + stdio shim | **done** |
 | M8 | LocalComputeActor (sandbox → sqlguard → aggregation gate → actor) | |
 | M9 | Dataset mode | |
 
@@ -272,9 +297,9 @@ Stated plainly rather than left to be discovered:
   wiring, and the mechanical scorer (`mole eval`) are in; the question corpus
   (§14.2) is not. The milestones are not a strict chain — the corpus is labelled
   data, and building it before there was a loop worth measuring would have meant
-  guessing at what to label. Two of the scorer's metrics, contradiction recall and
-  staleness detection, read zero until the Verifier lands in M4, and that is not a
-  regression.
+  guessing at what to label. Two of the scorer's metrics still read zero:
+  staleness detection is unimplemented, and contradiction recall has a verifier
+  behind it now but nothing labelled to score against — see below.
 - **The planner never converges by answering; it stops at a cap.**
   `MaxNewLeadsPerReplan` equals `ReplanEvery`, so the queue drains at exactly the
   rate it refills, and the two quality-driven exits — a drained queue, and the
@@ -290,7 +315,14 @@ Stated plainly rather than left to be discovered:
   this rather than surfacing it as a JSON parse failure. Ollama's `/v1` endpoint
   ignored every documented way to disable it (`think:false`, `/no_think`,
   `chat_template_kwargs.enable_thinking`). Use a non-reasoning model, or the
-  native API.
+  native API. Supporting them properly — reading the `reasoning` field and
+  giving it its own allowance so it cannot eat the output budget — is planned,
+  not merely worked around.
+- **Contradiction recall has never been measured.** The Verifier's precision was
+  checked against a labelled 37-pair set, but that set contains no true
+  contradictions, so the recall number §14.3 asks for has no denominator. It
+  needs a pair set built to contain them, which is the same labelling work §14.2
+  is waiting on.
 - **The estimator does not warm from history.** Attributing a settled cost to
   `(actor_type, depth)` needs a join to `leads`, which M3 now populates, so the
   blocker is gone and this is simply unimplemented. Guessing the actor type would
@@ -312,3 +344,27 @@ Stated plainly rather than left to be discovered:
   returns page content, which decides whether §17.1's gate has a denominator. The
   contact email (Unpaywall/NCBI, M6), MCP socket permissions (M7), and sandbox
   availability (M8) are reported as informational until their milestone lands.
+
+---
+
+## Before a public release
+
+Deliberately deferred, tracked here rather than in a scratch file:
+
+- **Comment pass.** The code is commented at the density of something being
+  reasoned about in the open — every non-obvious decision carries its argument.
+  Some of that is scaffolding for the build rather than for a reader, and should
+  be cut once the shape has stopped moving.
+- **Reasoning-model support.** See the known gap above. Working around it is
+  acceptable while the only local models available reason by default; shipping a
+  research tool that silently spends a whole budget on hidden tokens is not.
+- **Separate the dev commands from the product.** `mole dev`, `corpus`, `pairs`
+  and parts of `eval` exist to build and check this thing, not to use it. They
+  should be behind a build tag or a hidden group before the CLI is presented as
+  a stable surface — an accidental `mole dev seed` against a real database is a
+  bad first impression. `cmd/fixorphans` is a one-off repair for a mistake that
+  can no longer happen and should simply go.
+- **Choose a licence.** There is no `LICENSE` file yet. The choice is between
+  plain MIT and a source-available/fair-code licence in the shape n8n uses —
+  which turns on whether a hosted mole run by someone else is a problem worth
+  preventing. Not decided.

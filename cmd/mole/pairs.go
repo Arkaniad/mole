@@ -55,7 +55,7 @@ func newPairsDumpCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			db, err := openDBRead(ctx, dbPath(cmd))
+			db, err := openDBNoMigrate(ctx, dbPath(cmd))
 			if err != nil {
 				return err
 			}
@@ -253,7 +253,7 @@ func newPairsJudgeCmd() *cobra.Command {
 				fmt.Printf("carried %d label(s) forward from %s\n", len(opts.Labels), labels)
 			}
 
-			db, err := openDBRead(ctx, dbPath(cmd))
+			db, err := openDBNoMigrate(ctx, dbPath(cmd))
 			if err != nil {
 				return err
 			}

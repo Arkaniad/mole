@@ -157,7 +157,7 @@ func cmdCorpus(ctx context.Context, path string, o corpusOpts) error {
 // The scorecard cannot answer this: its hard regressions are budget overshoot, ledger
 // drift and stranded holds, and a run that produced nothing has none of them.
 func sessionOutcome(ctx context.Context, path, sessionID string) (string, int, error) {
-	db, err := openDBRead(ctx, path)
+	db, err := openDBNoMigrate(ctx, path)
 	if err != nil {
 		return "", 0, err
 	}
@@ -179,7 +179,7 @@ func sessionOutcome(ctx context.Context, path, sessionID string) (string, int, e
 
 // scoreSession opens the database read-only and scores one session.
 func scoreSession(ctx context.Context, path, sessionID string) (eval.Scorecard, error) {
-	db, err := openDBRead(ctx, path)
+	db, err := openDBNoMigrate(ctx, path)
 	if err != nil {
 		return eval.Scorecard{}, err
 	}

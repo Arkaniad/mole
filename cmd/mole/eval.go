@@ -82,7 +82,7 @@ type evalOpts struct {
 }
 
 func cmdEval(ctx context.Context, path, sessionID string, o evalOpts) error {
-	db, err := openDBRead(ctx, path)
+	db, err := openDBNoMigrate(ctx, path)
 	if err != nil {
 		return err
 	}

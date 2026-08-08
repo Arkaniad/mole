@@ -69,7 +69,7 @@ func newStatsCmd() *cobra.Command {
 func cmdStats(ctx context.Context, path string, since time.Duration, domains int, asJSON bool) error {
 	cutoff := time.Now().Add(-since)
 
-	db, err := openDBRead(ctx, path)
+	db, err := openDBNoMigrate(ctx, path)
 	if err != nil {
 		return err
 	}

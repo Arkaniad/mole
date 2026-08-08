@@ -63,9 +63,11 @@ func newServeCmd() *cobra.Command {
 			"lives here and a disposable shim forwards to it.\n\n" +
 			"Listens on a unix socket, mode 0600, in a private directory, and refuses\n" +
 			"connections from any other user (§3.5). Nothing binds TCP.\n\n" +
-			"The daemon holds the database's single writer for its lifetime. Read\n" +
-			"commands — sessions, trace, eval, stats — open read-only and are neither\n" +
-			"blocked by it nor block it.",
+			"The daemon keeps the database open for its lifetime but takes the write\n" +
+			"lock only for the length of each transaction, so other mole commands can\n" +
+			"run alongside it — reads never contend at all, and `ask` writes in\n" +
+			"transactions short enough that the wait is not perceptible. Only\n" +
+			"`mole migrate` should not be run against a live daemon.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmdServe(cmd.Context(), serveOpts{
@@ -104,7 +106,7 @@ func cmdServe(ctx context.Context, o serveOpts) error {
 		return err
 	}
 
-	db, err := openDBWrite(ctx, o.dbPath)
+	db, err := openDBMigrate(ctx, o.dbPath)
 	if err != nil {
 		return err
 	}
@@ -177,7 +179,7 @@ func cmdServe(ctx context.Context, o serveOpts) error {
 	defer stop()
 
 	fmt.Printf("mole daemon listening on %s\n", o.socket)
-	fmt.Printf("  database  %s (holding the single writer)\n", o.dbPath)
+	fmt.Printf("  database  %s\n", o.dbPath)
 	fmt.Printf("  sessions  up to %d at once\n", o.maxSessions)
 	if cfg.MaxSessionUSD > 0 {
 		fmt.Printf("  ceiling   %s per session\n", core.FormatUSD(cfg.MaxSessionUSD))

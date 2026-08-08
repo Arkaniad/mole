@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -79,17 +80,27 @@ type Citation struct {
 //
 // This is also what core.ModeAsk was reserved for. §13 describes it as "listed
 // in rev 1's Session.Mode but never defined"; this defines it.
-func (d Deps) ask(ctx context.Context, _ *mcp.CallToolRequest, in AskIn) (*mcp.CallToolResult, AskOut, error) {
+//
+// Exported because `mole ask` is the same operation from a terminal instead of
+// an MCP client, and the budgeting above is the part that must not be written
+// twice. The CLI builds a Deps with no Supervisor — an ask never starts one —
+// and calls this directly.
+func (d Deps) Ask(ctx context.Context, in AskIn) (AskOut, error) {
+	if d.Log == nil {
+		// New() fills this in; a caller constructing Deps by hand (the CLI) may
+		// not, and every warning path below would nil-panic.
+		d.Log = slog.Default()
+	}
 	question := strings.TrimSpace(in.Question)
 	if question == "" {
-		return nil, AskOut{}, errors.New("question is empty")
+		return AskOut{}, errors.New("question is empty")
 	}
 	src, err := d.loadSession(ctx, in.SessionID)
 	if err != nil {
-		return nil, AskOut{}, err
+		return AskOut{}, err
 	}
 	if src.Status == core.StatusRunning {
-		return nil, AskOut{}, fmt.Errorf(
+		return AskOut{}, fmt.Errorf(
 			"session %s is still running; ask it once it has finished, or its claim "+
 				"graph will change under the answer", src.ID)
 	}
@@ -120,7 +131,7 @@ func (d Deps) ask(ctx context.Context, _ *mcp.CallToolRequest, in AskIn) (*mcp.C
 			MaxWallClock: askTimeout,
 		})
 		if err != nil {
-			return nil, AskOut{}, fmt.Errorf("could not open an ask session: %w", err)
+			return AskOut{}, fmt.Errorf("could not open an ask session: %w", err)
 		}
 		// The escrow a session reserves at creation is for a report this session
 		// will never write; releasing it makes the whole allowance spendable on the
@@ -147,7 +158,7 @@ func (d Deps) ask(ctx context.Context, _ *mcp.CallToolRequest, in AskIn) (*mcp.C
 	rep, err := gen.Answer(ctx, d.Store, src.ID, question)
 	if err != nil {
 		d.closeAsk(ctx, led, askSess, reservation, nil, core.StatusFailed)
-		return nil, AskOut{}, err
+		return AskOut{}, err
 	}
 
 	spent := d.closeAsk(ctx, led, askSess, reservation, rep, core.StatusDone)
@@ -182,7 +193,14 @@ func (d Deps) ask(ctx context.Context, _ *mcp.CallToolRequest, in AskIn) (*mcp.C
 			Grounded:   f.Claim.Grounded,
 		})
 	}
-	return nil, out, nil
+	return out, nil
+}
+
+// ask is the MCP tool. It carries no logic of its own so the CLI and an agent
+// cannot drift apart.
+func (d Deps) ask(ctx context.Context, _ *mcp.CallToolRequest, in AskIn) (*mcp.CallToolResult, AskOut, error) {
+	out, err := d.Ask(ctx, in)
+	return nil, out, err
 }
 
 // askTimeout bounds the ask session's wall clock. One model call.
