@@ -2,6 +2,8 @@ package executor_test
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -94,11 +96,18 @@ func (p *leadProbe) peak() (peak, runs int) {
 	return p.maxInFlight, p.runs
 }
 
-// TestLeadsRunOneAtATime pins the pre-M5 contract.
+// TestLeadsRunOneAtATime pins the DEFAULT, which is still one worker.
 //
-// It is meant to FAIL when the pool lands. That is the point of writing it now:
-// slice 4 has to change this expectation deliberately, in a commit that says so,
-// rather than concurrency arriving as a silent change in behaviour.
+// Written before the pool existed, to fail when concurrency arrived rather than
+// let it arrive silently. The pool landed in slice 4 and this still passes,
+// which is correct and not an oversight: Executor.Workers defaults to 1, so
+// nothing changed for a caller that did not ask for concurrency. Cassette
+// recording depends on that — nondeterministic lead order makes a recording
+// unreplayable — so the default cannot move before the guard that refuses
+// MOLE_RECORD with a pool.
+//
+// It is slice 5, flipping the default to 4, that has to change this expectation
+// deliberately.
 func TestLeadsRunOneAtATime(t *testing.T) {
 	const delay = 40 * time.Millisecond
 
@@ -195,4 +204,174 @@ func TestARetriedLeadCountsOnce(t *testing.T) {
 		t.Fatalf("LeadCount=%d after one lead retried %d times, want 1",
 			got, executor.MaxAttempts)
 	}
+}
+
+// orderingProbe finishes leads in the REVERSE of the order they were queued, by
+// sleeping longest for the lead it is given first.
+//
+// The point is to make completion order and queue order disagree. If outcomes
+// were collected as they arrived, the digest and the claim list would come back
+// reversed — and the replan prompt built from that digest would depend on which
+// fetch happened to be quickest.
+type orderingProbe struct {
+	mu       sync.Mutex
+	finished []string // queries, in completion order
+	delays   map[string]time.Duration
+	db       store.Store
+}
+
+func (p *orderingProbe) Type() core.ActorType { return core.ActorWeb }
+
+func (p *orderingProbe) Run(ctx context.Context, lead core.Lead) (*actors.Result, error) {
+	select {
+	case <-time.After(p.delays[lead.Query]):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	p.mu.Lock()
+	p.finished = append(p.finished, lead.Query)
+	p.mu.Unlock()
+
+	res := &actors.Result{
+		Summary: "s",
+		Costs: []core.ToolCall{{
+			Role: core.RoleExecutor, Type: core.CallLLM, Model: "fake-model",
+			Cost: core.Cost{USDMicros: 1000, InputTokens: 100, OutputTokens: 10},
+		}},
+		Claims: []core.Claim{{
+			Text:   "claim from " + lead.Query,
+			Source: "https://example.com/" + lead.Query,
+			Quote:  "a quote long enough to constitute real evidence",
+		}},
+	}
+	for i := range res.Claims {
+		res.Claims[i].SessionID = lead.SessionID
+		res.Claims[i].LeadID = lead.ID
+	}
+	if p.db != nil {
+		if err := p.db.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+			return tx.InsertClaims(ctx, res.Claims)
+		}); err != nil {
+			return res, err
+		}
+	}
+	return res, nil
+}
+
+func (p *orderingProbe) order() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.finished...)
+}
+
+// TestWorkersRunLeadsConcurrently. The pool does what it says.
+func TestWorkersRunLeadsConcurrently(t *testing.T) {
+	const delay = 40 * time.Millisecond
+
+	probe := &leadProbe{delay: delay}
+	r := newRig(t, 50*core.MicrosPerUSD, []string{
+		planJSON("a", "b", "c"),
+		planJSON("d", "e", "f"),
+		planJSON("g", "h", "i"),
+	}, nil)
+	probe.db = r.db
+	r.exec.Actors[core.ActorWeb] = probe
+	r.exec.Workers = 3 // matches ReplanEvery, so a whole batch runs at once
+
+	start := time.Now()
+	if _, err := r.exec.Run(context.Background(), r.sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(start)
+
+	peak, runs := probe.peak()
+	if runs < 2 {
+		t.Fatalf("only %d lead(s) ran; the rig is not exercising the pool", runs)
+	}
+	if peak < 2 {
+		t.Fatalf("peak concurrency %d with Workers=3 — leads are still serial", peak)
+	}
+	t.Logf("POOL: %d leads, peak concurrency %d, %v elapsed (serial would be %v)",
+		runs, peak, elapsed.Round(time.Millisecond), time.Duration(runs)*delay)
+}
+
+// TestOutcomesApplyInQueueOrderNotCompletionOrder is the determinism property
+// the batch barrier exists for.
+func TestOutcomesApplyInQueueOrderNotCompletionOrder(t *testing.T) {
+	probe := &orderingProbe{delays: map[string]time.Duration{
+		"a": 120 * time.Millisecond,
+		"b": 60 * time.Millisecond,
+		"c": 10 * time.Millisecond,
+	}}
+	r := newRig(t, 50*core.MicrosPerUSD, []string{planJSON("a", "b", "c"), `{"done":true}`}, nil)
+	probe.db = r.db
+	r.exec.Actors[core.ActorWeb] = probe
+	r.exec.Workers = 3
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Precondition: completion order really did differ from queue order.
+	// Without this the assertion below passes on a serial run and proves nothing.
+	finished := probe.order()
+	if len(finished) != 3 {
+		t.Fatalf("%d leads finished, want 3: %v", len(finished), finished)
+	}
+	if finished[0] == "a" {
+		t.Fatalf("leads finished in queue order %v; the probe did not reorder them, "+
+			"so this test says nothing about ordering", finished)
+	}
+
+	var got []string
+	for _, c := range res.Claims {
+		got = append(got, strings.TrimPrefix(c.Text, "claim from "))
+	}
+	want := []string{"a", "b", "c"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("claims applied in %v (completion order was %v), want queue order %v",
+			got, finished, want)
+	}
+}
+
+// TestAPoolDoesNotRunPastAReplan. ReplanEvery is 3; a pool of 8 must still stop
+// at 3, or turning on workers silently changes how often the planner is
+// consulted — and §9.1's whole argument is about planner cost.
+//
+// MaxInitialLeads is raised to 6 on purpose. With the rig's default of 3 the
+// QUEUE never holds more than 3 leads, so peak concurrency is bounded by the
+// queue rather than by the cadence and the test passes even with the cadence
+// check removed — measured, after writing exactly that test and falsifying it.
+func TestAPoolDoesNotRunPastAReplan(t *testing.T) {
+	probe := &leadProbe{delay: 25 * time.Millisecond}
+	r := newRig(t, 50*core.MicrosPerUSD, []string{
+		planJSON("a", "b", "c", "d", "e", "f"),
+		// Not done: the mid-batch replan must let the loop come back for the
+		// three leads still queued, or only one batch ever runs.
+		planJSON(),
+		`{"done":true}`,
+	}, nil)
+	probe.db = r.db
+	r.exec.Actors[core.ActorWeb] = probe
+	r.exec.Planner.MaxInitialLeads = 6 // six queued at once, three allowed per batch
+	r.exec.Workers = 8
+
+	if _, err := r.exec.Run(context.Background(), r.sess.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	peak, runs := probe.peak()
+	// Precondition: more leads were queued than a batch may run, or the cadence
+	// is not being exercised at all.
+	if runs < 6 {
+		t.Fatalf("%d leads ran, want 6 — the queue never held more than one batch, "+
+			"so the replan boundary was never tested", runs)
+	}
+	if peak > 3 {
+		t.Fatalf("peak concurrency %d with ReplanEvery=3; the pool ran past a "+
+			"replan boundary", peak)
+	}
+	t.Logf("queued 6, ran %d, peak %d with Workers=8", runs, peak)
 }

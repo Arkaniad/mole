@@ -39,6 +39,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lajosdeme/mole/internal/actors"
@@ -69,6 +70,17 @@ type Executor struct {
 
 	// Owner identifies this worker in a lease. M5 gives each worker its own.
 	Owner string
+
+	// Workers is how many leads this session runs at once. Zero takes
+	// DefaultWorkers.
+	//
+	// Per session rather than per process: the supervisor already bounds how many
+	// sessions run at once, and one shared pool would let a single large session
+	// starve every other one. The product of the two is what a person actually
+	// has to reason about — four sessions of four workers is sixteen leads and
+	// sixteen outbound fetches — so both numbers stay visible instead of being
+	// folded into one.
+	Workers int
 
 	// Progress reports phase transitions as they happen. Optional.
 	//
@@ -281,12 +293,15 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 			break
 		}
 
-		lease, err := e.Queue.LeaseNext(ctx, sessionID, e.owner())
+		// Lease a BATCH, not a lead. Its size is bounded by the worker count and
+		// by how many leads may still run before a replan is due, so the pool
+		// never runs past a replan boundary — see runBatch for why that matters.
+		batch, err := e.leaseBatch(ctx, sessionID, e.batchSize(completedSinceReplan))
 		if err != nil {
 			return res, err
 		}
 
-		if lease == nil {
+		if len(batch) == 0 {
 			// Queue drained. One last replan can add work; if it does not, the
 			// session is done.
 			if !e.Planner.ShouldReplan(completedSinceReplan, true) {
@@ -321,47 +336,67 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 			continue
 		}
 
-		// A cache hit RETURNS the prior result; it does not skip the lead
-		// (§9.3). Rev 1 skipped, so the planner asked for something and got
-		// nothing back — and the next replan spawned an equivalent lead,
-		// forever. Recording the coverage is what closes that loop.
-		if e.completeFromCache(ctx, lease, digest, leadQuestion) {
-			e.emit("cached", truncateQuery(lease.Lead.Query))
-			res.LeadsCached++
+		outcomes := e.runBatch(ctx, sess, batch, leadQuestion)
+
+		// Apply on THIS goroutine, in the order the planner queued the leads —
+		// not the order they finished. Everything mutable lives here: the digest,
+		// the Result counters, and the claim slice.
+		var (
+			fatal     *leadOutcome
+			exhausted bool
+		)
+		for i := range outcomes {
+			out := outcomes[i]
 			completedSinceReplan++
-			continue
+
+			if out.fromCache {
+				e.emit("cached", truncateQuery(out.lead.Query))
+				res.LeadsCached++
+			} else {
+				res.LeadsRun++
+				e.emit("lead-done", fmt.Sprintf("%d claim(s)%s",
+					len(out.claims), leadNote(out)))
+			}
+
+			digest.RecordLead(out.questionID)
+			if out.claimsFound > 0 {
+				digest.RecordClaims(out.questionID, out.claimsFound)
+			}
+			if out.deadEnd != "" {
+				digest.RecordDeadEnd(out.deadEnd, deadEndExample(&out.lead))
+			}
+			res.Claims = append(res.Claims, out.claims...)
+
+			// The lead is counted by its own reservation, not here. Ledger
+			// .ReserveFor applies LeadCount in the transaction that checks
+			// MaxLeads, so the check and the increment cannot be separated by
+			// another worker.
+			if out.err != nil && out.class != Fatal {
+				res.LeadsFailed++
+			}
+			if out.class == Fatal && fatal == nil {
+				// Keep the FIRST fatal in queue order, so which one is reported
+				// does not depend on which worker lost the race. The rest of the
+				// batch is still applied: it ran, and it was paid for.
+				o := out
+				fatal = &o
+				exhausted = errors.Is(out.err, budget.ErrInsufficientBudget)
+			}
 		}
 
-		e.emit("lead", truncateQuery(lease.Lead.Query))
-		outcome := e.runLead(ctx, sess, lease, digest, leadQuestion)
-		res.LeadsRun++
-		e.emit("lead-done", fmt.Sprintf("%d claim(s)%s",
-			len(outcome.claims), leadNote(outcome)))
-
-		// The lead is counted by its own reservation, not here. It used to be
-		// counted at this point — after the work, which is exact only while
-		// leads are serial. Ledger.ReserveFor now applies LeadCount in the
-		// transaction that checks MaxLeads, so the check and the increment
-		// cannot be separated by another worker.
-		res.Claims = append(res.Claims, outcome.claims...)
-		completedSinceReplan++
-
-		if outcome.class == Fatal {
+		if fatal != nil {
 			// A ceiling is not a failure: the session did what it was allowed
 			// to do. Reporting it as failed would make every correctly-bounded
 			// run look broken.
-			if errors.Is(outcome.err, budget.ErrInsufficientBudget) {
+			if exhausted {
 				res.Status = core.StatusExhausted
-				res.StoppedBecause = ceilingReason(outcome.err)
+				res.StoppedBecause = ceilingReason(fatal.err)
 				break
 			}
 			res.Status = core.StatusFailed
-			res.StoppedBecause = "fatal: " + outcome.err.Error()
+			res.StoppedBecause = "fatal: " + fatal.err.Error()
 			// Escrow survives, so a partial report is still affordable (§9.5).
 			return res, nil
-		}
-		if outcome.err != nil {
-			res.LeadsFailed++
 		}
 
 		if e.Planner.ShouldReplan(completedSinceReplan, false) {
@@ -397,44 +432,147 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 	return res, nil
 }
 
-// completeFromCache satisfies a lead from a prior identical one.
+// DefaultWorkers is the per-session pool size when Workers is unset.
 //
-// Reports the coverage to the digest before completing, which is the whole
-// difference from rev 1: the planner learns the question was answered, so it
-// stops re-proposing it. A hit costs nothing — the claims are already in the
-// store under the lead that first found them, and re-inserting copies would
-// inflate every claim count §14.3 reads without giving a reader anything.
-func (e *Executor) completeFromCache(
+// One, deliberately, until the CLI and the daemon choose otherwise. A default
+// that turned on concurrency here would change every existing caller's behaviour
+// as a side effect of this file compiling, including cassette recording, where
+// nondeterministic lead order makes the recording unreplayable.
+const DefaultWorkers = 1
+
+func (e *Executor) workers() int {
+	if e.Workers > 0 {
+		return e.Workers
+	}
+	return DefaultWorkers
+}
+
+// batchSize is how many leads may run before the next replan is due.
+//
+// Bounded by the replan cadence and not just the worker count, so turning on
+// workers does not silently change how often the planner is consulted: with
+// ReplanEvery at 3, a pool of 4 still stops at 3 and replans. Asked through
+// ShouldReplan rather than reading ReplanEvery, so the two cannot disagree.
+func (e *Executor) batchSize(completedSinceReplan int) int {
+	n := 1
+	for n < e.workers() && !e.Planner.ShouldReplan(completedSinceReplan+n, false) {
+		n++
+	}
+	return n
+}
+
+// leaseBatch takes up to max leads off the queue.
+//
+// Leasing is what makes the pool safe to run at all (§9.4): the lease is claimed
+// in a transaction, so two workers — or two processes — cannot take the same
+// lead. Stopping at the first nil is not an error, it is the queue being shorter
+// than the batch.
+func (e *Executor) leaseBatch(ctx context.Context, sessionID string, max int) ([]*queue.Lease, error) {
+	var batch []*queue.Lease
+	for len(batch) < max {
+		lease, err := e.Queue.LeaseNext(ctx, sessionID, e.owner())
+		if err != nil {
+			return batch, err
+		}
+		if lease == nil {
+			break
+		}
+		batch = append(batch, lease)
+	}
+	return batch, nil
+}
+
+// runBatch runs a batch of leads concurrently and returns their outcomes IN
+// BATCH ORDER.
+//
+// Order is the point. Outcomes are written to a preallocated slot per lead
+// rather than appended as they arrive, so the coordinator applies them in the
+// order the planner queued them however the network answered. Without that the
+// digest — and therefore the replan prompt, and therefore what gets researched
+// next — would depend on which fetch happened to be quickest.
+//
+// Distinct slots also mean the writes need no lock: each goroutine owns one
+// element and nothing reads the slice until Wait returns.
+//
+// leadQuestion is read HERE, on the coordinator's goroutine, before any worker
+// starts. The map is never handed to a worker, which is what keeps it a plain
+// map rather than something that needs guarding.
+func (e *Executor) runBatch(
 	ctx context.Context,
-	lease *queue.Lease,
-	digest *planner.Digest,
+	sess *core.Session,
+	batch []*queue.Lease,
 	leadQuestion map[string]string,
-) bool {
+) []leadOutcome {
+	out := make([]leadOutcome, len(batch))
+
+	var wg sync.WaitGroup
+	for i, lease := range batch {
+		questionID := leadQuestion[lease.Lead.ID]
+		e.emit("lead", truncateQuery(lease.Lead.Query))
+
+		wg.Add(1)
+		go func(i int, lease *queue.Lease, questionID string) {
+			defer wg.Done()
+			if cached, ok := e.tryCache(ctx, lease, questionID); ok {
+				out[i] = cached
+				return
+			}
+			out[i] = e.runLead(ctx, sess, lease, questionID)
+		}(i, lease, questionID)
+	}
+	wg.Wait()
+	return out
+}
+
+// tryCache satisfies a lead from a prior identical one.
+//
+// A cache hit RETURNS the prior result; it does not skip the lead (§9.3). Rev 1
+// skipped, so the planner asked for something and got nothing back — and the
+// next replan spawned an equivalent lead, forever. Recording the coverage is
+// what closes that loop, which is why the outcome carries claimsFound and a dead
+// end rather than nothing.
+//
+// A hit costs nothing: the claims are already in the store under the lead that
+// first found them, and re-inserting copies would inflate every claim count
+// §14.3 reads without giving a reader anything.
+func (e *Executor) tryCache(ctx context.Context, lease *queue.Lease, questionID string) (leadOutcome, bool) {
 	if e.Cache == nil {
-		return false
+		return leadOutcome{}, false
 	}
-	key := cache.QueryKey(lease.Lead.Query)
-	entry, ok := e.Cache.Get(key)
+	entry, ok := e.Cache.Get(cache.QueryKey(lease.Lead.Query))
 	if !ok {
-		return false
+		return leadOutcome{}, false
 	}
 
-	questionID := leadQuestion[lease.Lead.ID]
-	digest.RecordLead(questionID)
-	if entry.Claims > 0 {
-		digest.RecordClaims(questionID, entry.Claims)
-	} else {
-		digest.RecordDeadEnd("no_evidence", deadEndExample(lease.Lead))
+	out := leadOutcome{
+		lead:        *lease.Lead,
+		questionID:  questionID,
+		claimsFound: entry.Claims,
+		fromCache:   true,
 	}
-
+	if entry.Claims == 0 {
+		out.deadEnd = "no_evidence"
+	}
 	e.complete(ctx, lease, core.LeadSkippedCache)
-	return true
+	return out, true
 }
 
 type leadOutcome struct {
+	lead       core.Lead
+	questionID string
+
 	claims []core.Claim
-	err    error
-	class  Class
+	// claimsFound is what the digest counts. Separate from len(claims) because a
+	// cache hit knows the count without re-inserting the claims: they are already
+	// in the store under the lead that first found them, and copying them would
+	// inflate every claim count §14.3 reads.
+	claimsFound int
+	// deadEnd is the cause to record, empty when the lead produced evidence.
+	deadEnd   string
+	fromCache bool
+
+	err   error
+	class Class
 }
 
 // runLead reserves, runs, settles, and completes one lead.
@@ -446,19 +584,18 @@ func (e *Executor) runLead(
 	ctx context.Context,
 	sess *core.Session,
 	lease *queue.Lease,
-	digest *planner.Digest,
-	leadQuestion map[string]string,
+	questionID string,
 ) leadOutcome {
 	lead := *lease.Lead
-	questionID := leadQuestion[lead.ID]
-	digest.RecordLead(questionID)
+	base := leadOutcome{lead: lead, questionID: questionID}
 
 	actor, ok := e.Actors[lead.ActorType]
 	if !ok {
 		err := fmt.Errorf("executor: no actor registered for %q", lead.ActorType)
-		digest.RecordDeadEnd("no_actor", deadEndExample(&lead))
 		e.complete(ctx, lease, core.LeadFailed)
-		return leadOutcome{err: err, class: Fatal}
+		out := base
+		out.err, out.class, out.deadEnd = err, Fatal, "no_actor"
+		return out
 	}
 
 	var last leadOutcome
@@ -473,7 +610,10 @@ func (e *Executor) runLead(
 			if ok, err := e.Queue.Renew(ctx, lease); err != nil || !ok {
 				e.logger().WarnContext(ctx, "lease lost mid-retry; abandoning the lead",
 					"lead", lead.ID, "attempt", attempt)
-				return leadOutcome{err: errors.New("executor: lease lost"), class: Degraded}
+				lost := base
+				lost.err, lost.class = errors.New("executor: lease lost"), Degraded
+				lost.deadEnd = DeadEndCause(lost.err)
+				return lost
 			}
 		}
 
@@ -481,11 +621,12 @@ func (e *Executor) runLead(
 		last = out
 
 		if out.err == nil {
-			digest.RecordClaims(questionID, len(out.claims))
+			out.lead, out.questionID = lead, questionID
+			out.claimsFound = len(out.claims)
 			if len(out.claims) == 0 {
 				// A lead that ran cleanly and found nothing is still a dead end
 				// for the planner: the question was asked and not answered.
-				digest.RecordDeadEnd("no_evidence", deadEndExample(&lead))
+				out.deadEnd = "no_evidence"
 			}
 			e.Cache.Put(&cache.Entry{
 				Key:    cache.QueryKey(lead.Query),
@@ -503,7 +644,8 @@ func (e *Executor) runLead(
 
 	// Out of attempts, or not worth retrying. §9.5: a transient error that
 	// exhausts its retries becomes degraded — the session continues.
-	digest.RecordDeadEnd(DeadEndCause(last.err), deadEndExample(&lead))
+	last.lead, last.questionID = lead, questionID
+	last.deadEnd = DeadEndCause(last.err)
 	// Claims from a partial run are kept: the actor verified every quote it
 	// returned, and discarding them because a later chunk failed throws away
 	// evidence that was paid for.
