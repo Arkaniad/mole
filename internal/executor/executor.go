@@ -319,20 +319,11 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 		e.emit("lead-done", fmt.Sprintf("%d claim(s)%s",
 			len(outcome.claims), leadNote(outcome)))
 
-		// Count the lead AFTER it runs, not before. Nothing else counts them:
-		// BudgetDelta.LeadCount and the SQL applying it existed since M0, but
-		// no caller ever set it, so MaxLeads — a documented §8.5 ceiling —
-		// could never bind. The check was tested; the increment feeding it was
-		// not.
-		//
-		// After, because the ledger enforces the same ceiling on Reserve.
-		// Counting first makes the lead that reaches the ceiling fail on its
-		// own reservation instead of running and stopping the next one, which
-		// turns "we did the work we were allowed" into "the last lead errored".
-		if err := e.countLead(context.WithoutCancel(ctx), sessionID); err != nil {
-			e.logger().WarnContext(ctx, "could not count a lead; the max_leads ceiling may not bind",
-				"lead", lease.Lead.ID, "err", err)
-		}
+		// The lead is counted by its own reservation, not here. It used to be
+		// counted at this point — after the work, which is exact only while
+		// leads are serial. Ledger.ReserveFor now applies LeadCount in the
+		// transaction that checks MaxLeads, so the check and the increment
+		// cannot be separated by another worker.
 		res.Claims = append(res.Claims, outcome.claims...)
 		completedSinceReplan++
 
@@ -467,7 +458,7 @@ func (e *Executor) runLead(
 			}
 		}
 
-		out := e.attempt(ctx, sess, lead, actor, lease)
+		out := e.attempt(ctx, sess, lead, actor, lease, attempt == 1)
 		last = out
 
 		if out.err == nil {
@@ -505,7 +496,7 @@ func (e *Executor) runLead(
 }
 
 // attempt is one reserve → run → settle cycle.
-func (e *Executor) attempt(ctx context.Context, sess *core.Session, lead core.Lead, actor actors.Actor, lease *queue.Lease) leadOutcome {
+func (e *Executor) attempt(ctx context.Context, sess *core.Session, lead core.Lead, actor actors.Actor, lease *queue.Lease, first bool) leadOutcome {
 	est := e.estimate(sess, lead)
 	if avail := sess.Available(); est > avail {
 		est = avail
@@ -514,7 +505,16 @@ func (e *Executor) attempt(ctx context.Context, sess *core.Session, lead core.Le
 		return leadOutcome{err: budget.ErrInsufficientBudget, class: Fatal}
 	}
 
-	reservation, err := e.Ledger.ReserveFor(ctx, sess.ID, lead.ID, est)
+	// Only the first attempt counts against MaxLeads. Every attempt holds and
+	// settles its own money, because every attempt really does spend — but §8.5's
+	// lead ceiling bounds research fan-out, and a lead retried through a rate
+	// limit is still one lead. Counting each attempt would let a flaky provider
+	// shrink the research plan while the ceiling reported the work as done.
+	reserve := e.Ledger.ReserveForRetry
+	if first {
+		reserve = e.Ledger.ReserveFor
+	}
+	reservation, err := reserve(ctx, sess.ID, lead.ID, est)
 	if err != nil {
 		return leadOutcome{err: err, class: Classify(err)}
 	}
@@ -823,14 +823,6 @@ func (e *Executor) complete(ctx context.Context, lease *queue.Lease, status core
 		e.logger().ErrorContext(ctx, "could not complete a lead; it may be re-run and re-charged",
 			"lead", lease.Lead.ID, "status", status, "err", err)
 	}
-}
-
-// countLead increments the session's dispatched-lead counter, which is what
-// makes MaxLeads enforceable.
-func (e *Executor) countLead(ctx context.Context, sessionID string) error {
-	return e.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
-		return tx.ApplyBudgetDelta(ctx, sessionID, store.BudgetDelta{LeadCount: 1})
-	})
 }
 
 func (e *Executor) estimate(sess *core.Session, lead core.Lead) int64 {

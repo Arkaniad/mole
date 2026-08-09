@@ -8,6 +8,8 @@ import (
 
 	"github.com/lajosdeme/mole/internal/actors"
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/executor"
+	"github.com/lajosdeme/mole/internal/llm"
 	"github.com/lajosdeme/mole/internal/store"
 )
 
@@ -162,5 +164,35 @@ func TestTheProbeCanSeeConcurrency(t *testing.T) {
 	if peak, runs := probe.peak(); peak != workers || runs != workers {
 		t.Fatalf("probe saw peak=%d runs=%d driving %d concurrent calls; "+
 			"it cannot measure what the baseline test claims to measure", peak, runs, workers)
+	}
+}
+
+// TestARetriedLeadCountsOnce guards a regression introduced while making
+// MaxLeads bind under concurrency (M5 slice 1).
+//
+// The lead counter moved into the reservation transaction so the check and the
+// increment could not be separated by another worker. But the reservation is
+// taken per ATTEMPT, inside the retry loop — so counting every reservation made
+// a lead retried through a rate limit count three times against MaxLeads. §8.5's
+// lead ceiling bounds research fan-out; a flaky provider must not be able to
+// shrink the research plan.
+func TestARetriedLeadCountsOnce(t *testing.T) {
+	r := newRig(t, 5*core.MicrosPerUSD, []string{planJSON("only one")},
+		func(int, core.Lead) (*actors.Result, error) { return okResult(0, 1_000), llm.ErrRateLimited })
+
+	if _, err := r.exec.Run(context.Background(), r.sess.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Precondition: the retry actually happened. Without it a single-attempt
+	// lead would "prove" single counting.
+	if got := r.actor.count(); got != executor.MaxAttempts {
+		t.Fatalf("actor ran %d times, want %d — the lead did not retry, so this "+
+			"test says nothing about per-attempt counting", got, executor.MaxAttempts)
+	}
+
+	if got := r.reload(t).LeadCount; got != 1 {
+		t.Fatalf("LeadCount=%d after one lead retried %d times, want 1",
+			got, executor.MaxAttempts)
 	}
 }

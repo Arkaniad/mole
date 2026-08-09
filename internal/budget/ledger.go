@@ -176,7 +176,7 @@ func (l *Ledger) escrowFor(budget int64) int64 {
 // also a TOCTOU bug — the peeked lead is not necessarily the popped one. Here
 // the amount reserved is always for the lead actually dequeued.
 func (l *Ledger) Reserve(ctx context.Context, sessionID string, amount int64) (*core.Reservation, error) {
-	return l.reserveWith(ctx, sessionID, amount, allCeilings, nil)
+	return l.reserveWith(ctx, sessionID, amount, allCeilings, nil, false)
 }
 
 // ReserveOutput reserves for the report, ignoring the unit-independent
@@ -192,7 +192,7 @@ func (l *Ledger) Reserve(ctx context.Context, sessionID string, amount int64) (*
 // spend what Available() then reports. A session that has genuinely run out of
 // money still cannot reserve.
 func (l *Ledger) ReserveOutput(ctx context.Context, sessionID string, amount int64) (*core.Reservation, error) {
-	return l.reserveWith(ctx, sessionID, amount, noCeilings, nil)
+	return l.reserveWith(ctx, sessionID, amount, noCeilings, nil, false)
 }
 
 // ReserveVerify reserves for a verification call, exempt from MaxLeads.
@@ -207,7 +207,7 @@ func (l *Ledger) ReserveOutput(ctx context.Context, sessionID string, amount int
 // fan-out, and verification is bounded independently by its own share of the budget
 // (verifier.MaxShareOfBudget), so the money cannot run away either.
 func (l *Ledger) ReserveVerify(ctx context.Context, sessionID string, amount int64) (*core.Reservation, error) {
-	return l.reserveWith(ctx, sessionID, amount, ceilingsExceptLeads, nil)
+	return l.reserveWith(ctx, sessionID, amount, ceilingsExceptLeads, nil, false)
 }
 
 // ceilingPolicy selects which §8.5 ceilings a reservation honours.
@@ -219,7 +219,7 @@ const (
 	noCeilings
 )
 
-func (l *Ledger) reserveWith(ctx context.Context, sessionID string, amount int64, policy ceilingPolicy, leadID *string) (*core.Reservation, error) {
+func (l *Ledger) reserveWith(ctx context.Context, sessionID string, amount int64, policy ceilingPolicy, leadID *string, countLead bool) (*core.Reservation, error) {
 	if amount <= 0 {
 		return nil, fmt.Errorf("budget: reserve amount must be positive, got %d", amount)
 	}
@@ -259,7 +259,29 @@ func (l *Ledger) reserveWith(ctx context.Context, sessionID string, amount int64
 		if err := tx.InsertReservation(ctx, r); err != nil {
 			return err
 		}
-		return tx.ApplyBudgetDelta(ctx, sessionID, store.BudgetDelta{Held: amount})
+		delta := store.BudgetDelta{Held: amount}
+		if countLead {
+			// Count the lead HERE, in the same transaction that just checked
+			// MaxLeads against the count.
+			//
+			// It used to be counted by the executor after the lead finished
+			// running. Sequentially that is exact. Concurrently it is not: K
+			// workers all reserve while the counter still reads N, all pass the
+			// ceiling check, and the session dispatches up to K-1 leads past
+			// MaxLeads. Money is unaffected — Available() subtracts Held, which
+			// this same transaction writes — but §8.5's lead ceiling is a
+			// separate counter and it lagged the work it was counting.
+			//
+			// The order within the transaction is what makes this safe, and it
+			// is the reason counting-before-reserving was originally rejected:
+			// HitCeiling reads the count first and the increment lands after, so
+			// the lead that brings the total UP TO MaxLeads still runs, and the
+			// next one is refused. Counting before the check would fail the last
+			// permitted lead on its own reservation — "we did the work we were
+			// allowed" reported as "the last lead errored".
+			delta.LeadCount = 1
+		}
+		return tx.ApplyBudgetDelta(ctx, sessionID, delta)
 	})
 	if err != nil {
 		return nil, err
@@ -267,14 +289,31 @@ func (l *Ledger) reserveWith(ctx context.Context, sessionID string, amount int64
 	return r, nil
 }
 
-// ReserveFor is Reserve with the lead recorded on the hold, so a stranded
-// reservation can be traced back to the work that took it.
+// ReserveFor takes the hold for a lead's FIRST attempt.
+//
+// Two things follow from naming the lead. The hold can be traced back to the
+// work that took it when it is stranded, and this is the reservation that counts
+// the lead against MaxLeads (§8.5).
+//
+// First attempt only — retries take ReserveForRetry. MaxLeads bounds research
+// fan-out, so a lead that fails transiently and is retried is still one lead;
+// counting each attempt would let a flaky network shrink the research plan while
+// the ceiling reported it as work done.
 func (l *Ledger) ReserveFor(ctx context.Context, sessionID, leadID string, amount int64) (*core.Reservation, error) {
 	// Set on the reservation BEFORE it is inserted. Setting it afterwards only
 	// touched the in-memory copy, so the stored lead_id stayed NULL — and the
 	// stranded-reservation case this exists to serve is exactly the one where
 	// the in-memory copy is gone.
-	return l.reserveWith(ctx, sessionID, amount, allCeilings, &leadID)
+	return l.reserveWith(ctx, sessionID, amount, allCeilings, &leadID, true)
+}
+
+// ReserveForRetry is ReserveFor for a second or later attempt at the same lead.
+//
+// Identical except that it does not count the lead again. Every other ceiling
+// still applies, and the money is still held and settled per attempt, because
+// each attempt really does spend.
+func (l *Ledger) ReserveForRetry(ctx context.Context, sessionID, leadID string, amount int64) (*core.Reservation, error) {
+	return l.reserveWith(ctx, sessionID, amount, allCeilings, &leadID, false)
 }
 
 // SettleResult reports what a settle actually cost against what was held.
