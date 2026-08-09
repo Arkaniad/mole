@@ -1,0 +1,65 @@
+{
+  "name": "contradictions",
+  "questions": [
+    {
+      "id": "flu-1918-deaths",
+      "question": "how many people died in the 1918 influenza pandemic?",
+      "tags": ["disputed", "epidemiology", "numeric"],
+      "notes": "The canonical wide-range disagreement. Contemporary estimates said ~21M; Johnson & Mueller (2002) argue ~50M and say 100M is plausible; the CDC and WHO publish different figures again, and many sources give a bare '50 million' with no interval. A claim graph that reads 17M, 50M and 100M off three pages and calls them compatible has missed the disagreement this whole set exists to find."
+    },
+    {
+      "id": "population-peak",
+      "question": "when will the world population peak and at what level?",
+      "tags": ["disputed", "demography", "numeric"],
+      "notes": "Two institutions with the same data and different models. The UN World Population Prospects puts the peak in the mid-2080s around 10.3 billion; IHME (Vollset et al., Lancet 2020) puts it near 2064 at ~9.7 billion, falling to 8.8 billion by 2100. Twenty years and half a billion people apart, both authoritative, both widely cited without reference to the other."
+    },
+    {
+      "id": "bitcoin-energy",
+      "question": "how much electricity does the bitcoin network consume per year?",
+      "tags": ["disputed", "energy", "numeric"],
+      "notes": "Cambridge (CBECI) publishes a range with an explicit lower and upper bound; Digiconomist publishes a single much higher figure from a different methodology, and each has publicly criticised the other's assumptions. Press coverage quotes whichever suits, usually without the method. Good test of whether the Verifier separates 'different estimate' from 'different thing being measured'."
+    },
+    {
+      "id": "psych-replication",
+      "question": "what fraction of psychology studies replicate?",
+      "tags": ["disputed", "metascience", "numeric"],
+      "notes": "The Open Science Collaboration (2015) reported ~36% of 100 studies replicating by significance. Gilbert et al. (2016) reanalysed the same data and argued the true rate is far higher and that OSC's protocol understated it; Anderson et al. replied. Later projects (Many Labs, the social-science replication project) report different fractions again on different samples. Several of these disagree about the same number while others differ only in what was sampled — which is exactly the distinction a duplicate/contradicts call has to get right."
+    },
+    {
+      "id": "nuclear-vs-solar-lcoe",
+      "question": "is nuclear power cost-competitive with utility-scale solar?",
+      "tags": ["disputed", "energy", "policy"],
+      "notes": "Lazard's LCOE analysis has for years put unsubsidised utility solar well below new nuclear. Nuclear-industry and several system-cost analyses argue LCOE is the wrong metric because it excludes firming, storage and transmission, and reach the opposite conclusion. Both sides publish numbers. This one tests contradiction detection where the disagreement is partly definitional rather than purely numeric."
+    },
+    {
+      "id": "gpt4-mmlu",
+      "question": "what score does GPT-4 achieve on MMLU?",
+      "tags": ["disputed", "ml-benchmarks", "numeric"],
+      "notes": "The technical report gives 86.4% 5-shot; other sources quote 87.3%, 86.5% or figures from later model revisions, frequently without the shot count or the model version. A large fraction of the disagreement here is sources reporting different setups as if they were the same number, which is the failure mode most likely to be mislabelled as a duplicate."
+    },
+    {
+      "id": "red-meat-mortality",
+      "question": "does eating red meat increase all-cause mortality?",
+      "tags": ["disputed", "nutrition"],
+      "notes": "The NutriRECS guidelines (Annals of Internal Medicine, 2019) concluded adults should continue current consumption, citing low-certainty evidence. Harvard's nutrition department and others published an unusually direct public rebuttal citing the same cohort literature to the opposite conclusion. Rare case of a flat, well-sourced contradiction in nutrition rather than a hedged one."
+    },
+    {
+      "id": "intermittent-fasting",
+      "question": "is intermittent fasting more effective than continuous calorie restriction for weight loss?",
+      "tags": ["disputed", "nutrition"],
+      "notes": "Multiple randomised trials report no significant difference once calories are matched (e.g. the TREAT trial); other trials and a good deal of secondary coverage report meaningful advantages. Expect the graph to hold both 'no difference' and 'significantly better' claims about the same comparison."
+    },
+    {
+      "id": "predimed-cvd",
+      "question": "does the Mediterranean diet reduce cardiovascular events?",
+      "tags": ["disputed", "stale", "nutrition"],
+      "notes": "Tagged stale as well as disputed. PREDIMED (2013) reported a large relative risk reduction; the trial was retracted and republished in 2018 after randomisation irregularities, with a weakened causal claim. Sources published before and after the retraction disagree, and the earlier ones are still widely cited. If the Verifier flags this pair it is also evidence the staleness signal has something to work with."
+    },
+    {
+      "id": "minimum-wage-employment",
+      "question": "does raising the minimum wage reduce employment?",
+      "tags": ["disputed", "economics"],
+      "notes": "The long-running Card–Krueger versus Neumark–Wascher disagreement, still live in the Seattle minimum-wage studies where two teams analysing the same city reached opposite conclusions in the same year. Included deliberately as the hardest case in the set: the disagreement is real and explicit, but sources hedge heavily, so a Verifier tuned for flat numeric contradictions may miss it."
+    }
+  ]
+}

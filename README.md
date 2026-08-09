@@ -319,10 +319,34 @@ Stated plainly rather than left to be discovered:
   giving it its own allowance so it cannot eat the output budget — is planned,
   not merely worked around.
 - **Contradiction recall has never been measured.** The Verifier's precision was
-  checked against a labelled 37-pair set, but that set contains no true
-  contradictions, so the recall number §14.3 asks for has no denominator. It
-  needs a pair set built to contain them, which is the same labelling work §14.2
-  is waiting on.
+  checked against a labelled 37-pair set, but that set contained no true
+  contradictions, so the recall §14.3 asks for has no denominator — it is `0/0`,
+  not zero. Precision alone cannot catch the failure that matters here: a
+  Verifier that answers `neither` to everything scores perfect precision.
+
+  `testdata/corpus/contradictions.json` is the denominator, drafted and not yet
+  run: ten questions chosen because sources genuinely disagree, biased toward
+  numeric disagreements so a labeller can call them without a judgment call.
+  Each carries notes naming the specific competing figures. The procedure is
+
+  ```bash
+  MOLE_RECORD=record MOLE_CASSETTE_DIR=./testdata/cassettes \
+    mole corpus testdata/corpus/contradictions.json --usd 0.40 --max-sources 6 --max-depth 1
+  mole pairs dump <session-id> --all -o pairs.json   # --all is what makes recall measurable
+  # label each pair: contradicts | duplicate | neither
+  mole pairs score pairs.json
+  ```
+
+  One caveat worth knowing before reading the number. Pairs are formed by the
+  lexical retriever, not exhaustively, so two contradicting claims that share few
+  content words are never paired and never judged — a miss indistinguishable
+  from a judge error. What this measures is the pipeline's recall, not the
+  judge's. Re-dumping at a raised `--max-candidates` separates the two, and costs
+  nothing once the cassettes exist.
+
+  The full §14.2 corpus is deliberately not being built. Claim-precision
+  labelling is ~2400 human judgments; if that number is ever needed, sample 200
+  and report an error bar.
 - **The estimator does not warm from history.** Attributing a settled cost to
   `(actor_type, depth)` needs a join to `leads`, which M3 now populates, so the
   blocker is gone and this is simply unimplemented. Guessing the actor type would
