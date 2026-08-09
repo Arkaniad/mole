@@ -1,9 +1,28 @@
 // Package executor runs a research session: plan, dispatch, settle, replan.
 //
-// This is §9.2's loop. One worker for now — M5 turns on a pool, and the shape
-// here is deliberately the shape that survives that, because the parts that
-// make concurrency safe are already in place: leases stop double dispatch, and
-// reserve-before-dispatch stops the budget overshooting.
+// This is §9.2's loop. One worker for now — M5 turns on a pool.
+//
+// What is already safe, audited rather than assumed (M5 slice 3): leases stop
+// double dispatch; reserve-before-dispatch bounds the money, and the lead
+// counter is applied inside that same transaction so MaxLeads binds too;
+// WebActor assigns to no receiver field, so one actor serves many concurrent
+// leads; the rate limiter, the robots cache, the artifact cache, the estimator
+// and the pricing table all carry their own locks; Planner and Verifier hold
+// configuration only; planner.Digest is now mutex-guarded.
+//
+// What is NOT yet safe, and has to be handled when the pool lands rather than
+// discovered then — both are loop-locals today, so nothing can race them until
+// a worker touches them:
+//
+//   - leadQuestion, the map from lead to sub-question, is written at plan time
+//     and read per lead.
+//   - Result, whose LeadsRun/LeadsCached/LeadsFailed counters and Claims slice
+//     are appended to from the loop body.
+//
+// Digest's exported FIELDS are also unguarded on purpose: BudgetRemaining and
+// Contradictions are written between batches, by the coordinator, which is
+// where they belong — both are current state read fresh for a planner call,
+// not something a lead produces.
 //
 // The invariant that matters most is unglamorous: every reservation is resolved
 // on every path. A settle that is skipped because a lead failed leaves budget

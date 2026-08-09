@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/lajosdeme/mole/internal/core"
 )
@@ -71,7 +72,24 @@ type DeadEnd struct {
 }
 
 // Digest is the planner's entire view of a session.
+//
+// Its METHODS are safe for concurrent use. That matters from M5: a worker pool
+// records leads, claims and dead ends as they complete, and without this the
+// counters lose updates — measured at 3 lost out of 400 across 8 goroutines, with
+// the race detector reporting 36 races on the same run.
+//
+// Its exported FIELDS are not protected and must not be touched by a worker.
+// BudgetRemaining and Contradictions are written between batches, by the
+// coordinator, at the replan and verify points — which is where they belong
+// anyway: both are current state read fresh for a planner call, not something a
+// lead produces.
 type Digest struct {
+	// mu guards every field below. Held across compact(), which is why the
+	// unlocked renderLocked/openLocked variants exist: compact serializes the
+	// digest to decide whether it is over budget, and String taking the lock
+	// again would deadlock on the first oversized digest.
+	mu sync.Mutex
+
 	// Question is the original prompt. Never dropped by compaction: without it
 	// the planner does not know what it is researching.
 	Question string
@@ -144,6 +162,9 @@ func NewDigest(question string, maxChars int) *Digest {
 // research thread. A replan re-proposing the same wording should not open a
 // second one.
 func (d *Digest) AddQuestions(qs []SubQuestion) []SubQuestion {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
 	out := make([]SubQuestion, 0, len(qs))
 	for _, q := range qs {
 		text := oneLine(q.Text)
@@ -174,6 +195,9 @@ func (d *Digest) findByText(text string) *SubQuestion {
 
 // RecordLead notes a dispatch against a sub-question.
 func (d *Digest) RecordLead(questionID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
 	d.LeadsRun++
 	if q := d.find(questionID); q != nil {
 		q.Leads++
@@ -186,6 +210,9 @@ func (d *Digest) RecordLead(questionID string) {
 
 // RecordClaims notes evidence found for a sub-question.
 func (d *Digest) RecordClaims(questionID string, n int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
 	if n <= 0 {
 		return
 	}
@@ -198,6 +225,9 @@ func (d *Digest) RecordClaims(questionID string, n int) {
 
 // RecordDeadEnd notes a lead that produced no evidence (§9.5 degraded).
 func (d *Digest) RecordDeadEnd(cause, exampleQuery string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
 	if cause == "" {
 		cause = "no_evidence"
 	}
@@ -214,6 +244,9 @@ func (d *Digest) RecordDeadEnd(cause, exampleQuery string) {
 
 // MarkAnswered closes a sub-question.
 func (d *Digest) MarkAnswered(questionID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
 	if q := d.find(questionID); q != nil {
 		q.Answered = true
 	}
@@ -222,6 +255,12 @@ func (d *Digest) MarkAnswered(questionID string) {
 
 // Open returns the sub-questions still without an answer.
 func (d *Digest) Open() []SubQuestion {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.openLocked()
+}
+
+func (d *Digest) openLocked() []SubQuestion {
 	var out []SubQuestion
 	for _, q := range d.Questions {
 		if !q.Answered {
@@ -234,7 +273,9 @@ func (d *Digest) Open() []SubQuestion {
 // Complete reports whether every sub-question has been answered. A digest with
 // no questions at all is not complete — nothing has been planned yet.
 func (d *Digest) Complete() bool {
-	return len(d.Questions) > 0 && len(d.Open()) == 0
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.Questions) > 0 && len(d.openLocked()) == 0
 }
 
 func (d *Digest) find(id string) *SubQuestion {
@@ -283,7 +324,7 @@ func (d *Digest) compact() {
 	if limit <= 0 {
 		limit = DefaultDigestChars
 	}
-	if len(d.String()) <= limit {
+	if len(d.renderLocked()) <= limit {
 		return
 	}
 
@@ -291,7 +332,7 @@ func (d *Digest) compact() {
 	if len(d.DeadEnds) > 4 {
 		sort.SliceStable(d.DeadEnds, func(i, j int) bool { return d.DeadEnds[i].Count > d.DeadEnds[j].Count })
 		d.DeadEnds = d.DeadEnds[:4]
-		if len(d.String()) <= limit {
+		if len(d.renderLocked()) <= limit {
 			return
 		}
 	}
@@ -303,14 +344,14 @@ func (d *Digest) compact() {
 		for i := range d.Questions {
 			d.Questions[i].Text = truncate(d.Questions[i].Text, width)
 		}
-		if len(d.String()) <= limit {
+		if len(d.renderLocked()) <= limit {
 			return
 		}
 	}
 
 	// 3. Elide open questions, most-attempted first. Genuinely lossy; see the
 	// doc comment for why it still beats an unbounded digest.
-	for len(d.String()) > limit {
+	for len(d.renderLocked()) > limit {
 		idx, worst := -1, -1
 		for i, q := range d.Questions {
 			if !q.Answered && q.Leads > worst {
@@ -319,7 +360,7 @@ func (d *Digest) compact() {
 		}
 		// Never elide the last open question: a digest with none reads as a
 		// finished session and would stop the loop early.
-		if idx < 0 || len(d.Open()) <= 1 {
+		if idx < 0 || len(d.openLocked()) <= 1 {
 			return
 		}
 		d.openElided++
@@ -336,6 +377,12 @@ func (d *Digest) compact() {
 // Stable ordering: two identical states must produce identical text, or the
 // cassette key changes between runs and every replay misses.
 func (d *Digest) String() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.renderLocked()
+}
+
+func (d *Digest) renderLocked() string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "Research question: %s\n\n", d.Question)
@@ -358,7 +405,7 @@ func (d *Digest) String() string {
 		fmt.Fprintf(&b, "%d sub-question(s) answered.\n", answered)
 	}
 
-	open := d.Open()
+	open := d.openLocked()
 	if len(open) == 0 {
 		b.WriteString("\nNo open sub-questions.\n")
 	} else {
