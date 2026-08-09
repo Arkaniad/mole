@@ -56,6 +56,12 @@ type Spec struct {
 	// context deadline; this is the ceiling the loop checks itself against, and
 	// the two should not be equal — see Runner.Run.
 	Timeout time.Duration
+
+	// Workers is how many leads this session runs at once. Zero takes
+	// executor.DefaultWorkers. Not persisted on the session row: it is a
+	// property of the process doing the work, not of the research, and a
+	// recovered session is re-run by whatever is configured then.
+	Workers int
 }
 
 // Result is what happened, in the shape a caller needs to render or return.
@@ -302,6 +308,7 @@ func (r *Runner) Run(ctx context.Context, sess *core.Session, spec Spec) (*Resul
 		Log:        r.logger(),
 		Owner:      owner,
 		Progress:   r.Progress,
+		Workers:    spec.Workers,
 	}
 
 	res.Run, res.Err = exec.Run(ctx, sess.ID)

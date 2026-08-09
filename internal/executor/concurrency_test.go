@@ -2,6 +2,7 @@ package executor_test
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -96,19 +97,17 @@ func (p *leadProbe) peak() (peak, runs int) {
 	return p.maxInFlight, p.runs
 }
 
-// TestLeadsRunOneAtATime pins the DEFAULT, which is still one worker.
+// TestTheDefaultIsAPool.
 //
-// Written before the pool existed, to fail when concurrency arrived rather than
-// let it arrive silently. The pool landed in slice 4 and this still passes,
-// which is correct and not an oversight: Executor.Workers defaults to 1, so
-// nothing changed for a caller that did not ask for concurrency. Cassette
-// recording depends on that — nondeterministic lead order makes a recording
-// unreplayable — so the default cannot move before the guard that refuses
-// MOLE_RECORD with a pool.
+// This started life as TestLeadsRunOneAtATime, asserting a peak of exactly 1,
+// written before the pool existed so that concurrency could not arrive silently.
+// It has now been changed deliberately, which is what it was for: slice 4 built
+// the pool behind a default of one worker, and slice 5 moved the default to
+// executor.DefaultWorkers.
 //
-// It is slice 5, flipping the default to 4, that has to change this expectation
-// deliberately.
-func TestLeadsRunOneAtATime(t *testing.T) {
+// The baseline it replaces, on this machine: 9 leads, peak concurrency 1, 396ms
+// elapsed with 360ms of that inside the actor.
+func TestTheDefaultIsAPool(t *testing.T) {
 	const delay = 40 * time.Millisecond
 
 	probe := &leadProbe{delay: delay}
@@ -118,7 +117,7 @@ func TestLeadsRunOneAtATime(t *testing.T) {
 		planJSON("g", "h", "i"), // replan 2
 	}, nil)
 	probe.db = r.db
-	r.exec.Actors[core.ActorWeb] = probe
+	r.exec.Actors[core.ActorWeb] = probe // Workers left unset: the default is the subject
 
 	start := time.Now()
 	res, err := r.exec.Run(context.Background(), r.sess.ID)
@@ -129,29 +128,57 @@ func TestLeadsRunOneAtATime(t *testing.T) {
 
 	peak, runs := probe.peak()
 	if runs < 2 {
-		// Without this the peak assertion is vacuous: one lead can never
-		// overlap anything, and a rig that dispatched a single lead would
-		// "prove" serial execution.
 		t.Fatalf("only %d lead(s) ran; the rig is not exercising the loop", runs)
 	}
-	if peak != 1 {
-		t.Fatalf("peak concurrency %d, want 1 — leads are no longer serial; "+
-			"if this is M5's pool landing, update this test deliberately", peak)
+	if peak < 2 {
+		t.Fatalf("peak concurrency %d with no Workers set — the default is not a pool", peak)
 	}
 
-	t.Logf("BASELINE: %d leads, peak concurrency %d, %v elapsed (%v of it actor delay)",
+	t.Logf("DEFAULT: %d leads, peak concurrency %d, %v elapsed (serial was %v)",
 		runs, peak, elapsed.Round(time.Millisecond), time.Duration(runs)*delay)
 	t.Logf("session reported %d leads run, %d cached, %d failed",
 		res.LeadsRun, res.LeadsCached, res.LeadsFailed)
 }
 
+// TestWorkersAreClamped. The ceiling is about what leaves the machine: each
+// worker holds a lead, and a lead is searches and fetches against real hosts.
+func TestWorkersAreClamped(t *testing.T) {
+	// More leads queued than MaxWorkers, or the QUEUE bounds the peak and the
+	// clamp is never exercised — which is what the first version of this test
+	// did, and falsifying it showed the assertion passing with the clamp gone.
+	queued := executor.MaxWorkers + 8
+	var qs []string
+	for i := 0; i < queued; i++ {
+		qs = append(qs, fmt.Sprintf("q%02d", i))
+	}
+
+	probe := &leadProbe{delay: 20 * time.Millisecond}
+	r := newRig(t, 5000*core.MicrosPerUSD, []string{planJSON(qs...), planJSON(), `{"done":true}`}, nil)
+	probe.db = r.db
+	r.exec.Actors[core.ActorWeb] = probe
+	r.exec.Planner.MaxInitialLeads = queued
+	r.exec.Planner.ReplanEvery = 1000 // out of the way; the clamp is the subject
+	r.exec.Workers = 10_000
+
+	if _, err := r.exec.Run(context.Background(), r.sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	peak, runs := probe.peak()
+	if runs < queued {
+		t.Fatalf("%d leads ran, want %d — not enough queued to reach the clamp", runs, queued)
+	}
+	if peak > executor.MaxWorkers {
+		t.Fatalf("peak concurrency %d exceeds MaxWorkers=%d", peak, executor.MaxWorkers)
+	}
+}
+
 // TestTheProbeCanSeeConcurrency checks the instrument, not the executor.
 //
-// TestLeadsRunOneAtATime asserts a peak of 1. That assertion is worthless if
-// leadProbe cannot count past 1 — a probe with a broken counter reports serial
-// execution forever, including after the pool lands, and the baseline it
-// established would be a measurement of nothing. So the probe is driven
-// concurrently here, where the answer is known by construction.
+// The pool tests assert a peak. Those assertions are worthless if leadProbe
+// cannot count past 1 — a probe with a broken counter reports serial execution
+// forever, including after the pool lands, and the baseline it established would
+// be a measurement of nothing. So the probe is driven concurrently here, where
+// the answer is known by construction.
 func TestTheProbeCanSeeConcurrency(t *testing.T) {
 	const workers = 4
 
@@ -172,7 +199,7 @@ func TestTheProbeCanSeeConcurrency(t *testing.T) {
 
 	if peak, runs := probe.peak(); peak != workers || runs != workers {
 		t.Fatalf("probe saw peak=%d runs=%d driving %d concurrent calls; "+
-			"it cannot measure what the baseline test claims to measure", peak, runs, workers)
+			"it cannot measure what the pool tests claim to measure", peak, runs, workers)
 	}
 }
 
@@ -374,4 +401,104 @@ func TestAPoolDoesNotRunPastAReplan(t *testing.T) {
 			"replan boundary", peak)
 	}
 	t.Logf("queued 6, ran %d, peak %d with Workers=8", runs, peak)
+}
+
+// TestAFatalStopsTheSessionWithinOneBatch is the cost of the pool, stated as a
+// bound rather than left to be discovered.
+//
+// Fatal means the failure repeats — a bad key fails on every lead — so serially
+// the next lead simply never starts and exactly one is charged. With workers,
+// the siblings of the failing lead are already in flight. The blast radius is
+// one batch and no more: the batch is cancelled as soon as any worker reports a
+// fatal, and the loop stops before leasing another.
+func TestAFatalStopsTheSessionWithinOneBatch(t *testing.T) {
+	const workers = 3
+
+	r := newRig(t, 50*core.MicrosPerUSD, []string{
+		planJSON("a", "b", "c", "d", "e", "f"),
+		planJSON(),
+		`{"done":true}`,
+	}, func(int, core.Lead) (*actors.Result, error) {
+		return okResult(0, 1_000), llm.ErrUnauthorized
+	})
+	r.exec.Planner.MaxInitialLeads = 6 // more queued than one batch can run
+	r.exec.Workers = workers
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if res.Status != core.StatusFailed {
+		t.Errorf("status = %s, want failed", res.Status)
+	}
+	if got := r.actor.count(); got > workers {
+		t.Errorf("the actor ran %d times after a fatal error, want at most one "+
+			"batch of %d — the session kept leasing work that cannot succeed", got, workers)
+	}
+	// And escrow survives, so a partial report is still affordable (§9.5).
+	if s := r.reload(t); s.Escrow == 0 {
+		t.Error("escrow was consumed; a partial report is no longer affordable")
+	}
+}
+
+// cancelProbe blocks until its context is cancelled, and records that it was.
+type cancelProbe struct {
+	mu        sync.Mutex
+	cancelled int
+	fatalOn   string // the query whose lead fails fatally, immediately
+}
+
+func (p *cancelProbe) Type() core.ActorType { return core.ActorWeb }
+
+func (p *cancelProbe) Run(ctx context.Context, lead core.Lead) (*actors.Result, error) {
+	if lead.Query == p.fatalOn {
+		return okResult(0, 1_000), llm.ErrUnauthorized
+	}
+	select {
+	case <-ctx.Done():
+		p.mu.Lock()
+		p.cancelled++
+		p.mu.Unlock()
+		return nil, ctx.Err()
+	case <-time.After(30 * time.Second):
+		return okResult(1, 1_000), nil
+	}
+}
+
+func (p *cancelProbe) cancelledCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cancelled
+}
+
+// TestAFatalCancelsItsSiblings.
+//
+// The one-batch bound is enforced by the loop refusing to lease more work. This
+// is the other half: the siblings already in flight are cut short rather than
+// run to completion and charged. With real leads that is seconds of fetching and
+// a model call each; the batch test cannot see it, because instant fakes finish
+// before any cancellation could matter.
+func TestAFatalCancelsItsSiblings(t *testing.T) {
+	probe := &cancelProbe{fatalOn: "a"}
+	r := newRig(t, 50*core.MicrosPerUSD, []string{planJSON("a", "b", "c")}, nil)
+	r.exec.Actors[core.ActorWeb] = probe
+	r.exec.Workers = 3
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = r.exec.Run(context.Background(), r.sess.ID)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the run did not finish; the fatal lead did not cancel its siblings, " +
+			"so they are still waiting out their 30s timer")
+	}
+
+	if got := probe.cancelledCount(); got == 0 {
+		t.Fatal("no sibling observed cancellation after a fatal outcome")
+	}
 }

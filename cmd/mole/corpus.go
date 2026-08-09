@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lajosdeme/mole/internal/eval"
+	"github.com/lajosdeme/mole/internal/executor"
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -31,6 +32,7 @@ type corpusOpts struct {
 	timeout     time.Duration
 	maxSources  int
 	maxDepth    int
+	workers     int
 	alwaysFetch bool
 	asJSON      bool
 	baseline    string
@@ -62,6 +64,8 @@ func newCorpusCmd() *cobra.Command {
 	f.Int64Var(&o.tokens, "tokens", 0, "per-question budget in tokens")
 	f.DurationVar(&o.timeout, "timeout", 10*time.Minute, "per-question wall-clock ceiling")
 	f.IntVar(&o.maxSources, "max-sources", 5, "sources to read per lead")
+	f.IntVar(&o.workers, "workers", executor.DefaultWorkers,
+		"leads to run at once per question; 1 is required when recording or replaying")
 	f.IntVar(&o.maxDepth, "max-depth", 2, "rounds of follow-up leads the planner may add")
 	f.BoolVar(&o.alwaysFetch, "always-fetch", false,
 		"fetch every page even when the search provider supplied its text")
@@ -94,6 +98,7 @@ func cmdCorpus(ctx context.Context, path string, o corpusOpts) error {
 		ro := researchOpts{
 			usd: o.usd, tokens: o.tokens, mode: "report",
 			maxSources: o.maxSources, timeout: o.timeout, maxDepth: o.maxDepth,
+			workers: o.workers,
 			// silent: the corpus runner produces the output, and a hundred inlined
 			// reports would bury it.
 			alwaysFetch: o.alwaysFetch, quiet: true, silent: true, dbPath: o.dbPath,

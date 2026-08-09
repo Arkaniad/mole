@@ -355,8 +355,14 @@ func TestDegradedErrorsAreNotRetried(t *testing.T) {
 // succeed — a bad key fails on every lead — and the escrow is preserved so a
 // partial report is still affordable (§9.5).
 func TestFatalErrorsAbortTheSession(t *testing.T) {
+
+	// One worker: this pins the SERIAL semantics, where a fatal outcome means
+	// the next lead never starts. With the default pool a fatal stops the
+	// session within one batch instead, which
+	// TestAFatalStopsTheSessionWithinOneBatch covers.
 	r := newRig(t, 5*core.MicrosPerUSD, []string{planJSON("a", "b", "c")},
 		func(int, core.Lead) (*actors.Result, error) { return okResult(0, 1_000), llm.ErrUnauthorized })
+	r.exec.Workers = 1
 
 	res, err := r.exec.Run(context.Background(), r.sess.ID)
 	if err != nil {
@@ -833,11 +839,17 @@ func TestCachedDeadEndStaysADeadEnd(t *testing.T) {
 // asserts the OTHER half: the settle-time factor check stops the session
 // instead of letting the pattern repeat on every remaining lead.
 func TestOneLeadCannotSpendTheWholeBudget(t *testing.T) {
+
+	// One worker: this pins the SERIAL semantics, where a fatal outcome means
+	// the next lead never starts. With the default pool a fatal stops the
+	// session within one batch instead, which
+	// TestAFatalStopsTheSessionWithinOneBatch covers.
 	// $1.00 budget; a lead that ignores its ceiling and spends $5.00.
 	r := newRig(t, core.MicrosPerUSD, []string{planJSON("a", "b", "c"), `{"done":true}`},
 		func(int, core.Lead) (*actors.Result, error) {
 			return okResult(1, 5*core.MicrosPerUSD), nil
 		})
+	r.exec.Workers = 1
 
 	res, err := r.exec.Run(context.Background(), r.sess.ID)
 	if err != nil {

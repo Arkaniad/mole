@@ -61,8 +61,18 @@ func ParseMode(s string) (Mode, error) {
 // FromEnv builds a Recorder for a named run from MOLE_RECORD and
 // MOLE_CASSETTE_DIR. With recording off it returns a Recorder that passes
 // everything through, so callers need no conditional.
+// ModeFromEnv reports the configured mode without opening anything.
+//
+// Separate from FromEnv because some checks have to happen BEFORE a cassette is
+// touched. Refusing a worker pool is one: in replay, FromEnv fails on a missing
+// cassette first, so a guard placed after it never runs and the caller is told
+// the recording is absent rather than that the request was never allowed.
+func ModeFromEnv() (Mode, error) {
+	return ParseMode(os.Getenv(EnvMode))
+}
+
 func FromEnv(name string) (*Recorder, error) {
-	mode, err := ParseMode(os.Getenv(EnvMode))
+	mode, err := ModeFromEnv()
 	if err != nil {
 		return nil, err
 	}

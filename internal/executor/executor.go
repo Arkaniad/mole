@@ -434,17 +434,33 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 
 // DefaultWorkers is the per-session pool size when Workers is unset.
 //
-// One, deliberately, until the CLI and the daemon choose otherwise. A default
-// that turned on concurrency here would change every existing caller's behaviour
-// as a side effect of this file compiling, including cassette recording, where
-// nondeterministic lead order makes the recording unreplayable.
-const DefaultWorkers = 1
+// Four. A session's wall clock is dominated by lead execution — measured at 91%
+// on the pre-pool baseline — so this is where the time goes, and four is enough
+// to take most of it without turning one research question into a burst of
+// sixteen simultaneous requests at somebody's website.
+//
+// It multiplies with the supervisor's session limit rather than being bounded by
+// it: four sessions of four workers is sixteen concurrent leads from one daemon.
+const DefaultWorkers = 4
+
+// MaxWorkers clamps Workers however it was configured.
+//
+// The ceiling is about what leaves this machine, not about goroutines. Each
+// worker holds a lead, and a lead is searches and fetches against real hosts; a
+// misread config or a fat-fingered flag should not be able to point an
+// unbounded fan of requests at one domain from a user's address. The per-domain
+// rate limiter still applies underneath.
+const MaxWorkers = 16
 
 func (e *Executor) workers() int {
-	if e.Workers > 0 {
+	switch {
+	case e.Workers <= 0:
+		return DefaultWorkers
+	case e.Workers > MaxWorkers:
+		return MaxWorkers
+	default:
 		return e.Workers
 	}
-	return DefaultWorkers
 }
 
 // batchSize is how many leads may run before the next replan is due.
@@ -505,6 +521,15 @@ func (e *Executor) runBatch(
 ) []leadOutcome {
 	out := make([]leadOutcome, len(batch))
 
+	// A fatal outcome cancels the rest of the batch. Fatal means the failure
+	// repeats — a bad key fails on every lead — or that a sub-budget did not
+	// bind, and both are reasons to stop spending immediately. Serially the next
+	// lead simply never started; with a pool its siblings are already in flight,
+	// so the equivalent is to cut them short. Settling still runs on an
+	// uncancellable context, so the partial spend is recorded rather than lost.
+	batchCtx, cancelBatch := context.WithCancel(ctx)
+	defer cancelBatch()
+
 	var wg sync.WaitGroup
 	for i, lease := range batch {
 		questionID := leadQuestion[lease.Lead.ID]
@@ -513,11 +538,15 @@ func (e *Executor) runBatch(
 		wg.Add(1)
 		go func(i int, lease *queue.Lease, questionID string) {
 			defer wg.Done()
-			if cached, ok := e.tryCache(ctx, lease, questionID); ok {
+			if cached, ok := e.tryCache(batchCtx, lease, questionID); ok {
 				out[i] = cached
 				return
 			}
-			out[i] = e.runLead(ctx, sess, lease, questionID)
+			o := e.runLead(batchCtx, sess, lease, questionID)
+			if o.class == Fatal {
+				cancelBatch()
+			}
+			out[i] = o
 		}(i, lease, questionID)
 	}
 	wg.Wait()

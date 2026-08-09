@@ -73,6 +73,10 @@ type Deps struct {
 	// AskTimeout bounds one research.ask. Zero takes DefaultAskTimeout.
 	AskTimeout time.Duration
 
+	// Workers is how many leads each session runs at once. Zero takes
+	// executor.DefaultWorkers.
+	Workers int
+
 	// Defaults applied when a call does not specify.
 	MaxSources int
 	MaxDepth   int
@@ -200,6 +204,7 @@ func (d Deps) report(ctx context.Context, _ *mcp.CallToolRequest, in ReportIn) (
 		MaxDepth:   clampToDefault(in.MaxDepth, d.MaxDepth, MaxDepthCeiling),
 		MaxLeads:   d.MaxLeads,
 		Timeout:    d.Timeout,
+		Workers:    d.Workers,
 	}
 
 	// ctx is the MCP CALL's context and dies when this response is sent. Start

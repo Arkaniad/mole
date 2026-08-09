@@ -67,6 +67,7 @@ type researchOpts struct {
 	quiet       bool
 	alwaysFetch bool
 	maxDepth    int
+	workers     int
 	dbPath      string
 
 	// silent suppresses ALL output, including the report.
@@ -105,6 +106,8 @@ func newResearchCmd() *cobra.Command {
 	f.Int64Var(&o.tokens, "tokens", 0, "budget in tokens")
 	f.StringVar(&o.mode, "mode", string(core.ModeReport), "session mode")
 	f.IntVar(&o.maxSources, "max-sources", 5, "sources to read per lead")
+	f.IntVar(&o.workers, "workers", executor.DefaultWorkers,
+		"leads to run at once; 1 is required when recording or replaying a cassette")
 	f.DurationVar(&o.timeout, "timeout", 5*time.Minute, "wall-clock ceiling for the whole session")
 	f.BoolVar(&o.asJSON, "json", false, "emit the result as JSON")
 	f.BoolVar(&o.quiet, "quiet", false, "suppress progress; print only the result")
@@ -136,6 +139,13 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	}
 	if sessionMode != core.ModeReport {
 		return fmt.Errorf("mode %q is not implemented yet (M3 for report+, M9 for dataset)", o.mode)
+	}
+
+	// Before the cassette is opened, not after: in replay, opening fails on a
+	// missing recording, and a caller who asked for something never allowed
+	// should be told that rather than that the file is absent.
+	if err := checkCassetteIsSerial(o.workers); err != nil {
+		return err
 	}
 
 	// One cassette per question (§14.1). Off unless MOLE_RECORD says otherwise,
@@ -205,6 +215,7 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 		MaxDepth:   o.maxDepth,
 		MaxLeads:   maxLeadsFor(o),
 		Timeout:    o.timeout,
+		Workers:    o.workers,
 	}
 
 	sess, err := runner.Create(ctx, spec)
@@ -635,4 +646,34 @@ func reportGrounding(rep *verifier.GroundReport, o researchOpts) {
 			fmt.Printf("     ⚠ %.70s\n", r.Note)
 		}
 	}
+}
+
+// checkCassetteIsSerial refuses to record or replay with a worker pool.
+//
+// A cassette is keyed on the request body (record.RequestKey), and with a pool
+// the request bodies stop being reproducible: the synthesis prompt is built from
+// claims in order, and lead completion order is whatever the network decided
+// that run. So a cassette recorded under concurrency cannot be replayed — not at
+// a different worker count, and not even against itself, because the second run
+// interleaves differently.
+//
+// Refused rather than silently forced to one, because the two are not the same
+// promise. Quietly serialising would make `--workers 8` mean four different
+// things depending on an environment variable; refusing makes the constraint
+// visible at the moment it applies. This is the whole reason concurrency and
+// deterministic replay can coexist: everything that touches a cassette runs
+// serial, and everything else — every real research run — does not.
+func checkCassetteIsSerial(workers int) error {
+	if workers <= 1 {
+		return nil
+	}
+	mode, err := record.ModeFromEnv()
+	if err != nil || mode == record.ModeOff {
+		// A malformed MOLE_RECORD is FromEnv's to report, with its own message.
+		return nil
+	}
+	return fmt.Errorf(
+		"MOLE_RECORD=%s needs --workers 1 (got %d): a cassette recorded with a "+
+			"worker pool cannot be replayed, because lead completion order decides "+
+			"the prompts it is keyed on", mode, workers)
 }

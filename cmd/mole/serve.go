@@ -17,6 +17,7 @@ import (
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/daemon"
+	"github.com/lajosdeme/mole/internal/executor"
 	"github.com/lajosdeme/mole/internal/mcpserver"
 	"github.com/lajosdeme/mole/internal/session"
 	"github.com/spf13/cobra"
@@ -28,6 +29,7 @@ const (
 	defaultServeMaxSources = 5
 	defaultServeMaxDepth   = 2
 	defaultServeMaxLeads   = 12
+	defaultServeWorkers    = executor.DefaultWorkers
 	defaultServeTimeout    = 20 * time.Minute
 )
 
@@ -150,6 +152,7 @@ func cmdServe(ctx context.Context, o serveOpts) error {
 		Timeout:          defaultServeTimeout,
 		Log:              actor.Log,
 		Version:          version,
+		Workers:          defaultServeWorkers,
 	})
 
 	srv := &daemon.Server{
@@ -181,7 +184,10 @@ func cmdServe(ctx context.Context, o serveOpts) error {
 
 	fmt.Printf("mole daemon listening on %s\n", o.socket)
 	fmt.Printf("  database  %s\n", o.dbPath)
-	fmt.Printf("  sessions  up to %d at once\n", o.maxSessions)
+	// Both numbers, and their product: four sessions of four workers is sixteen
+	// concurrent leads leaving this machine, which is the figure that matters.
+	fmt.Printf("  sessions  up to %d at once, %d lead(s) each (up to %d concurrent leads)\n",
+		o.maxSessions, defaultServeWorkers, o.maxSessions*defaultServeWorkers)
 	if cfg.MaxSessionUSD > 0 {
 		fmt.Printf("  ceiling   %s per session\n", core.FormatUSD(cfg.MaxSessionUSD))
 	} else {
