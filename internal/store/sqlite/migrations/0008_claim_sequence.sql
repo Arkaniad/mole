@@ -1,0 +1,27 @@
+-- A claim's position within the batch it was written in.
+--
+-- Claim order is load-bearing and was never pinned. citeFindings assigns
+-- citation numbers by the order findings arrive, so the order claims are read in
+-- decides what [1] means, what reaches the synthesis prompt under the claim cap,
+-- and therefore the bytes of the report. Under MOLE_RECORD=replay the prompt is
+-- the cassette key, so a reordering is not a cosmetic difference — it is a
+-- cassette miss, which is an error.
+--
+-- ListClaims ordered by created_at alone, and InsertClaims stamps ONE timestamp
+-- for the whole batch: every claim from a lead carries an identical created_at,
+-- so every intra-lead comparison was a tie. SQLite left to break a tie returns
+-- rows in whatever order the plan yields — in practice rowid, which is insertion
+-- order, which is why this has looked stable. It is unspecified behaviour, and
+-- adding an index over claims could change it without anything else changing.
+--
+-- seq is that insertion order made explicit and part of the query.
+--
+-- Why not ORDER BY created_at, id: core.newID is a 48-bit millisecond prefix
+-- followed by 32 bits of crypto/rand. Within a millisecond, id order is random.
+-- The obvious tiebreaker is nondeterministic by construction.
+--
+-- DEFAULT 0 backfills every existing row to 0, which restores exactly the tie
+-- this fixes for claims written before the column existed. That is deliberate:
+-- rewriting history to invent an order those rows never recorded would be a
+-- guess, and old sessions are read for their claims, not replayed.
+ALTER TABLE claims ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;

@@ -1003,7 +1003,7 @@ func (t *queries) CountLeadsByStatus(ctx context.Context, sessionID string) (map
 
 const claimCols = `id, session_id, lead_id, text, source, tool_call_id, quote,
 	quote_offset, published_at, retrieved_at, root_claim_id, verify_depth,
-	assertion_strength, confidence, grounded, grounding_note, verified_at, created_at`
+	assertion_strength, confidence, grounded, grounding_note, verified_at, created_at, seq`
 
 // InsertClaims writes a batch.
 //
@@ -1029,6 +1029,12 @@ func (t *queries) InsertClaims(ctx context.Context, claims []core.Claim) error {
 		if c.RetrievedAt.IsZero() {
 			c.RetrievedAt = now
 		}
+		// Position within THIS batch, assigned unconditionally rather than only
+		// when unset. A caller-supplied seq would have to be unique per batch to
+		// mean anything, and nothing upstream is in a position to guarantee that
+		// — the actor returns claims in the order it mined them, which is exactly
+		// what this is recording.
+		c.Seq = i
 
 		var grounded sql.NullInt64
 		if c.Grounded != nil {
@@ -1036,11 +1042,11 @@ func (t *queries) InsertClaims(ctx context.Context, claims []core.Claim) error {
 		}
 
 		_, err := t.q.ExecContext(ctx, `
-			INSERT INTO claims (`+claimCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			INSERT INTO claims (`+claimCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			c.ID, c.SessionID, c.LeadID, c.Text, c.Source, c.ToolCallID, c.Quote,
 			c.QuoteOffset, nullMicros(c.PublishedAt), toMicros(c.RetrievedAt),
 			c.RootClaimID, c.VerifyDepth, c.AssertionStrength, c.Confidence, grounded,
-			c.GroundingNote, nullMicros(c.VerifiedAt), toMicros(c.CreatedAt))
+			c.GroundingNote, nullMicros(c.VerifiedAt), toMicros(c.CreatedAt), c.Seq)
 		if err != nil {
 			return fmt.Errorf("sqlite: insert claim %d/%d: %w", i+1, len(claims), err)
 		}
@@ -1053,7 +1059,7 @@ func (t *queries) ListClaims(ctx context.Context, sessionID string, limit int) (
 		limit = 500
 	}
 	rows, err := t.q.QueryContext(ctx,
-		`SELECT `+claimCols+` FROM claims WHERE session_id = ? ORDER BY created_at LIMIT ?`,
+		`SELECT `+claimCols+` FROM claims WHERE session_id = ? ORDER BY created_at, seq, id LIMIT ?`,
 		sessionID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list claims: %w", err)
@@ -1073,7 +1079,7 @@ func (t *queries) ListUnverifiedClaims(ctx context.Context, sessionID string, li
 	rows, err := t.q.QueryContext(ctx,
 		`SELECT `+claimCols+` FROM claims
 		 WHERE session_id = ? AND verified_at IS NULL
-		 ORDER BY created_at LIMIT ?`,
+		 ORDER BY created_at, seq, id LIMIT ?`,
 		sessionID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list unverified claims: %w", err)
@@ -1102,7 +1108,7 @@ func scanClaims(rows *sql.Rows) ([]*core.Claim, error) {
 		if err := rows.Scan(&c.ID, &c.SessionID, &c.LeadID, &c.Text, &c.Source,
 			&c.ToolCallID, &c.Quote, &c.QuoteOffset, &published, &retrieved,
 			&c.RootClaimID, &c.VerifyDepth, &c.AssertionStrength, &c.Confidence,
-			&grounded, &c.GroundingNote, &verified, &created); err != nil {
+			&grounded, &c.GroundingNote, &verified, &created, &c.Seq); err != nil {
 			return nil, err
 		}
 		c.PublishedAt = micrasPtr(published)

@@ -411,6 +411,14 @@ type Claim struct {
 	VerifiedAt *time.Time
 
 	CreatedAt time.Time
+	// Seq is this claim's position within the batch it was written in, assigned
+	// by the store. It exists to make claim order total and reproducible.
+	//
+	// CreatedAt cannot do it alone: one timestamp is stamped for a whole batch,
+	// so every claim from a lead ties, and the tie was being broken by SQLite's
+	// unspecified row order. Order matters because citation numbers are assigned
+	// by it, and under replay the resulting prompt is the cassette key.
+	Seq int
 }
 
 type ClaimEdge struct {
