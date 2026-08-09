@@ -19,9 +19,12 @@ nine-lead run held to 114,654 of 400,000 tokens with 0% overshoot, replanned
 twice, served eight sources from cache without a fetch, and reconciled a 40-call
 ledger.
 
+M5's executor pool has since landed: a session runs four leads at once by
+default, per session rather than per process.
+
 What is not done: M2's question corpus, and the Verifier's contradiction
 *recall* — its precision is measured, but no labelled set of true contradictions
-exists to measure against. M5's executor pool, M6, M8 and M9 are untouched. See
+exists to measure against. M6, M8 and M9 are untouched. See
 [the milestone table](#milestones) and [known gaps](#known-gaps).
 
 Full design: [`mole-architecture-sketch.md`](./mole-architecture-sketch.md).
@@ -101,12 +104,27 @@ No model key is needed if `ant auth login` has run or a local runtime is up —
 `doctor` says which one it found. `--usd` and `--tokens` are mutually exclusive
 and there is no built-in default: a number nobody chose is still money spent.
 
+A session runs `--workers` leads at once, four by default, clamped at 16. The
+pool is per session and multiplies with the daemon's session limit, so `serve`
+prints both numbers and their product — four sessions of four workers is sixteen
+concurrent leads leaving the machine. Lead execution is ~91% of a session's wall
+clock, measured on the pre-pool baseline, which is what the pool is aimed at.
+
+Concurrency and deterministic replay do not mix, and the boundary is one
+environment variable. A cassette is keyed on the request body; with a pool the
+bodies stop being reproducible, because the synthesis prompt is built from claims
+in order and lead completion order is whatever the network decided. So a cassette
+recorded under concurrency cannot be replayed at any worker count — not even
+against itself — and `MOLE_RECORD` with `--workers > 1` is refused rather than
+silently serialised. Everything that touches a cassette runs serial; every real
+research run does not.
+
 Every outbound call can go through a cassette, which is what makes the eval
 harness deterministic and free:
 
 ```bash
-MOLE_RECORD=record MOLE_CASSETTE_DIR=./testdata/cassettes ./bin/mole research "..." --usd 0.50
-MOLE_RECORD=replay MOLE_CASSETTE_DIR=./testdata/cassettes ./bin/mole research "..." --usd 0.50
+MOLE_RECORD=record MOLE_CASSETTE_DIR=./testdata/cassettes ./bin/mole research "..." --usd 0.50 --workers 1
+MOLE_RECORD=replay MOLE_CASSETTE_DIR=./testdata/cassettes ./bin/mole research "..." --usd 0.50 --workers 1
 ```
 
 Replay never opens a socket — a miss is an error, not a quiet billable call.
@@ -116,7 +134,7 @@ source live and nothing at all replayed.
 
 ```bash
 MOLE_RECORD=record MOLE_CASSETTE_DIR=./testdata/cassettes \
-  ./bin/mole research "..." --tokens 200000 --always-fetch
+  ./bin/mole research "..." --tokens 200000 --always-fetch --workers 1
 MOLE_RECORD=replay MOLE_CASSETTE_DIR=./testdata/cassettes \
   ./bin/mole eval --last --citations          # 32ms, no network
 ```
@@ -276,7 +294,7 @@ The suites that carry weight:
 | M2 | Eval harness + `mole stats --fetch` | scorer **done**, corpus (§14.2) open |
 | M3 | Planner loop, rolling digest, error policy | **done** |
 | M4 | Claim graph + Verifier | **done**, contradiction recall unmeasured |
-| M5 | Executor pool | |
+| M5 | Executor pool | **done**, real-run speedup unmeasured |
 | M6 | AcademicActor | |
 | M7 | MCP daemon + stdio shim | **done** |
 | M8 | LocalComputeActor (sandbox → sqlguard → aggregation gate → actor) | |
@@ -331,7 +349,7 @@ Stated plainly rather than left to be discovered:
 
   ```bash
   MOLE_RECORD=record MOLE_CASSETTE_DIR=./testdata/cassettes \
-    mole corpus testdata/corpus/contradictions.json --usd 0.40 --max-sources 6 --max-depth 1
+    mole corpus testdata/corpus/contradictions.json --usd 0.40 --max-sources 6 --max-depth 1 --workers 1
   mole pairs dump <session-id> --all -o pairs.json   # --all is what makes recall measurable
   # label each pair: contradicts | duplicate | neither
   mole pairs score pairs.json
@@ -347,6 +365,13 @@ Stated plainly rather than left to be discovered:
   The full §14.2 corpus is deliberately not being built. Claim-precision
   labelling is ~2400 human judgments; if that number is ever needed, sample 200
   and report an error bar.
+- **A fatal error costs up to one batch, not one lead.** `Fatal` means the
+  failure repeats — a bad key fails on every lead — so serially the next lead
+  never starts and exactly one is charged. With a pool its siblings are already
+  in flight. The batch is cancelled as soon as any worker reports a fatal, and
+  the loop stops before leasing more, so the blast radius is bounded at one
+  batch; it is not bounded at one lead, and `--workers 1` is the only way to get
+  that back.
 - **The estimator does not warm from history.** Attributing a settled cost to
   `(actor_type, depth)` needs a join to `leads`, which M3 now populates, so the
   blocker is gone and this is simply unimplemented. Guessing the actor type would

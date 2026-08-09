@@ -49,9 +49,12 @@ func newCorpusCmd() *cobra.Command {
 		Long: "Runs every question in a corpus file, scores each session, and reports the\n" +
 			"aggregate. Exits non-zero if any question hit a hard regression or failed to\n" +
 			"run at all.\n\n" +
-			"Record once, then replay for free:\n" +
-			"  MOLE_RECORD=record MOLE_CASSETTE_DIR=./testdata/cassettes mole corpus q.json\n" +
-			"  MOLE_RECORD=replay MOLE_CASSETTE_DIR=./testdata/cassettes mole corpus q.json",
+			"Record once, then replay for free. Cassette work is serial: a recording\n" +
+			"made with a worker pool cannot be replayed, because lead completion order\n" +
+			"decides the prompts it is keyed on, so --workers 1 is required and\n" +
+			"anything else is refused.\n" +
+			"  MOLE_RECORD=record MOLE_CASSETTE_DIR=./testdata/cassettes mole corpus q.json --workers 1\n" +
+			"  MOLE_RECORD=replay MOLE_CASSETTE_DIR=./testdata/cassettes mole corpus q.json --workers 1",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			o.dbPath = dbPath(cmd)

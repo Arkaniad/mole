@@ -68,7 +68,14 @@ type Executor struct {
 	Actors   map[core.ActorType]actors.Actor
 	Log      *slog.Logger
 
-	// Owner identifies this worker in a lease. M5 gives each worker its own.
+	// Owner identifies the PROCESS holding a lease — "cli" or "daemon" — so the
+	// two never claim each other's leads (§9.4).
+	//
+	// Not per worker, despite what this said before the pool existed. Workers in
+	// a session share it, and nothing wants otherwise: a lease is claimed for a
+	// specific lead in a transaction, so the lead is already the unit of
+	// identity, and the heartbeat renews that lease rather than anything owned
+	// by a worker. Boot recovery sweeps by age across all owners.
 	Owner string
 
 	// Workers is how many leads this session runs at once. Zero takes
