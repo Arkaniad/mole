@@ -54,6 +54,7 @@ func newServeCmd() *cobra.Command {
 	var (
 		socket      string
 		maxSessions int
+		workers     int
 		grace       time.Duration
 	)
 	c := &cobra.Command{
@@ -75,6 +76,7 @@ func newServeCmd() *cobra.Command {
 			return cmdServe(cmd.Context(), serveOpts{
 				socket:      socket,
 				maxSessions: maxSessions,
+				workers:     workers,
 				grace:       grace,
 				dbPath:      dbPath(cmd),
 			})
@@ -83,6 +85,8 @@ func newServeCmd() *cobra.Command {
 	c.Flags().StringVar(&socket, "socket", defaultSocket(), "unix socket to listen on")
 	c.Flags().IntVar(&maxSessions, "max-sessions", session.DefaultMaxConcurrent,
 		"sessions to run at once; past this, new requests are refused rather than queued")
+	c.Flags().IntVar(&workers, "workers", defaultServeWorkers,
+		"leads each session runs at once; multiplies with --max-sessions")
 	c.Flags().DurationVar(&grace, "shutdown-grace", daemon.DefaultShutdownGrace,
 		"how long to wait on shutdown for sessions to release their budget holds")
 	return c
@@ -91,6 +95,7 @@ func newServeCmd() *cobra.Command {
 type serveOpts struct {
 	socket      string
 	maxSessions int
+	workers     int
 	grace       time.Duration
 	dbPath      string
 }
@@ -152,7 +157,7 @@ func cmdServe(ctx context.Context, o serveOpts) error {
 		Timeout:          defaultServeTimeout,
 		Log:              actor.Log,
 		Version:          version,
-		Workers:          defaultServeWorkers,
+		Workers:          o.workers,
 	})
 
 	srv := &daemon.Server{
@@ -184,10 +189,13 @@ func cmdServe(ctx context.Context, o serveOpts) error {
 
 	fmt.Printf("mole daemon listening on %s\n", o.socket)
 	fmt.Printf("  database  %s\n", o.dbPath)
-	// Both numbers, and their product: four sessions of four workers is sixteen
-	// concurrent leads leaving this machine, which is the figure that matters.
+	// Both numbers and their product, because the product is what leaves this
+	// machine. Printed from EffectiveWorkers rather than the configured value:
+	// the banner used to print the raw default and overstate the real ceiling by
+	// a third, since the pool is also bounded by the replan cadence.
+	perSession := executor.EffectiveWorkers(o.workers)
 	fmt.Printf("  sessions  up to %d at once, %d lead(s) each (up to %d concurrent leads)\n",
-		o.maxSessions, defaultServeWorkers, o.maxSessions*defaultServeWorkers)
+		o.maxSessions, perSession, o.maxSessions*perSession)
 	if cfg.MaxSessionUSD > 0 {
 		fmt.Printf("  ceiling   %s per session\n", core.FormatUSD(cfg.MaxSessionUSD))
 	} else {

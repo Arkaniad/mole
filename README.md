@@ -19,7 +19,7 @@ nine-lead run held to 114,654 of 400,000 tokens with 0% overshoot, replanned
 twice, served eight sources from cache without a fetch, and reconciled a 40-call
 ledger.
 
-M5's executor pool has since landed: a session runs four leads at once by
+M5's executor pool has since landed: a session runs three leads at once by
 default, per session rather than per process.
 
 What is not done: M2's question corpus, and the Verifier's contradiction
@@ -104,11 +104,14 @@ No model key is needed if `ant auth login` has run or a local runtime is up —
 `doctor` says which one it found. `--usd` and `--tokens` are mutually exclusive
 and there is no built-in default: a number nobody chose is still money spent.
 
-A session runs `--workers` leads at once, four by default, clamped at 16. The
-pool is per session and multiplies with the daemon's session limit, so `serve`
-prints both numbers and their product — four sessions of four workers is sixteen
-concurrent leads leaving the machine. Lead execution is ~91% of a session's wall
-clock, measured on the pre-pool baseline, which is what the pool is aimed at.
+A session runs `--workers` leads at once, three by default, clamped at 16. The
+pool is also bounded by the replan cadence — it never runs past a planner
+consultation — which is why the default equals `ReplanEvery`: a pool larger than
+the cadence has workers that can never all be busy. The pool is per session and
+multiplies with the daemon's session limit, so `serve` prints both numbers and
+their product: four sessions of three workers is twelve concurrent leads leaving
+the machine. Lead execution is ~91% of a session's wall clock, measured on the
+pre-pool baseline, which is what the pool is aimed at.
 
 Concurrency and deterministic replay do not mix, and the boundary is one
 environment variable. A cassette is keyed on the request body; with a pool the
@@ -417,3 +420,11 @@ Deliberately deferred, tracked here rather than in a scratch file:
   plain MIT and a source-available/fair-code licence in the shape n8n uses —
   which turns on whether a hosted mole run by someone else is a problem worth
   preventing. Not decided.
+  - research how we could optimize model token usage - for efficiency and reliability: 
+  optimize number of tokens passed to each model and choose the appropriate model for each use case
+  - when reading a website can we ask capable model which part is likely to contain given info,
+  then pull that part first? if not there apply a binary search logic where we progress through the 
+  website in small parts until the given info is found --> I guess this is good for some tasks but 
+  not good for others. Still, we could have some algorithm in place for picking the best model
+  for a given task to optimize token usage.
+  

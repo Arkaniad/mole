@@ -58,9 +58,6 @@ func ParseMode(s string) (Mode, error) {
 	}
 }
 
-// FromEnv builds a Recorder for a named run from MOLE_RECORD and
-// MOLE_CASSETTE_DIR. With recording off it returns a Recorder that passes
-// everything through, so callers need no conditional.
 // ModeFromEnv reports the configured mode without opening anything.
 //
 // Separate from FromEnv because some checks have to happen BEFORE a cassette is
@@ -71,6 +68,9 @@ func ModeFromEnv() (Mode, error) {
 	return ParseMode(os.Getenv(EnvMode))
 }
 
+// FromEnv builds a Recorder for a named run from MOLE_RECORD and
+// MOLE_CASSETTE_DIR. With recording off it returns a Recorder that passes
+// everything through, so callers need no conditional.
 func FromEnv(name string) (*Recorder, error) {
 	mode, err := ModeFromEnv()
 	if err != nil {

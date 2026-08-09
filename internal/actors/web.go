@@ -190,8 +190,17 @@ func (a *WebActor) Run(ctx context.Context, lead core.Lead) (*Result, error) {
 	}
 
 	// 7. Persist claims. All or nothing (§ store.InsertClaims).
+	//
+	// On an uncancellable context, for the same reason Settle uses one: by this
+	// point the searches, fetches and mining have happened and the ledger will
+	// charge for them whether or not this write lands. A cancellation here — a
+	// sibling lead failing fatally and cancelling the batch, a caller pressing
+	// Ctrl-C — would discard evidence that has already been paid for, and the
+	// report is generated from the store rather than from the returned Result,
+	// so those claims would vanish from the answer while still appearing in the
+	// spend. Measured before this: Result.Claims=4, rows stored=0.
 	if len(res.Claims) > 0 && a.Store != nil {
-		if err := a.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		if err := a.Store.WithTx(context.WithoutCancel(ctx), func(ctx context.Context, tx store.Tx) error {
 			return tx.InsertClaims(ctx, res.Claims)
 		}); err != nil {
 			return res, fmt.Errorf("actors/web: persist claims: %w", err)

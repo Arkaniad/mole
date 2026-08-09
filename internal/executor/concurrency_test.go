@@ -6,10 +6,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/lajosdeme/mole/internal/actors"
+	"github.com/lajosdeme/mole/internal/budget"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/executor"
 	"github.com/lajosdeme/mole/internal/llm"
@@ -500,5 +502,146 @@ func TestAFatalCancelsItsSiblings(t *testing.T) {
 
 	if got := probe.cancelledCount(); got == 0 {
 		t.Fatal("no sibling observed cancellation after a fatal outcome")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M5 review round
+// ---------------------------------------------------------------------------
+
+// TestALeadCanRetryAtTheLeadCeiling.
+//
+// ReserveForRetry enforced MaxLeads against a count that already included the
+// lead being retried, so the last permitted lead failed its OWN retry with "hit
+// max_leads" — and insufficient budget is Fatal, so the session ended. Not a
+// pool defect: measured at one worker as three leads producing seven actor runs
+// instead of nine.
+func TestALeadCanRetryAtTheLeadCeiling(t *testing.T) {
+	for _, workers := range []int{1, 3} {
+		t.Run(fmt.Sprintf("workers=%d", workers), func(t *testing.T) {
+			r := newRigWithCeilings(t, 50*core.MicrosPerUSD, 3, 200,
+				[]string{planJSON("a", "b", "c")},
+				func(int, core.Lead) (*actors.Result, error) {
+					return okResult(0, 1_000), llm.ErrRateLimited
+				})
+			r.exec.Workers = workers
+
+			res, err := r.exec.Run(context.Background(), r.sess.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := 3 * executor.MaxAttempts; r.actor.count() != want {
+				t.Fatalf("actor ran %d times, want %d — retries were refused by max_leads; status=%s stopped=%q",
+					r.actor.count(), want, res.Status, res.StoppedBecause)
+			}
+			if got := r.reload(t).LeadCount; got != 3 {
+				t.Fatalf("LeadCount=%d, want 3 — retries were counted as leads", got)
+			}
+		})
+	}
+}
+
+// panicProbe panics on one nominated query.
+type panicProbe struct {
+	mu      sync.Mutex
+	ran     int
+	panicOn string
+}
+
+func (p *panicProbe) Type() core.ActorType { return core.ActorWeb }
+func (p *panicProbe) Run(ctx context.Context, lead core.Lead) (*actors.Result, error) {
+	p.mu.Lock()
+	p.ran++
+	p.mu.Unlock()
+	if lead.Query == p.panicOn {
+		var claims []core.Claim
+		_ = claims[3] // the shape of a real one: an index into page-derived data
+	}
+	return okResult(1, 1_000), nil
+}
+
+// TestALeadPanicDoesNotKillTheProcess.
+//
+// Before the pool, runLead ran on the session goroutine and a panic unwound into
+// the supervisor's recover, which failed that one session and released its
+// holds. A bare worker goroutine is invisible to that recover, so one malformed
+// page taking an index panic through extraction took down the daemon and
+// stranded every other session's reservations. If this regresses, the test
+// binary dies rather than failing.
+func TestALeadPanicDoesNotKillTheProcess(t *testing.T) {
+	probe := &panicProbe{panicOn: "b"}
+	r := newRig(t, 50*core.MicrosPerUSD, []string{planJSON("a", "b", "c")}, nil)
+	r.exec.Actors[core.ActorWeb] = probe
+	r.exec.Workers = 3
+
+	res, err := r.exec.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probe.ran == 0 {
+		t.Fatal("no lead ran; the panic path was never reached")
+	}
+	if res.Status != core.StatusFailed {
+		t.Errorf("status = %s, want failed — a panicking lead should end the session, "+
+			"not be swallowed", res.Status)
+	}
+	if !strings.Contains(res.StoppedBecause, "panicked") {
+		t.Errorf("stopped because %q, want the panic named", res.StoppedBecause)
+	}
+}
+
+// budgetProbe fails one nominated query with ErrInsufficientBudget and lets the
+// others run, observing cancellation rather than sleeping through it.
+type budgetProbe struct {
+	failOn    string
+	finished  atomic.Int64
+	cancelled atomic.Int64
+}
+
+func (p *budgetProbe) Type() core.ActorType { return core.ActorWeb }
+
+func (p *budgetProbe) Run(ctx context.Context, lead core.Lead) (*actors.Result, error) {
+	if lead.Query == p.failOn {
+		return okResult(0, 1_000), budget.ErrInsufficientBudget
+	}
+	// Watching ctx is the whole point. The first version of this test slept on a
+	// bare timer, so a cancellation could not interrupt it and the test passed
+	// with the fix reverted — measured.
+	select {
+	case <-time.After(150 * time.Millisecond):
+		p.finished.Add(1)
+		return okResult(1, 1_000), nil
+	case <-ctx.Done():
+		p.cancelled.Add(1)
+		return nil, ctx.Err()
+	}
+}
+
+// TestAnExhaustedBudgetDoesNotKillFundedSiblings.
+//
+// ErrInsufficientBudget classifies as Fatal, and the batch used to be cancelled
+// on any fatal. But "this worker could not get a reservation" says nothing about
+// the siblings that already did, and cancelling them threw away funded, healthy
+// work — measured at 1 lead run and 1.2% of the budget spent where one worker
+// ran three leads and finished.
+//
+// The failure is injected rather than arranged: per-lead budget shares now make
+// a real mid-batch refusal very hard to construct, so a test built on one passes
+// whether or not the cancellation decision is right. Injecting tests the
+// decision itself.
+func TestAnExhaustedBudgetDoesNotKillFundedSiblings(t *testing.T) {
+	probe := &budgetProbe{failOn: "a"}
+	r := newRig(t, 50*core.MicrosPerUSD, []string{planJSON("a", "b", "c"), `{"done":true}`}, nil)
+	r.exec.Actors[core.ActorWeb] = probe
+	r.exec.Workers = 3
+
+	if _, err := r.exec.Run(context.Background(), r.sess.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := probe.finished.Load(); got != 2 {
+		t.Fatalf("%d of 2 funded siblings ran to completion (%d were cancelled); "+
+			"a refused reservation killed work that was already paid for",
+			got, probe.cancelled.Load())
 	}
 }

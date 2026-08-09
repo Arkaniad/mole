@@ -664,7 +664,11 @@ func reportGrounding(rep *verifier.GroundReport, o researchOpts) {
 // deterministic replay can coexist: everything that touches a cassette runs
 // serial, and everything else — every real research run — does not.
 func checkCassetteIsSerial(workers int) error {
-	if workers <= 1 {
+	// The EFFECTIVE count, not the flag. --workers 0 means "use the default",
+	// so testing the raw value let 0 and any negative through a check whose
+	// entire job is to enforce serial execution, and then run a pool of four.
+	effective := executor.EffectiveWorkers(workers)
+	if effective <= 1 {
 		return nil
 	}
 	mode, err := record.ModeFromEnv()
@@ -673,7 +677,8 @@ func checkCassetteIsSerial(workers int) error {
 		return nil
 	}
 	return fmt.Errorf(
-		"MOLE_RECORD=%s needs --workers 1 (got %d): a cassette recorded with a "+
-			"worker pool cannot be replayed, because lead completion order decides "+
-			"the prompts it is keyed on", mode, workers)
+		"MOLE_RECORD=%s needs --workers 1 (got %d, which runs %d): a cassette "+
+			"recorded with a worker pool cannot be replayed, because lead "+
+			"completion order decides the prompts it is keyed on",
+		mode, workers, effective)
 }

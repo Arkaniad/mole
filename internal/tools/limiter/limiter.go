@@ -152,6 +152,33 @@ func (l *Limiter) Set(key string, lim Limit) {
 	delete(l.buckets, key)
 }
 
+// SlowTo raises a key's minimum interval, and only ever raises it.
+//
+// Set is the wrong tool for honouring a robots.txt Crawl-delay under a worker
+// pool, and dangerously so. Read-then-Set is not atomic, and Set DELETES the
+// bucket — so K workers arriving together at a host that asks to be crawled
+// slowly all read the default interval, all call Set, and each delete throws
+// away the accumulated debt the previous ones had queued. The burst that
+// Crawl-delay exists to prevent is reassembled, at exactly the sites that
+// asked not to receive it.
+//
+// This does the compare and the assignment under one lock, and leaves the
+// bucket alone: an interval that only ever rises cannot let a caller through
+// sooner than the previous limit allowed, so existing debt stays valid.
+func (l *Limiter) SlowTo(key string, minInterval time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	cur, ok := l.limits[key]
+	if !ok {
+		cur = l.fallback
+	}
+	if minInterval <= cur.MinInterval {
+		return
+	}
+	l.limits[key] = cur.WithDelay(minInterval)
+}
+
 // LimitFor reports the limit in force for a key.
 func (l *Limiter) LimitFor(key string) Limit {
 	l.mu.RLock()

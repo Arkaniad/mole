@@ -309,11 +309,21 @@ func (l *Ledger) ReserveFor(ctx context.Context, sessionID, leadID string, amoun
 
 // ReserveForRetry is ReserveFor for a second or later attempt at the same lead.
 //
-// Identical except that it does not count the lead again. Every other ceiling
-// still applies, and the money is still held and settled per attempt, because
-// each attempt really does spend.
+// It does not count the lead again, and it is EXEMPT FROM MaxLeads. Both follow
+// from the same fact: this lead was already counted by its first attempt, so
+// checking the lead ceiling here checks it against a number that includes the
+// very lead being retried. The last permitted lead of a session would fail its
+// own retry with "hit max_leads" and, because insufficient budget classifies as
+// Fatal, end the session — measured at one worker as three leads yielding seven
+// actor runs instead of nine, stopping at max_leads with the failures recorded
+// as fatal rather than degraded.
+//
+// MaxToolCalls and MaxWallClock still apply. Those bound total work rather than
+// research fan-out, and a retry is more work; only the fan-out ceiling has
+// already accounted for this lead. Money is unaffected — every attempt holds and
+// settles its own, because every attempt really does spend.
 func (l *Ledger) ReserveForRetry(ctx context.Context, sessionID, leadID string, amount int64) (*core.Reservation, error) {
-	return l.reserveWith(ctx, sessionID, amount, allCeilings, &leadID, false)
+	return l.reserveWith(ctx, sessionID, amount, ceilingsExceptLeads, &leadID, false)
 }
 
 // SettleResult reports what a settle actually cost against what was held.

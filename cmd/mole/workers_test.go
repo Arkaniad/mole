@@ -51,6 +51,13 @@ func TestRecordingAllowsOneWorker(t *testing.T) {
 	if strings.Contains(err.Error(), "--workers 1") {
 		t.Fatalf("--workers 1 was refused by the cassette guard: %v", err)
 	}
+	// Asserting only "not the guard's message" is not enough: deleting the
+	// --workers flag entirely makes cobra return "unknown flag", which also does
+	// not contain that string, and this test passed. Measured. Naming the reason
+	// it SHOULD fail is what makes it about the guard.
+	if !strings.Contains(err.Error(), "search provider") {
+		t.Fatalf("failed for an unexpected reason: %v", err)
+	}
 }
 
 // TestAPoolIsAllowedWithoutACassette is the other half: the guard must not fire
@@ -64,5 +71,29 @@ func TestAPoolIsAllowedWithoutACassette(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "--workers 1") {
 		t.Fatalf("the cassette guard fired with MOLE_RECORD unset: %v", err)
+	}
+	if !strings.Contains(err.Error(), "search provider") {
+		t.Fatalf("failed for an unexpected reason: %v", err)
+	}
+}
+
+// TestZeroAndNegativeWorkersAreNotSerial closes the hole the guard had: it
+// tested the raw flag, and --workers 0 means "use the default", so 0 and any
+// negative passed a check whose entire job is to enforce serial execution and
+// then ran a pool.
+func TestZeroAndNegativeWorkersAreNotSerial(t *testing.T) {
+	for _, w := range []string{"0", "-3"} {
+		t.Run("workers="+w, func(t *testing.T) {
+			t.Setenv("MOLE_RECORD", "record")
+			t.Setenv("MOLE_CASSETTE_DIR", t.TempDir())
+
+			out, err := exec(t, "research", "a question", "--usd", "0.50", "--workers", w)
+			if err == nil {
+				t.Fatalf("--workers %s was accepted while recording\n%s", w, out)
+			}
+			if !strings.Contains(err.Error(), "--workers 1") {
+				t.Fatalf("--workers %s bypassed the cassette guard: %v", w, err)
+			}
+		})
 	}
 }

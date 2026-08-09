@@ -865,3 +865,55 @@ func TestClaimsInheritTheLeadsVerificationLineage(t *testing.T) {
 		}
 	})
 }
+
+// TestClaimsSurviveACancelledRun is the §8 half of "a failed lead costs the
+// prose, not the evidence".
+//
+// WebActor persists claims as its LAST step (step 7). Writing them on the run
+// context meant a cancellation — under M5, a sibling lead failing fatally and
+// cancelling the batch; from a terminal, Ctrl-C — discarded evidence the ledger
+// had already charged for, because Settle runs on an uncancellable context. The
+// report is generated from the STORE rather than from the returned Result, so
+// those claims vanished from the answer while still appearing in the spend.
+// Measured before the fix at Result.Claims=4, rows stored=0.
+func TestClaimsSurviveACancelledRun(t *testing.T) {
+	// Cancelled DURING mining, not before the run. Cancelling first makes the
+	// run stop before it has mined anything, and the test then asserts nothing
+	// while still reporting green — it skipped, which is worse than failing.
+	// Cancelling from inside the mine call puts the cancellation exactly where
+	// the bug was: after the money has been spent, before step 7 writes.
+	ctx, cancel := context.WithCancel(context.Background())
+	mine := func(prompt string) string {
+		out := mineFromSource(prompt)
+		cancel()
+		return out
+	}
+
+	h := newHarness(t,
+		[]search.Result{{URL: "https://example.com/a", Title: "A", Rank: 1}},
+		map[string]*fetch.Result{
+			"https://example.com/a": {
+				URL: "https://example.com/a", Outcome: fetch.OutcomeOK, StatusCode: 200,
+				ContentType: "text/html", Content: []byte(articleHTML()),
+			},
+		}, mine)
+
+	res, _ := h.actor.Run(ctx, h.lead)
+	if res == nil || len(res.Claims) == 0 {
+		t.Fatal("the run mined no claims; the cancellation landed too early for " +
+			"this test to be about the persist step")
+	}
+
+	var stored []*core.Claim
+	if err := h.db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		var err error
+		stored, err = q.ListClaims(ctx, h.session.ID, 50)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != len(res.Claims) {
+		t.Fatalf("mined %d claims but stored %d — evidence that was paid for was "+
+			"discarded by the cancellation", len(res.Claims), len(stored))
+	}
+}

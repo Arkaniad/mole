@@ -1,28 +1,33 @@
 // Package executor runs a research session: plan, dispatch, settle, replan.
 //
-// This is §9.2's loop. One worker for now — M5 turns on a pool.
+// This is §9.2's loop, running a per-session pool of workers (M5). The loop
+// leases a batch, runs it concurrently, and joins before replanning — so the
+// planner sees the batch in the order it queued it, whatever order the network
+// answered in.
 //
-// What is already safe, audited rather than assumed (M5 slice 3): leases stop
-// double dispatch; reserve-before-dispatch bounds the money, and the lead
-// counter is applied inside that same transaction so MaxLeads binds too;
-// WebActor assigns to no receiver field, so one actor serves many concurrent
-// leads; the rate limiter, the robots cache, the artifact cache, the estimator
-// and the pricing table all carry their own locks; Planner and Verifier hold
-// configuration only; planner.Digest is now mutex-guarded.
+// Effective concurrency is min(Workers, MaxWorkers, room before the next
+// replan, room before MaxLeads or MaxToolCalls). The replan bound is the one
+// that usually binds: nothing in production sets Planner.ReplanEvery, so it is
+// DefaultReplanEvery, and a default pool of four therefore runs three at a time.
+// See batchSize.
 //
-// What is NOT yet safe, and has to be handled when the pool lands rather than
-// discovered then — both are loop-locals today, so nothing can race them until
-// a worker touches them:
+// What is safe here, audited rather than assumed: leases stop double dispatch;
+// reserve-before-dispatch bounds the money, and the lead counter is applied
+// inside that same transaction so MaxLeads binds too; WebActor assigns to no
+// receiver field, so one actor serves many concurrent leads; the rate limiter,
+// robots cache, artifact cache, estimator and pricing table all carry their own
+// locks; Planner and Verifier hold configuration only; planner.Digest is
+// mutex-guarded; leadQuestion is never handed to a worker; Result and the digest
+// are touched only by the coordinator, between batches.
 //
-//   - leadQuestion, the map from lead to sub-question, is written at plan time
-//     and read per lead.
-//   - Result, whose LeadsRun/LeadsCached/LeadsFailed counters and Claims slice
-//     are appended to from the loop body.
+// Digest's exported FIELDS are unguarded on purpose: BudgetRemaining and
+// Contradictions are written between batches, by the coordinator, which is where
+// they belong — both are current state read fresh for a planner call, not
+// something a lead produces.
 //
-// Digest's exported FIELDS are also unguarded on purpose: BudgetRemaining and
-// Contradictions are written between batches, by the coordinator, which is
-// where they belong — both are current state read fresh for a planner call,
-// not something a lead produces.
+// A worker goroutine recovers its own panics. The supervisor's recover cannot
+// see them, and before this a single malformed page could take the daemon down
+// and strand every other session's reservations.
 //
 // The invariant that matters most is unglamorous: every reservation is resolved
 // on every path. A settle that is skipped because a lead failed leaves budget
@@ -38,6 +43,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -84,9 +90,9 @@ type Executor struct {
 	// Per session rather than per process: the supervisor already bounds how many
 	// sessions run at once, and one shared pool would let a single large session
 	// starve every other one. The product of the two is what a person actually
-	// has to reason about — four sessions of four workers is sixteen leads and
-	// sixteen outbound fetches — so both numbers stay visible instead of being
-	// folded into one.
+	// has to reason about — at the defaults, four sessions of three workers is
+	// twelve concurrent leads and twelve outbound fetches — so both numbers stay
+	// visible instead of being folded into one.
 	Workers int
 
 	// Progress reports phase transitions as they happen. Optional.
@@ -303,8 +309,19 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 		// Lease a BATCH, not a lead. Its size is bounded by the worker count and
 		// by how many leads may still run before a replan is due, so the pool
 		// never runs past a replan boundary — see runBatch for why that matters.
-		batch, err := e.leaseBatch(ctx, sessionID, e.batchSize(completedSinceReplan))
+		batch, err := e.leaseBatch(ctx, sessionID, e.batchSize(sess, completedSinceReplan))
 		if err != nil {
+			// Release what was already claimed. leaseBatch returns its partial
+			// batch precisely so this is possible: those leads are leased in the
+			// database, and a session that returns here never reaches the sweep —
+			// boot recovery is per PROCESS, and a long-lived daemon does not
+			// restart. Discarding them left rows leased forever.
+			for _, lease := range batch {
+				if rerr := e.Queue.Release(context.WithoutCancel(ctx), lease); rerr != nil {
+					e.logger().WarnContext(ctx, "could not release a lease after a failed batch",
+						"lead", lease.Lead.ID, "err", rerr)
+				}
+			}
 			return res, err
 		}
 
@@ -369,7 +386,13 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 			if out.claimsFound > 0 {
 				digest.RecordClaims(out.questionID, out.claimsFound)
 			}
-			if out.deadEnd != "" {
+			// A sibling cut short by a fatal in its own batch is not evidence
+			// about the research: the question was never really asked. Recording
+			// it as a dead end tells the planner a route is blocked when nothing
+			// was tried, and LeadsFailed, the dead-end histogram and the lead
+			// statuses are all §14.3 eval inputs.
+			cancelled := errors.Is(out.err, context.Canceled)
+			if out.deadEnd != "" && !cancelled {
 				digest.RecordDeadEnd(out.deadEnd, deadEndExample(&out.lead))
 			}
 			res.Claims = append(res.Claims, out.claims...)
@@ -378,7 +401,7 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 			// .ReserveFor applies LeadCount in the transaction that checks
 			// MaxLeads, so the check and the increment cannot be separated by
 			// another worker.
-			if out.err != nil && out.class != Fatal {
+			if out.err != nil && out.class != Fatal && !cancelled {
 				res.LeadsFailed++
 			}
 			if out.class == Fatal && fatal == nil {
@@ -441,14 +464,35 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 
 // DefaultWorkers is the per-session pool size when Workers is unset.
 //
-// Four. A session's wall clock is dominated by lead execution — measured at 91%
-// on the pre-pool baseline — so this is where the time goes, and four is enough
-// to take most of it without turning one research question into a burst of
-// sixteen simultaneous requests at somebody's website.
+// Equal to planner.DefaultReplanEvery, and that is the whole reason for the
+// number. batchSize never runs past a replan boundary, so a pool larger than the
+// replan cadence has workers that can never all be busy: with the previous
+// default of 4 against a cadence of 3, the fourth worker was unreachable in
+// every shipped configuration while three comments, the daemon's startup banner
+// and the README all advertised four — and "four sessions of four workers is
+// sixteen concurrent leads" was wrong by a third.
 //
-// It multiplies with the supervisor's session limit rather than being bounded by
-// it: four sessions of four workers is sixteen concurrent leads from one daemon.
-const DefaultWorkers = 4
+// Tying the two together means the advertised number is the real one. Raising
+// concurrency now means raising both, deliberately, and paying the planner cost
+// §9.1 exists to control.
+const DefaultWorkers = planner.DefaultReplanEvery
+
+// EffectiveWorkers is how many leads a given Workers setting actually permits,
+// before the per-batch bounds in batchSize narrow it further.
+//
+// Exported because a caller has to be able to ask. cmd/mole's cassette guard
+// checked the raw flag, so --workers 0 — which means "use the default" — passed
+// a check meant to enforce serial execution and then ran a pool.
+func EffectiveWorkers(workers int) int {
+	switch {
+	case workers <= 0:
+		return DefaultWorkers
+	case workers > MaxWorkers:
+		return MaxWorkers
+	default:
+		return workers
+	}
+}
 
 // MaxWorkers clamps Workers however it was configured.
 //
@@ -459,16 +503,7 @@ const DefaultWorkers = 4
 // rate limiter still applies underneath.
 const MaxWorkers = 16
 
-func (e *Executor) workers() int {
-	switch {
-	case e.Workers <= 0:
-		return DefaultWorkers
-	case e.Workers > MaxWorkers:
-		return MaxWorkers
-	default:
-		return e.Workers
-	}
-}
+func (e *Executor) workers() int { return EffectiveWorkers(e.Workers) }
 
 // batchSize is how many leads may run before the next replan is due.
 //
@@ -476,12 +511,47 @@ func (e *Executor) workers() int {
 // workers does not silently change how often the planner is consulted: with
 // ReplanEvery at 3, a pool of 4 still stops at 3 and replans. Asked through
 // ShouldReplan rather than reading ReplanEvery, so the two cannot disagree.
-func (e *Executor) batchSize(completedSinceReplan int) int {
+func (e *Executor) batchSize(sess *core.Session, completedSinceReplan int) int {
 	n := 1
 	for n < e.workers() && !e.Planner.ShouldReplan(completedSinceReplan+n, false) {
 		n++
 	}
+
+	// Shrink as the unit-independent ceilings close in (§8.5).
+	//
+	// MaxLeads is exact — the reservation counts it in the transaction that
+	// checks it — so this only avoids leasing work that will certainly be
+	// refused. MaxToolCalls is NOT exact: ToolCallCount is written by Settle,
+	// after the calls, so K workers all pass the check on a stale count and
+	// overshoot. Measured at a ceiling of 6: one worker stopped at 6 tool calls,
+	// four workers reached 16.
+	//
+	// Bounding the batch by the remaining headroom bounds that overshoot instead
+	// of eliminating it: a lead makes several calls, so leasing at most one lead
+	// per remaining call still overshoots by a lead's worth. It restores serial
+	// behaviour exactly where it matters — at the ceiling — and the residue is
+	// stated in the README rather than left to be discovered.
+	if room := headroom(sess.MaxLeads, sess.LeadCount); room >= 0 && n > room {
+		n = room
+	}
+	if room := headroom(sess.MaxToolCalls, sess.ToolCallCount); room >= 0 && n > room {
+		n = room
+	}
+	if n < 1 {
+		n = 1
+	}
 	return n
+}
+
+// headroom is how far a counter is from its ceiling, or -1 when unbounded.
+func headroom(ceiling, used int64) int {
+	if ceiling <= 0 {
+		return -1
+	}
+	if room := ceiling - used; room > 0 {
+		return int(room)
+	}
+	return 0
 }
 
 // leaseBatch takes up to max leads off the queue.
@@ -529,13 +599,28 @@ func (e *Executor) runBatch(
 	out := make([]leadOutcome, len(batch))
 
 	// A fatal outcome cancels the rest of the batch. Fatal means the failure
-	// repeats — a bad key fails on every lead — or that a sub-budget did not
-	// bind, and both are reasons to stop spending immediately. Serially the next
-	// lead simply never started; with a pool its siblings are already in flight,
-	// so the equivalent is to cut them short. Settling still runs on an
-	// uncancellable context, so the partial spend is recorded rather than lost.
+	// repeats — a bad key fails on every lead — so continuing spends money on
+	// calls that cannot succeed. Serially the next lead simply never started;
+	// with a pool its siblings are already in flight, so the equivalent is to cut
+	// them short.
+	//
+	// NOT for an exhausted budget, though ErrInsufficientBudget is also Fatal.
+	// That one means "this worker could not get a reservation", which says
+	// nothing about the siblings that already did — and cancelling them threw
+	// away funded, healthy work. The loop stops before leasing another batch
+	// either way, so nothing is gained by killing them.
 	batchCtx, cancelBatch := context.WithCancel(ctx)
 	defer cancelBatch()
+
+	// Each worker may clamp to its OWN share of what is left, not to the whole
+	// balance. Every worker reading the same pre-batch Available() meant the
+	// first to reserve could take all of it, the rest were refused, and the
+	// refusal ended the session: measured at 1 lead run and 1.2% of the budget
+	// spent where one worker ran 3 leads and finished.
+	share := sess.Available()
+	if n := int64(len(batch)); n > 1 && share > 0 {
+		share /= n
+	}
 
 	var wg sync.WaitGroup
 	for i, lease := range batch {
@@ -545,12 +630,35 @@ func (e *Executor) runBatch(
 		wg.Add(1)
 		go func(i int, lease *queue.Lease, questionID string) {
 			defer wg.Done()
+			// A panic here used to kill the process. Before the pool, runLead ran
+			// on the session goroutine and unwound into the supervisor's recover,
+			// which failed that one session and released its holds; a bare worker
+			// goroutine is invisible to that recover, so one malformed page taking
+			// an index panic through extraction would take down the daemon and
+			// strand every other session's reservations. Recovered here, where the
+			// goroutine is, and reported as the fatal it is.
+			defer func() {
+				if r := recover(); r != nil {
+					e.logger().ErrorContext(ctx, "lead panicked",
+						"lead", lease.Lead.ID, "panic", r, "stack", string(debug.Stack()))
+					out[i] = leadOutcome{
+						lead:       *lease.Lead,
+						questionID: questionID,
+						err:        fmt.Errorf("executor: lead panicked: %v", r),
+						class:      Fatal,
+						deadEnd:    "panic",
+					}
+					e.complete(ctx, lease, core.LeadFailed)
+					cancelBatch()
+				}
+			}()
+
 			if cached, ok := e.tryCache(batchCtx, lease, questionID); ok {
 				out[i] = cached
 				return
 			}
-			o := e.runLead(batchCtx, sess, lease, questionID)
-			if o.class == Fatal {
+			o := e.runLead(batchCtx, sess, lease, questionID, share)
+			if o.class == Fatal && !errors.Is(o.err, budget.ErrInsufficientBudget) {
 				cancelBatch()
 			}
 			out[i] = o
@@ -621,6 +729,7 @@ func (e *Executor) runLead(
 	sess *core.Session,
 	lease *queue.Lease,
 	questionID string,
+	share int64,
 ) leadOutcome {
 	lead := *lease.Lead
 	base := leadOutcome{lead: lead, questionID: questionID}
@@ -653,7 +762,7 @@ func (e *Executor) runLead(
 			}
 		}
 
-		out := e.attempt(ctx, sess, lead, actor, lease, attempt == 1)
+		out := e.attempt(ctx, sess, lead, actor, lease, attempt == 1, share)
 		last = out
 
 		if out.err == nil {
@@ -693,10 +802,13 @@ func (e *Executor) runLead(
 }
 
 // attempt is one reserve → run → settle cycle.
-func (e *Executor) attempt(ctx context.Context, sess *core.Session, lead core.Lead, actor actors.Actor, lease *queue.Lease, first bool) leadOutcome {
+func (e *Executor) attempt(ctx context.Context, sess *core.Session, lead core.Lead, actor actors.Actor, lease *queue.Lease, first bool, share int64) leadOutcome {
 	est := e.estimate(sess, lead)
-	if avail := sess.Available(); est > avail {
-		est = avail
+	// Clamped to this lead's SHARE of what remains, not to the whole balance.
+	// The ledger would refuse the losers correctly either way, but the refusal
+	// is Fatal, so one greedy clamp ended sessions that had budget left.
+	if share > 0 && est > share {
+		est = share
 	}
 	if est <= 0 {
 		return leadOutcome{err: budget.ErrInsufficientBudget, class: Fatal}

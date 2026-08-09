@@ -112,16 +112,24 @@ func TestClaimOrderDoesNotDependOnRowid(t *testing.T) {
 	shared := time.Now().UTC().UnixMicro()
 
 	// Written first (lower rowid) but seq 1; written second but seq 0.
-	rawInsertClaim(t, path, sid, lid, "c_second", "second", shared, 1)
-	rawInsertClaim(t, path, sid, lid, "c_first", "first", shared, 0)
+	// The ids are chosen so LEXICAL id order is the opposite of seq order.
+	// The first version used "c_first"/"c_second", whose id order happened to
+	// match seq order — so `ORDER BY created_at, id` produced the same answer and
+	// the test passed with seq removed from the query. It was the file's
+	// self-declared discriminating test and it discriminated nothing; measured.
+	rawInsertClaim(t, path, sid, lid, "a_written_first", "second", shared, 1)
+	rawInsertClaim(t, path, sid, lid, "b_written_second", "first", shared, 0)
 
 	got := listClaims(t, db, sid)
 	if len(got) != 2 {
 		t.Fatalf("read back %d claims, want 2", len(got))
 	}
+	// rowid order is [second first]; id order is [second first] too, because
+	// "a_written_first" sorts before "b_written_second". Only seq gives
+	// [first second], so this can be satisfied by nothing else.
 	if got[0].Text != "first" || got[1].Text != "second" {
 		t.Fatalf("order is [%s %s], want [first second] — the query is following "+
-			"rowid, not seq", got[0].Text, got[1].Text)
+			"rowid or id, not seq", got[0].Text, got[1].Text)
 	}
 }
 

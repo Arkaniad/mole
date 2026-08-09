@@ -213,10 +213,10 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string) (*Result, error)
 	// slower than our default.
 	key := strings.ToLower(host)
 	if crawlDelay > 0 {
-		cur := f.lim.LimitFor(key)
-		if crawlDelay > cur.MinInterval {
-			f.lim.Set(key, cur.WithDelay(crawlDelay))
-		}
+		// One atomic raise, not read-then-Set. See Limiter.SlowTo: the old
+		// sequence raced under a worker pool and discarded the queue it had
+		// built, at precisely the hosts that asked to be crawled slowly.
+		f.lim.SlowTo(key, crawlDelay)
 	}
 	if err := f.lim.Wait(ctx, key); err != nil {
 		return fail(OutcomeTimeout, err)
