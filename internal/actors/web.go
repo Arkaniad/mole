@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/lajosdeme/mole/internal/cache"
 	"github.com/lajosdeme/mole/internal/core"
@@ -335,6 +334,13 @@ func (a *WebActor) readSource(ctx context.Context, lead core.Lead, hit search.Re
 }
 
 // mineChunk extracts claims from one chunk and verifies every quote.
+// mineChunk delegates to the shared Miner.
+//
+// The mining logic lives in Miner because the AcademicActor needs exactly it —
+// a model call, a parse, a verbatim quote check, and §11.4's lineage — and two
+// copies would be two places for the quote check to drift. What stays here is
+// the web-specific bookkeeping: the chunk's offset within the document, and the
+// stats the fetch pipeline keeps.
 func (a *WebActor) mineChunk(
 	ctx context.Context,
 	lead core.Lead,
@@ -345,85 +351,25 @@ func (a *WebActor) mineChunk(
 	budget Budget,
 	res *Result,
 ) ([]core.Claim, llm.Usage, error) {
-	prompt := mineUserPrompt(fenceToken(), lead.Query, maxClaims, doc.Title, src.url, chunk.Text)
+	miner := &Miner{LLM: a.LLM, Pricing: a.Pricing, Log: a.Log, SessionID: a.SessionID}
 
-	resp, err := a.LLM.Complete(ctx, llm.Request{
-		Tier:      llm.TierCheap,
-		System:    mineSystemPrompt,
-		Messages:  []llm.Message{llm.User(prompt)},
-		MaxTokens: 4096,
+	out, err := miner.Mine(ctx, MineInput{
+		Lead:        lead,
+		SourceURL:   src.url,
+		Title:       doc.Title,
+		PublishedAt: doc.PublishedAt,
+		Text:        chunk.Text,
+		Offset:      chunk.Start,
+		MaxClaims:   maxClaims,
 	})
-	if resp == nil {
-		return nil, llm.Usage{}, err
+	if out.HasCall {
+		// Recorded before the error is returned: the tokens were spent whether
+		// or not the call produced anything.
+		res.Costs = append(res.Costs, out.Call)
 	}
-
-	// Record the call even on failure — the tokens were spent.
-	res.Costs = append(res.Costs, a.toolCall(lead, resp, core.RoleExecutor, "mine:"+src.url, err))
-	if err != nil {
-		return nil, resp.Usage, err
-	}
-	if resp.Refused {
-		return nil, resp.Usage, fmt.Errorf("actors/web: model refused (%s)", resp.RefusalCategory)
-	}
-
-	mined, err := parseMined(resp.Text)
-	if err != nil {
-		return nil, resp.Usage, err
-	}
-
-	now := time.Now().UTC()
-	var claims []core.Claim
-
-	for _, m := range mined {
-		res.Stats.ClaimsProposed++
-
-		if strings.TrimSpace(m.Text) == "" {
-			res.Stats.ClaimsRejected++
-			continue
-		}
-
-		// The check. A quote that is not in the chunk was not copied from it.
-		match, ok := FindQuote(chunk.Text, m.Quote)
-		if !ok {
-			res.Stats.ClaimsRejected++
-			a.logger().DebugContext(ctx, "claim rejected: quote not found in source",
-				"url", src.url, "quote", truncateForLog(m.Quote))
-			continue
-		}
-
-		claims = append(claims, core.Claim{
-			SessionID: a.SessionID,
-			LeadID:    lead.ID,
-			Text:      strings.TrimSpace(m.Text),
-			Source:    src.url,
-			Quote:     TruncateQuote(match.Text),
-			// Offsets index the whole document, not the chunk — the chunk does
-			// not outlive this function, and a later re-verification needs to
-			// find the span in the source.
-			QuoteOffset: int64(chunk.Start + match.Offset),
-			PublishedAt: doc.PublishedAt,
-			RetrievedAt: now,
-			// The extractor reports how clearly the DOCUMENT states this, which
-			// is all the mine prompt asks for. Writing it to Confidence made an
-			// uncalibrated self-report decide which claims led the report
-			// (§11.3); the Verifier derives confidence from the graph.
-			AssertionStrength: clamp01(m.Confidence),
-
-			// §11.4's lineage, inherited from the lead. A follow-up lead spawned
-			// to resolve a contradiction carries the root claim it is about, and
-			// its claims carry it onward — which is what makes the depth cap bind.
-			// Without this the cap would read a counter nothing increments, the
-			// shape that left MaxLeads inert from M0 to M3.
-			RootClaimID: rootClaimOf(lead),
-			VerifyDepth: lead.VerifyDepth,
-		})
-
-		if len(claims) >= maxClaims {
-			break
-		}
-	}
-
-	return claims, resp.Usage, nil
+	res.Stats.ClaimsProposed += out.Proposed
+	res.Stats.ClaimsRejected += out.Rejected
+	return out.Claims, out.Usage, err
 }
 
 // reduce writes the one summary the planner will see.
