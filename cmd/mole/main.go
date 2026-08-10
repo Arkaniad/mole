@@ -26,6 +26,7 @@ import (
 	"github.com/lajosdeme/mole/internal/pricing"
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/store/sqlite"
+	"github.com/lajosdeme/mole/internal/tools/academic"
 	"github.com/lajosdeme/mole/internal/verifier"
 	"github.com/spf13/cobra"
 )
@@ -312,9 +313,15 @@ func reportConfig(r *checks) {
 
 	reportLLM(report, cfg)
 
-	// Not required until M6 lands the academic providers.
-	if cfg.ContactEmail == "" {
-		r.note(false, "contact email", "not set — required by Unpaywall and NCBI before academic providers (M6)")
+	// Reported from the same rule that GATES the providers, not a second
+	// hand-written check beside it. §10.3 makes this a startup check rather than
+	// a README line, and a check that is free to drift from the thing it gates
+	// is worth nothing. Still a note rather than a requirement: an install with
+	// no academic provider in use is not broken for want of an address.
+	if err := academic.CheckContact(cfg.ContactEmail); err != nil {
+		r.note(false, "contact email",
+			"not usable — Unpaywall and NCBI require it, so academic providers will refuse to start "+
+				"(set it with: mole config set contact-email you@example.com)")
 	} else {
 		r.note(true, "contact email", cfg.ContactEmail)
 	}

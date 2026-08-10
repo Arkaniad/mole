@@ -22,9 +22,13 @@ ledger.
 M5's executor pool has since landed: a session runs three leads at once by
 default, per session rather than per process.
 
+M6, the AcademicActor, is in progress: arXiv and PubMed as keyless defaults,
+Unpaywall for DOI to legal open-access copy, and an escalation ladder that reads
+an abstract before it reads anything longer.
+
 What is not done: M2's question corpus, and the Verifier's contradiction
 *recall* — its precision is measured, but no labelled set of true contradictions
-exists to measure against. M6, M8 and M9 are untouched. See
+exists to measure against. M8 and M9 are untouched. See
 [the milestone table](#milestones) and [known gaps](#known-gaps).
 
 Full design: [`mole-architecture-sketch.md`](./mole-architecture-sketch.md).
@@ -298,7 +302,7 @@ The suites that carry weight:
 | M3 | Planner loop, rolling digest, error policy | **done** |
 | M4 | Claim graph + Verifier | **done**, contradiction recall unmeasured |
 | M5 | Executor pool | **done**, real-run speedup unmeasured |
-| M6 | AcademicActor | |
+| M6 | AcademicActor | in progress |
 | M7 | MCP daemon + stdio shim | **done** |
 | M8 | LocalComputeActor (sandbox → sqlguard → aggregation gate → actor) | |
 | M9 | Dataset mode | |
@@ -420,11 +424,66 @@ Deliberately deferred, tracked here rather than in a scratch file:
   plain MIT and a source-available/fair-code licence in the shape n8n uses —
   which turns on whether a hosted mole run by someone else is a problem worth
   preventing. Not decided.
-  - research how we could optimize model token usage - for efficiency and reliability: 
-  optimize number of tokens passed to each model and choose the appropriate model for each use case
-  - when reading a website can we ask capable model which part is likely to contain given info,
-  then pull that part first? if not there apply a binary search logic where we progress through the 
-  website in small parts until the given info is found --> I guess this is good for some tasks but 
-  not good for others. Still, we could have some algorithm in place for picking the best model
-  for a given task to optimize token usage.
+
+---
+
+## Reading less: the escalation ladder
+
+The open question behind M6, and eventually behind every actor: **how few tokens
+can answer the question?** Sending a whole document to a model is the expensive
+default, and cost per correct claim is §14.3's headline metric.
+
+The ladder, as M6 implements it for papers:
+
+| Tier | Source | Cost |
+|---|---|---|
+| 0 | title + abstract | free — arXiv and PubMed return it in the search response, no fetch at all |
+| 1 | full text, **ranked**, top sections only | one fetch, through the existing extractor |
+| 2 | PDF | not built — recorded as `unsupported_type` |
+
+Two decisions worth stating, because the obvious versions of both are wrong.
+
+**Ranking, not searching.** The instinct is to ask a model which part of a
+document holds the answer, then binary-search the rest. Binary search does not
+apply: not finding the answer in one chunk says nothing about which other chunk
+holds it, so there is no invariant to halve on and it degrades to a linear scan
+at one model call per probe. What works is retrieval — rank every chunk against
+the sub-question and read the top few. `verifier.LexicalRetriever` already does
+exactly this for `research.ask`, at zero model calls, and papers have named
+sections for it to rank.
+
+**Escalate on a mechanical signal.** Asking the miner "did that answer it?" is
+nearly free but is a model grading its own sufficiency. The gate is whether the
+abstract yielded claims carrying the sub-question's high-IDF terms; the model's
+opinion breaks ties. The mechanical half cannot be talked into spending money.
+
+Choosing a cheaper or stronger model per task is deliberately **not** in M6.
+It cannot be tuned without the eval corpus, so any tuning now is guesswork
+wearing the costume of optimization. Escalation is measurable today, in tokens
+per claim, which `mole trace` already reports.
+
+### How much is actually behind a PDF?
+
+Tier 2 stays unbuilt until that is a number rather than an intuition — the same
+decision-gate pattern §17.1 uses for the headless browser. It does not require
+waiting for `unsupported_type` to accumulate: the metadata APIs answer it
+directly. Unpaywall reports the PDF and landing-page locations separately, PMC
+says whether a PMID has full text, and arXiv HTML availability is a `HEAD`. No
+document is downloaded and no model is called.
+
+Three buckets, not two, because only the middle one is a PDF extractor's job:
+
+| | A PDF parser helps? |
+|---|---|
+| open access with HTML/XML | no — tier 1 already reads it |
+| open access, PDF only | **yes, and only here** |
+| not open access | no — there is no legal copy to parse |
+
+The sample is `testdata/corpus/contradictions.json`, whose ten questions span
+epidemiology, demography, energy, ML benchmarks, nutrition and economics — a
+single-domain sample would answer this question wrong in a predictable
+direction. Two skews get reported rather than smoothed over: arXiv's HTML only
+exists for papers from late 2023 onward, so back-catalogue coverage understates
+what current research will look like, and a hundred papers gives an interval
+rather than a point.
   
