@@ -204,9 +204,11 @@ type Response struct {
 // Provider is one scholarly source.
 type Provider interface {
 	Search(ctx context.Context, query string, opts Options) (*Response, error)
-	// Resolve looks a paper up by DOI. Unpaywall's whole purpose, and useful
-	// from the others for turning a citation into a readable location.
-	Resolve(ctx context.Context, doi string) (*Paper, error)
+	// Resolve looks a paper up by identifier — a DOI for Unpaywall, an arXiv ID
+	// for arXiv. Each provider answers for the identifiers it indexes and
+	// refuses the rest, rather than reporting "not found" for a paper that
+	// exists somewhere it cannot see.
+	Resolve(ctx context.Context, id string) (*Paper, error)
 	Kind() Kind
 }
 
