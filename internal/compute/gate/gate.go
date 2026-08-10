@@ -259,7 +259,16 @@ func Aggregate(ctx context.Context, db *sql.DB, query string, opts Options) (Agg
 		return AggregateEnvelope{}, fmt.Errorf("gate: read result: %w", err)
 	}
 
-	env := acc.envelope(query)
+	env, described := acc.envelope(query)
+
+	// §14.3's exfil assertion, run before the envelope is returned rather than
+	// measured after it has been. Nothing crosses that fails it.
+	if err := acc.verifyNoLeak(env, described); err != nil {
+		opts.Log.ErrorContext(ctx, "envelope withheld: it carried row-level data",
+			"query_hash", env.QueryHash, "err", err)
+		return AggregateEnvelope{}, err
+	}
+
 	logCrossing(ctx, opts.Log, env)
 	return env, nil
 }
@@ -297,112 +306,72 @@ func hashQuery(q string) string {
 // Accumulation
 // -----------------------------------------------------------------------------
 
-// accumulator folds rows into statistics as they are scanned.
+// accumulator holds the result set while the envelope is decided.
 //
-// It keeps numeric values so quantiles can be computed, and distinct keys so
-// cardinality is exact — both bounded by MaxRawRows, which is why that cap is a
-// refusal and not a truncation. It never keeps a row.
+// Two phases, and the split is a privacy control rather than a convenience.
+// Which rows may be described cannot be known until every row has been read:
+// a bucket is only safe once its count is known, and a count is only known at
+// the end. Streaming statistics would therefore have already folded suppressed
+// records into the numbers by the time the floor was applied — which is
+// exactly the leak the §14.3 property test found:
+//
+//	SELECT code, COUNT(*) FROM records GROUP BY 1
+//
+// puts every record in its own bucket, so all twenty were suppressed and no
+// bucket crossed — and the column range still carried two individual records'
+// codes, because it had been computed while reading.
+//
+// The rows are bounded by MaxRawRows, live only for the length of Aggregate,
+// and are unreachable from outside the package.
 type accumulator struct {
 	opts  Options
 	shape shape
 	names []string
 
-	nulls    []int64
-	distinct []map[string]bool
-	// numbers holds numeric values per column for the quantile pass. A column
-	// that turns out to be text stops collecting.
-	numbers  []([]float64)
-	isNumber []bool
-	isText   []bool
-	textMin  []string
-	textMax  []string
-	totalLen []int64
-	textN    []int64
+	rows [][]cell
+	// keyOf is each row's group key, empty for an ungrouped statement.
+	keyOf []string
+	// freeTextKey marks grouping columns that turned out to hold prose. They
+	// contribute no buckets, and the column still has to be REPORTED as
+	// withheld — a column that simply went quiet reads as an empty result.
+	freeTextKey map[int]bool
+}
 
-	// groups is the bucket table, keyed by the joined group key.
-	groups   map[string]*Bucket
-	groupSeq []string
-	rows     int64
+// cell is one scanned value in both the forms the envelope needs.
+type cell struct {
+	text  string
+	num   float64
+	isNum bool
+	null  bool
 }
 
 func newAccumulator(names []string, sh shape, opts Options) *accumulator {
-	n := len(names)
-	a := &accumulator{
-		opts: opts, shape: sh, names: names,
-		nulls:    make([]int64, n),
-		distinct: make([]map[string]bool, n),
-		numbers:  make([][]float64, n),
-		isNumber: make([]bool, n),
-		isText:   make([]bool, n),
-		textMin:  make([]string, n),
-		textMax:  make([]string, n),
-		totalLen: make([]int64, n),
-		textN:    make([]int64, n),
-		groups:   map[string]*Bucket{},
-	}
-	for i := range a.distinct {
-		a.distinct[i] = map[string]bool{}
-	}
-	return a
+	return &accumulator{opts: opts, shape: sh, names: names, freeTextKey: map[int]bool{}}
 }
 
 func (a *accumulator) scan(rows *sql.Rows) error {
-	cells := make([]any, len(a.names))
+	raw := make([]any, len(a.names))
 	ptrs := make([]any, len(a.names))
-	for i := range cells {
-		ptrs[i] = &cells[i]
+	for i := range raw {
+		ptrs[i] = &raw[i]
 	}
 	if err := rows.Scan(ptrs...); err != nil {
 		return fmt.Errorf("gate: scan: %w", err)
 	}
-	a.rows++
 
+	row := make([]cell, len(a.names))
 	var key []string
-	var count int64
-	measures := map[string]float64{}
-
-	for i, raw := range cells {
-		text, num, isNum, isNull := coerce(raw)
-		if isNull {
-			a.nulls[i]++
-			continue
-		}
-		a.distinct[i][text] = true
-
-		if isNum {
-			a.isNumber[i] = true
-			a.numbers[i] = append(a.numbers[i], num)
-		} else {
-			a.isText[i] = true
-			a.totalLen[i] += int64(len(text))
-			a.textN[i]++
-			if a.textMin[i] == "" || text < a.textMin[i] {
-				a.textMin[i] = text
-			}
-			if text > a.textMax[i] {
-				a.textMax[i] = text
-			}
-		}
-
-		switch {
-		case a.shape.isKey[i]:
+	for i, v := range raw {
+		text, num, isNum, isNull := coerce(v)
+		row[i] = cell{text: text, num: num, isNum: isNum, null: isNull}
+		if a.shape.isKey[i] && !isNull {
 			key = append(key, text)
-		case i == a.shape.countCol:
-			count = int64(num)
-		case isNum:
-			measures[a.names[i]] = num
+		} else if a.shape.isKey[i] {
+			key = append(key, "")
 		}
 	}
-
-	if a.shape.grouped {
-		k := strings.Join(key, "\x1f")
-		if b, ok := a.groups[k]; ok {
-			b.Count += count
-		} else {
-			a.groups[k] = &Bucket{Key: key, Count: count, Measures: measures}
-			a.groupSeq = append(a.groupSeq, k)
-		}
-	}
+	a.rows = append(a.rows, row)
+	a.keyOf = append(a.keyOf, strings.Join(key, "\x1f"))
 	return nil
 }
 
@@ -432,112 +401,266 @@ func coerce(raw any) (text string, num float64, isNum, isNull bool) {
 	}
 }
 
-func (a *accumulator) envelope(query string) AggregateEnvelope {
+// group is one bucket under construction.
+type group struct {
+	key      []string
+	count    int64
+	measures map[string]float64
+	rows     []int
+}
+
+// envelope builds the result, and returns the rows it was allowed to describe
+// so the exfil check can be told what was permitted rather than inferring it
+// from the answer.
+func (a *accumulator) envelope(query string) (AggregateEnvelope, []int) {
 	env := AggregateEnvelope{
 		Query:     query,
 		QueryHash: hashQuery(query),
-		RowCount:  a.rows,
+		RowCount:  int64(len(a.rows)),
 	}
 
-	freeTextByName := map[string]bool{}
-	for _, n := range a.opts.FreeTextColumns {
-		freeTextByName[strings.ToLower(n)] = true
-	}
+	// Which rows the envelope is allowed to describe. For an ungrouped
+	// statement that is all of them — there is one row and every value in it is
+	// an aggregate over the whole table. For a grouped one it is the rows of
+	// the buckets that survived the floor and the top-K cap, and only those.
+	described := a.describedRows(&env)
 
 	for i, name := range a.names {
-		c := ColumnStats{
-			Name:     name,
-			Nulls:    a.nulls[i],
-			Distinct: int64(len(a.distinct[i])),
-		}
-		switch {
-		case a.isNumber[i] && !a.isText[i]:
-			c.Kind = KindNumber
-		case a.isText[i]:
-			c.Kind = KindText
-		default:
-			c.Kind = KindEmpty
-		}
-
-		if c.Kind == KindText {
-			var avgLen float64
-			if a.textN[i] > 0 {
-				avgLen = float64(a.totalLen[i]) / float64(a.textN[i])
-			}
-			// One rule, shared with the connector's profiler. A result column
-			// can be an expression no profile ever described, so the flag is
-			// re-derived here and unioned with what the profile already knew.
-			c.FreeText = freeTextByName[strings.ToLower(name)] ||
-				connector.IsFreeText(name, "", connector.TypeText,
-					a.rows, c.Distinct, avgLen)
-			if !c.FreeText {
-				c.Range = &TextRange{Min: a.textMin[i], Max: a.textMax[i]}
-			} else {
-				env.Notes = append(env.Notes, fmt.Sprintf(
-					"column %q holds free text; its values were not read (§12.1)", name))
-			}
-		}
-		if c.Kind == KindNumber {
-			c.Number = summarize(a.numbers[i])
-		}
-		env.Columns = append(env.Columns, c)
+		env.Columns = append(env.Columns, a.statsFor(i, name, described, &env))
 	}
-
-	if a.shape.grouped {
-		a.buildBuckets(&env)
-	}
-	return env
+	return env, described
 }
 
-// buildBuckets applies the k-anonymity floor and the top-K cap.
-func (a *accumulator) buildBuckets(env *AggregateEnvelope) {
-	// A grouping key that is free text contributes no buckets at all. §12.1:
-	// "a 'top values' list over a notes field is just the rows" — and grouping
-	// by it is the same list with counts attached.
-	for i := range a.names {
-		if a.shape.isKey[i] {
-			for _, c := range env.Columns {
-				if c.Name == a.names[i] && c.FreeText {
-					env.Notes = append(env.Notes, fmt.Sprintf(
-						"grouped on %q, which holds free text, so no buckets crossed", c.Name))
-					return
-				}
-			}
-		}
+// describedRows applies the floor and the cap, fills in the buckets, and
+// returns the row indexes the statistics may be computed over.
+func (a *accumulator) describedRows(env *AggregateEnvelope) []int {
+	if !a.shape.grouped {
+		return a.allRows()
 	}
 
-	var kept []Bucket
+	var order []string
+	byKey := map[string]*group{}
+	for i, row := range a.rows {
+		k := a.keyOf[i]
+		g, ok := byKey[k]
+		if !ok {
+			g = &group{measures: map[string]float64{}}
+			for j := range a.names {
+				if a.shape.isKey[j] {
+					g.key = append(g.key, row[j].text)
+				}
+			}
+			byKey[k] = g
+			order = append(order, k)
+		}
+		if a.shape.countCol >= 0 {
+			g.count += int64(row[a.shape.countCol].num)
+		}
+		for j, c := range row {
+			if a.shape.isKey[j] || j == a.shape.countCol || !c.isNum {
+				continue
+			}
+			g.measures[a.names[j]] = c.num
+		}
+		g.rows = append(g.rows, i)
+	}
+
+	// A grouping key that holds free text contributes no buckets at all. §12.1:
+	// "a 'top values' list over a notes field is just the rows" — and grouping
+	// by it is that same list with counts attached.
+	if a.keyIsFreeText(env) {
+		return nil
+	}
+
+	kept := make([]*group, 0, len(order))
 	other := Bucket{Other: true}
-	for _, k := range a.groupSeq {
-		b := a.groups[k]
-		if b.Count < a.opts.KFloor {
-			other.Count += b.Count
+	for _, k := range order {
+		g := byKey[k]
+		if g.count < a.opts.KFloor {
+			other.Count += g.count
 			env.Suppressed++
 			continue
 		}
-		kept = append(kept, *b)
+		kept = append(kept, g)
 	}
-
-	sort.SliceStable(kept, func(i, j int) bool { return kept[i].Count > kept[j].Count })
+	sort.SliceStable(kept, func(i, j int) bool { return kept[i].count > kept[j].count })
 	if len(kept) > a.opts.TopK {
-		for _, b := range kept[a.opts.TopK:] {
-			other.Count += b.Count
+		for _, g := range kept[a.opts.TopK:] {
+			other.Count += g.count
 			env.Suppressed++
 		}
 		kept = kept[:a.opts.TopK]
 		env.Truncated = true
 	}
 
-	env.TopK = kept
+	var described []int
+	for _, g := range kept {
+		env.TopK = append(env.TopK, Bucket{Key: g.key, Count: g.count, Measures: g.measures})
+		described = append(described, g.rows...)
+	}
 	if other.Count > 0 {
 		// `other` names no key, so it discloses nothing about which values were
-		// folded into it — that is what makes it safe to report a count for a
-		// group that would otherwise be too small to name.
+		// folded into it — that is what makes reporting a count for a group too
+		// small to name safe.
 		env.TopK = append(env.TopK, other)
 		env.Notes = append(env.Notes, fmt.Sprintf(
-			"%d bucket(s) covering fewer than %d records were folded into \"other\" (§12.1)",
+			"%d bucket(s) covering fewer than %d records were folded into \"other\"; "+
+				"their rows are excluded from the statistics too (§12.1)",
 			env.Suppressed, a.opts.KFloor))
 	}
+	sort.Ints(described)
+	return described
+}
+
+// keyIsFreeText decides whether the grouping key holds prose, from the whole
+// result rather than from the surviving rows — there are none yet at this
+// point, and a key that is prose is prose regardless of how it buckets.
+func (a *accumulator) keyIsFreeText(env *AggregateEnvelope) bool {
+	all := a.allRows()
+	for i, name := range a.names {
+		if !a.shape.isKey[i] {
+			continue
+		}
+		p := a.profile(i, all)
+		if p.kind == KindText && a.isFreeText(name, p) {
+			a.freeTextKey[i] = true
+			env.Notes = append(env.Notes, fmt.Sprintf(
+				"grouped on %q, which holds free text, so no buckets crossed (§12.1)", name))
+			return true
+		}
+	}
+	return false
+}
+
+// profile is the raw shape of one column over a set of rows.
+type profile struct {
+	kind     Kind
+	nulls    int64
+	distinct int64
+	avgLen   float64
+	textMin  string
+	textMax  string
+	numbers  []float64
+	n        int64
+}
+
+func (a *accumulator) profile(col int, rowIdx []int) profile {
+	var p profile
+	seen := map[string]bool{}
+	var isNum, isText bool
+	var totalLen, textN int64
+
+	for _, r := range rowIdx {
+		c := a.rows[r][col]
+		if c.null {
+			p.nulls++
+			continue
+		}
+		seen[c.text] = true
+		if c.isNum {
+			isNum = true
+			p.numbers = append(p.numbers, c.num)
+			continue
+		}
+		isText = true
+		totalLen += int64(len(c.text))
+		textN++
+		if p.textMin == "" || c.text < p.textMin {
+			p.textMin = c.text
+		}
+		if c.text > p.textMax {
+			p.textMax = c.text
+		}
+	}
+	p.distinct = int64(len(seen))
+	p.n = int64(len(rowIdx))
+	if textN > 0 {
+		p.avgLen = float64(totalLen) / float64(textN)
+	}
+	switch {
+	case isText:
+		p.kind = KindText
+	case isNum:
+		p.kind = KindNumber
+	default:
+		p.kind = KindEmpty
+	}
+	return p
+}
+
+// isFreeText applies the connector's rule to a result column.
+//
+// One rule, shared with the profiler. A result column can be an expression no
+// profile ever described — MIN(note) AS lo is a column called lo holding
+// somebody's note — so it is re-derived here and unioned with what the
+// connector already knew.
+func (a *accumulator) isFreeText(name string, p profile) bool {
+	for _, n := range a.opts.FreeTextColumns {
+		if strings.EqualFold(n, name) {
+			return true
+		}
+	}
+	return connector.IsFreeText(name, "", connector.TypeText, p.n, p.distinct, p.avgLen)
+}
+
+func (a *accumulator) statsFor(i int, name string, described []int, env *AggregateEnvelope) ColumnStats {
+	// Counts come from the whole result; values come only from the rows the
+	// envelope is entitled to describe.
+	//
+	// The split is the point. A count is an aggregate however few records it
+	// covers — "twenty distinct codes" discloses no code. A minimum is a
+	// record: over the rows of buckets that fell below the floor, MIN(spend) is
+	// one person's spend, and computing it over everything is how the §14.3
+	// property test found a value crossing while every bucket was suppressed.
+	all := a.allRows()
+	overall := a.profile(i, all)
+
+	c := ColumnStats{
+		Name:     name,
+		Kind:     overall.kind,
+		Nulls:    overall.nulls,
+		Distinct: overall.distinct,
+	}
+	if overall.kind == KindText {
+		c.FreeText = a.freeTextKey[i] || a.isFreeText(name, overall)
+	}
+
+	shown := a.profile(i, described)
+	switch {
+	case overall.kind == KindNumber:
+		c.Number = summarize(shown.numbers)
+	case overall.kind != KindText:
+		// Nothing but nulls.
+	case c.FreeText:
+		env.Notes = append(env.Notes, fmt.Sprintf(
+			"column %q holds free text; its values were not read (§12.1)", name))
+	case a.shape.grouped && a.shape.isKey[i]:
+		// A range is two values out of the data, so it may only be reported for
+		// a column whose values each describe at least KFloor records — which,
+		// once the floor has been applied, means a grouping key and nothing
+		// else.
+		if shown.distinct > 0 {
+			c.Range = &TextRange{Min: shown.textMin, Max: shown.textMax}
+		}
+	case overall.distinct > 0:
+		// A text-valued MEASURE, and this is not a corner case: MIN(code) over
+		// a group is one specific record's code, selected by an ordering rather
+		// than summarized. §14.3's property test crossed exactly that before
+		// this rule existed. Numbers are different — the extremum of a numeric
+		// column is the summary statistic §12.1 asks for by name.
+		env.Notes = append(env.Notes, fmt.Sprintf(
+			"column %q is a text-valued aggregate, so its bounds would be individual "+
+				"records; withheld (§12.1)", name))
+	}
+	return c
+}
+
+func (a *accumulator) allRows() []int {
+	all := make([]int, len(a.rows))
+	for i := range all {
+		all[i] = i
+	}
+	return all
 }
 
 func summarize(xs []float64) *NumberStats {

@@ -409,6 +409,19 @@ func blockedMetrics(opts Options) []Metric {
 			Reason: "needs labelled answers; the question corpus (§14.2) is not built yet",
 		},
 		{
+			// The assertion itself is not blocked and does not live here: the
+			// aggregation gate checks every envelope against the data it came
+			// from before returning it, and withholds one that carries a value
+			// (internal/compute/gate, §14.3). What is blocked is reporting it
+			// PER SESSION, which needs a session that used a connector.
+			//
+			// Named rather than omitted so a reader can tell "not measured
+			// here" from "not measured anywhere".
+			Name: "exfil regression", Status: Blocked,
+			Reason: "enforced at the gate rather than scored here; per-session " +
+				"reporting needs the LocalComputeActor (M8) to have run",
+		},
+		{
 			Name: "contradiction recall", Status: Blocked,
 			// M4 built the Verifier, so contradictions are now FOUND and counted as
 			// "disagreement rate". Recall is a different number: it needs to know

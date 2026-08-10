@@ -313,7 +313,7 @@ The suites that carry weight:
 | M5 | Executor pool | **done**, real-run speedup unmeasured |
 | M6 | AcademicActor | **done**, claim extraction unverified on a real model |
 | M7 | MCP daemon + stdio shim | **done** |
-| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | both gates **done**, actor open |
+| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | gates + exfil check **done**, actor open |
 | M9 | Dataset mode | |
 
 ---
@@ -328,6 +328,10 @@ Stated plainly rather than left to be discovered:
   enforced. What is missing is the thing that would use them: no template
   renders SQL, no actor runs a lead, and no claim cites a connector. Nothing in
   mole can reach a connector with a query today.
+- **The exfil metric is enforced, not scored.** §14.3 lists it as a number to
+  report per session; it is instead an invariant at the gate, checked before
+  every envelope is returned. `mole eval` names it `blocked` with that reason,
+  because per-session reporting needs a session that used a connector.
 - **The audit trail is a log line, not a table.** §12.1 asks that "every
   crossing is logged, so a user can audit exactly what left their machine", and
   every envelope emits a structured record — query, hash, rows described,
@@ -746,3 +750,44 @@ holds somebody's note. It is the *same rule*, exported from the connector rather
 than reimplemented, since two copies would drift and the one that drifted would
 be the one deciding whether prose reaches a model. A free-text column carries no
 range, contributes no buckets, and grouping on one produces no buckets at all.
+
+### The exfil regression, and the two leaks it found
+
+§14.3 asks for an assertion that no row-level data crosses the aggregation gate.
+It is written as a **property over generated query shapes** rather than a list
+of examples — 296 statements built from the cross product of somewhere to group
+and something to select, against a fixture whose sensitive values carry a
+canary. Each envelope must contain no canary and no bucket describing fewer
+than `KFloor` records. 264 of the 296 produce an envelope, so the property is
+not holding vacuously.
+
+It found two leaks the hand-written tests had missed, and both were real:
+
+**Column ranges outlived their buckets.** For
+
+```sql
+SELECT code, COUNT(*) FROM records GROUP BY 1
+```
+
+every record is its own bucket, so all twenty were suppressed and no bucket
+crossed — and `ColumnStats.Range` still reported `Zq7Kx00 … Zq7Kx19`, two
+individual records. The k-anonymity floor protects *buckets*; nothing protected
+the column summary. The fix restructured the accumulator into two phases,
+because which rows may be described cannot be known until every row has been
+read: **counts** are now computed over the whole result (a count discloses no
+value), and **ranges and moments** only over the rows of buckets that survived.
+
+**A text extremum is a record, not a statistic.** `MIN(code)` over a group
+returns one specific record's code, selected by an ordering rather than
+summarized — and it crossed even for groups well above the floor. Text columns
+now carry a range only when they are a grouping key. Numbers are different: the
+extremum of a numeric column is the summary statistic §12.1 asks for by name.
+
+Alongside the property test the gate now **self-checks at runtime**: the
+accumulator still holds every value it read, so before an envelope is returned
+it is compared against the data it came from, and one carrying a value it was
+not entitled to is withheld rather than reported. The permitted set is derived
+from the rows the gate was allowed to describe, **not** from the envelope — an
+earlier version read it out of the envelope's own bucket keys and ranges, which
+meant a leaked value authorised itself. Both positive controls failed, which is
+what positive controls are for.
