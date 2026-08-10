@@ -136,7 +136,7 @@ func TestFullTextFormatSeparatesUnreadableFromUnavailable(t *testing.T) {
 		}, academic.FormatHTML},
 		{"pdf only", academic.Paper{PDFURL: "https://example.org/p.pdf"}, academic.FormatPDFOnly},
 		{"landing page is not full text", academic.Paper{
-			LandingURL: "https://publisher.example/abs/1", OpenAccess: true,
+			LandingURL: "https://publisher.example/abs/1",
 		}, academic.FormatClosed},
 		{"nothing", academic.Paper{}, academic.FormatClosed},
 	} {

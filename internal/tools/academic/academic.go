@@ -29,7 +29,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/tools/limiter"
 )
 
@@ -137,7 +136,6 @@ type Options struct {
 type Paper struct {
 	Title    string
 	Abstract string
-	Authors  []string
 
 	// Identifiers. A paper often has several; whichever the provider knows is
 	// recorded, because Unpaywall keys on DOI and PMC keys on PMCID.
@@ -164,11 +162,7 @@ type Paper struct {
 	HTMLURL    string
 	PDFURL     string
 	LandingURL string
-	// OpenAccess is the provider's own verdict, not an inference from the URLs
-	// above: a landing page exists for closed papers too.
-	OpenAccess bool
-
-	Source Kind
+	Source     Kind
 }
 
 // FullTextFormat reports the best text mole can currently READ for a paper.
@@ -206,15 +200,15 @@ type Response struct {
 	Query    string
 	Provider Kind
 	Papers   []Paper
-	// Cost is what the search cost, for the ledger to settle.
+
+	// No Cost field. arXiv, PubMed and Unpaywall are free, so there was never
+	// anything to report — it was declared, never written and never read, while
+	// its own comment claimed the ledger settled against it. A paid provider
+	// would need one back; adding it then, with a consumer, is cheaper than
+	// carrying a field that documents behaviour nobody implements.
 	//
-	// Always zero today: arXiv, PubMed and Unpaywall are free, and no provider
-	// sets it. It stays because a paid provider would need it, but nothing reads
-	// it yet — so the ceiling that actually bounds an academic session is the
-	// money spent on MINING, plus §8.5's MaxLeads and MaxWallClock. MaxToolCalls
-	// counts only the mine calls; see AcademicActor for the request rows it does
-	// and does not write.
-	Cost core.Cost
+	// So what bounds an academic session is the money spent MINING, plus §8.5's
+	// MaxLeads and MaxWallClock. MaxToolCalls counts only the mine calls.
 }
 
 // Resolver turns an identifier into a paper.

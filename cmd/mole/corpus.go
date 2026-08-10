@@ -32,6 +32,7 @@ type corpusOpts struct {
 	timeout     time.Duration
 	maxSources  int
 	maxDepth    int
+	actorList   string
 	workers     int
 	alwaysFetch bool
 	asJSON      bool
@@ -67,6 +68,9 @@ func newCorpusCmd() *cobra.Command {
 	f.Int64Var(&o.tokens, "tokens", 0, "per-question budget in tokens")
 	f.DurationVar(&o.timeout, "timeout", 10*time.Minute, "per-question wall-clock ceiling")
 	f.IntVar(&o.maxSources, "max-sources", 5, "sources to read per lead")
+	f.StringVar(&o.actorList, "actors", "web",
+		"comma-separated actors: web, academic. The escalation ladder only exists in "+
+			"the academic actor, so measuring it needs this")
 	f.IntVar(&o.workers, "workers", executor.DefaultWorkers,
 		"leads to run at once per question; 1 is required when recording or replaying")
 	f.IntVar(&o.maxDepth, "max-depth", 2, "rounds of follow-up leads the planner may add")
@@ -98,15 +102,7 @@ func cmdCorpus(ctx context.Context, path string, o corpusOpts) error {
 		// Quiet, and the id captured through the callback: a failed run still has a
 		// ledger to reconcile and claims to score, and those are the runs worth looking
 		// at.
-		ro := researchOpts{
-			usd: o.usd, tokens: o.tokens, mode: "report",
-			maxSources: o.maxSources, timeout: o.timeout, maxDepth: o.maxDepth,
-			workers: o.workers,
-			// silent: the corpus runner produces the output, and a hundred inlined
-			// reports would bury it.
-			alwaysFetch: o.alwaysFetch, quiet: true, silent: true, dbPath: o.dbPath,
-			onSession: func(id string) { res.SessionID = id },
-		}
+		ro := o.researchOpts(func(id string) { res.SessionID = id })
 		if runErr := cmdResearch(ctx, q.Question, ro); runErr != nil {
 			res.Err = runErr.Error()
 		}
@@ -300,4 +296,25 @@ func readReport(path string) (eval.CorpusReport, error) {
 		return eval.CorpusReport{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return rep, nil
+}
+
+// researchOpts is the per-question run configuration, derived from the corpus's.
+//
+// A method rather than a literal inline, so the derivation is testable — and it
+// needed to be. --actors was added to the corpus flags and not to the literal, so
+// the flag parsed and was discarded and every question still ran web-only. A
+// command-level test could not have caught it either: the corpus prints each
+// question's failure with fmt.Printf rather than through cobra's writer, so the
+// harness cannot see WHY a question failed.
+func (o corpusOpts) researchOpts(onSession func(string)) researchOpts {
+	return researchOpts{
+		usd: o.usd, tokens: o.tokens, mode: "report",
+		maxSources: o.maxSources, timeout: o.timeout, maxDepth: o.maxDepth,
+		workers: o.workers, actorList: o.actorList,
+		alwaysFetch: o.alwaysFetch, dbPath: o.dbPath,
+		// silent: the corpus runner produces the output, and a hundred inlined
+		// reports would bury it.
+		quiet: true, silent: true,
+		onSession: onSession,
+	}
 }

@@ -248,7 +248,6 @@ type medlineArticle struct {
 	Title    xmlFragment    `xml:"ArticleTitle"`
 	Abstract []abstractText `xml:"Abstract>AbstractText"`
 	PubDate  pubmedDate     `xml:"Journal>JournalIssue>PubDate"`
-	Authors  []pubmedAuthor `xml:"AuthorList>Author"`
 }
 
 // xmlFragment captures an element's mixed content verbatim.
@@ -273,11 +272,6 @@ type pubmedDate struct {
 	// does not exist. Parsed for its year only; inventing a month from a range
 	// would put a false precision into §11.2's staleness comparison.
 	MedlineDate string `xml:"MedlineDate"`
-}
-
-type pubmedAuthor struct {
-	Last string `xml:"LastName"`
-	Fore string `xml:"ForeName"`
 }
 
 type pubmedID struct {
@@ -305,11 +299,6 @@ func (a pubmedArticle) toPaper() (Paper, bool) {
 			p.PMCID = strings.TrimSpace(id.Value)
 		}
 	}
-	for _, au := range a.Article.Authors {
-		if n := collapse(au.Fore + " " + au.Last); n != "" {
-			p.Authors = append(p.Authors, n)
-		}
-	}
 	if t, ok := a.Article.PubDate.parse(); ok {
 		p.PublishedAt = &t
 	}
@@ -324,7 +313,6 @@ func (a pubmedArticle) toPaper() (Paper, bool) {
 		// restricted is recorded as a fetch outcome (§10.4) rather than
 		// silently counted as readable.
 		p.HTMLURL = PMCArticleURL(p.PMCID)
-		p.OpenAccess = true
 	}
 	return p, true
 }

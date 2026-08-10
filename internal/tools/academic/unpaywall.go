@@ -130,21 +130,20 @@ type unpaywallRecord struct {
 	DOI           string              `json:"doi"`
 	Title         string              `json:"title"`
 	IsOA          bool                `json:"is_oa"`
-	OAStatus      string              `json:"oa_status"`
 	PublishedDate string              `json:"published_date"`
 	Year          int                 `json:"year"`
 	Best          *unpaywallLocation  `json:"best_oa_location"`
 	Locations     []unpaywallLocation `json:"oa_locations"`
-	Authors       []struct {
-		Given  string `json:"given"`
-		Family string `json:"family"`
-	} `json:"z_authors"`
 }
 
+// unpaywallLocation is only the parts pickLocations reads.
+//
+// host_type, version and license are in the response and are NOT decoded. They
+// were, and nothing read them. host_type is the interesting omission: "repository"
+// versus "publisher" looks like a better test than matching the URL, and it is
+// not — a repository can hold a PDF and a publisher can hold readable HTML, so
+// what matters is the format at the location, which only the URL tells us.
 type unpaywallLocation struct {
-	HostType   string `json:"host_type"`
-	Version    string `json:"version"`
-	License    string `json:"license"`
 	URL        string `json:"url"`
 	PDFURL     string `json:"url_for_pdf"`
 	LandingURL string `json:"url_for_landing_page"`
@@ -156,15 +155,9 @@ func (r unpaywallRecord) toPaper(doi string) Paper {
 		// record began "<i>Coolpup.py:</i>\n                    versatile…".
 		// Left as-is that reaches a prompt as pseudo-HTML and a citation as a
 		// broken line.
-		Title:      collapse(stripTags(r.Title)),
-		DOI:        firstNonEmpty(strings.TrimSpace(r.DOI), doi),
-		OpenAccess: r.IsOA,
-		Source:     KindUnpaywall,
-	}
-	for _, a := range r.Authors {
-		if n := collapse(a.Given + " " + a.Family); n != "" {
-			p.Authors = append(p.Authors, n)
-		}
+		Title:  collapse(stripTags(r.Title)),
+		DOI:    firstNonEmpty(strings.TrimSpace(r.DOI), doi),
+		Source: KindUnpaywall,
 	}
 	if t, err := time.Parse("2006-01-02", strings.TrimSpace(r.PublishedDate)); err == nil {
 		p.PublishedAt = &t

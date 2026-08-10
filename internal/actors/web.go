@@ -398,7 +398,7 @@ func (a *WebActor) reduce(ctx context.Context, lead core.Lead, sources []sourceS
 	if resp == nil {
 		return "", err
 	}
-	res.Costs = append(res.Costs, a.toolCall(lead, resp, core.RoleExecutor, "reduce", err))
+	res.Costs = append(res.Costs, toolCallFor(a.SessionID, lead, resp, "reduce", a.Pricing, a.Log, err))
 	if err != nil {
 		return "", err
 	}
@@ -409,40 +409,6 @@ func (a *WebActor) reduce(ctx context.Context, lead core.Lead, sources []sourceS
 }
 
 // toolCall prices a model response into a ledger row.
-func (a *WebActor) toolCall(lead core.Lead, resp *llm.Response, role core.Role, input string, callErr error) core.ToolCall {
-	tc := core.ToolCall{
-		SessionID:  a.SessionID,
-		LeadID:     &lead.ID,
-		Role:       role,
-		Type:       core.CallLLM,
-		Model:      resp.Model,
-		Input:      input,
-		DurationMS: resp.Elapsed.Milliseconds(),
-	}
-	if callErr != nil {
-		tc.Err = callErr.Error()
-	}
-
-	table := a.Pricing
-	if table == nil {
-		table = pricing.NewTable()
-	}
-	cost, err := table.Cost(resp.Model, pricing.Usage{
-		InputTokens:      resp.Usage.InputTokens,
-		OutputTokens:     resp.Usage.OutputTokens,
-		CacheReadTokens:  resp.Usage.CacheReadTokens,
-		CacheWriteTokens: resp.Usage.CacheWriteTokens,
-	})
-	if err != nil {
-		// An unpriced model still spent tokens. Recording zero dollars but real
-		// tokens is the honest answer: token-mode budgets stay correct, and
-		// USD-mode surfaces the gap through doctor rather than here.
-		a.logger().Warn("model not in pricing table; USD cost recorded as zero",
-			"model", resp.Model, "tokens", resp.Usage.Total())
-	}
-	tc.Cost = cost
-	return tc
-}
 
 // recordOutcome writes the §10.4 row for one fetch attempt.
 //

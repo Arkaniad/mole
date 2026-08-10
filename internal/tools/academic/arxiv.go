@@ -193,17 +193,12 @@ type atomEntry struct {
 	Summary   string     `xml:"summary"`
 	Published string     `xml:"published"`
 	Updated   string     `xml:"updated"`
-	Authors   []atomName `xml:"author"`
 	Links     []atomLink `xml:"link"`
 	// DOI is arXiv's own extension namespace, and present only when the paper
 	// has been published somewhere with a journal DOI. That is the DOI worth
 	// having: Unpaywall resolves it to a publisher's open-access copy, whereas
 	// arXiv's self-assigned 10.48550 DOI resolves back to arXiv.
 	DOI string `xml:"http://arxiv.org/schemas/atom doi"`
-}
-
-type atomName struct {
-	Name string `xml:"name"`
 }
 
 type atomLink struct {
@@ -226,14 +221,6 @@ func entryToPaper(e atomEntry) (Paper, bool) {
 		DOI:      strings.TrimSpace(e.DOI),
 		ArXivID:  arXivIDFromURL(e.ID),
 		Source:   KindArXiv,
-		// Everything on arXiv is free to read. Not an inference from the links:
-		// it is what arXiv is.
-		OpenAccess: true,
-	}
-	for _, au := range e.Authors {
-		if n := collapse(au.Name); n != "" {
-			p.Authors = append(p.Authors, n)
-		}
 	}
 	for _, l := range e.Links {
 		switch {

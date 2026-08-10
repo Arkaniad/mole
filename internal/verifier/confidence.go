@@ -3,6 +3,7 @@ package verifier
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -463,6 +464,23 @@ func explain(s Score, members int) string {
 // wrong, and changing it would alter the meaning of already-stored rows. Here a
 // wrong answer inflates confidence, so it is worth the list.
 func PublisherOf(source string) string {
+	// Scholarly sources first, because eTLD+1 is the wrong unit for them and
+	// silently defeats corroboration. A PubMed citation is
+	// pubmed.ncbi.nlm.nih.gov/<PMID>/ and a PMC one is
+	// pmc.ncbi.nlm.nih.gov/articles/PMC<id>/, so EVERY academic claim folded to
+	// nih.gov — two independent studies agreeing counted as one publisher, and
+	// §11.3's corroboration term could never rise for academic evidence at all.
+	//
+	// The unit chosen is the PAPER, not the journal or the index. That is a
+	// judgement: two studies in one journal share an editor, so counting them
+	// separately is less conservative than eTLD+1 is for news. It is still the
+	// better answer, because two independent studies corroborating each other is
+	// real corroboration in a way that two articles on one news site is not —
+	// there the shared editorial control is the whole reason to discount them.
+	if k := scholarlyKey(source); k != "" {
+		return k
+	}
+
 	host := hostOf(source)
 	if host == "" {
 		return ""
@@ -481,8 +499,10 @@ func hostOf(source string) string {
 	if s == "" {
 		return ""
 	}
-	// A DOI is a publisher-independent identifier; treat it as its own registry so
-	// two DOIs do not read as one publisher.
+	// A bare "doi:" source with no parseable registrant. Handled by
+	// scholarlyKey when it has one; this is the fallback, and it does fold every
+	// such source into one publisher — which the comment here used to deny while
+	// the code did it.
 	if strings.HasPrefix(s, "doi:") {
 		return "doi.org"
 	}
@@ -511,7 +531,7 @@ func hostOf(source string) string {
 // ".gov" and must not be classified as a government source, and a substring match
 // is exactly how it would be.
 func ClassOf(source string) SourceClass {
-	pub := PublisherOf(source)
+	pub := registrableDomain(source)
 	if pub == "" {
 		return ClassUnknown
 	}
@@ -595,4 +615,66 @@ var publisherClass = map[string]SourceClass{
 	"arstechnica.com":    ClassSecondary,
 	"theverge.com":       ClassSecondary,
 	"wired.com":          ClassSecondary,
+}
+
+// registrableDomain is the eTLD+1 of a source, for questions about the HOST.
+//
+// Split from PublisherOf when the latter started answering "which paper" for
+// scholarly sources. ClassOf keys a hand-written list on domains — arxiv.org is
+// primary, doi.org is peer-reviewed — and pointing it at a paper identifier made
+// every academic source classify as unknown, quietly downgrading confidence for
+// exactly the sources §11.3 trusts most. Caught by the existing tests, which is
+// what they are for.
+func registrableDomain(source string) string {
+	host := hostOf(source)
+	if host == "" {
+		return ""
+	}
+	etld1, err := publicsuffix.EffectiveTLDPlusOne(host)
+	if err != nil {
+		return host
+	}
+	return etld1
+}
+
+// scholarlyKey identifies the PAPER behind an academic citation, or "".
+//
+// Three shapes, all produced by internal/actors' academic path:
+//
+//	https://doi.org/10.1093/bioinformatics/btaa073   -> doi:10.1093 (the registrant)
+//	https://pubmed.ncbi.nlm.nih.gov/32003791/        -> pmid:32003791
+//	https://pmc.ncbi.nlm.nih.gov/articles/PMC7214034/ -> pmc:PMC7214034
+//	https://arxiv.org/abs/2401.13660v3               -> arxiv:2401.13660v3
+//
+// A DOI resolves to its REGISTRANT prefix rather than the whole identifier,
+// because the prefix is assigned per publisher — 10.1093 is Oxford University
+// Press, 10.1038 is Nature. So two papers from different publishers corroborate
+// and two from the same one do not, which is exactly what §11.3 is asking. The
+// index hosts carry no publisher information at all, so there the paper is the
+// most specific honest answer.
+func scholarlyKey(source string) string {
+	s := strings.TrimSpace(strings.ToLower(source))
+	if s == "" {
+		return ""
+	}
+	if m := doiRegistrantPattern.FindStringSubmatch(s); m != nil {
+		return "doi:" + m[1]
+	}
+	for _, sp := range scholarlyPatterns {
+		if m := sp.pattern.FindStringSubmatch(s); m != nil {
+			return sp.prefix + m[1]
+		}
+	}
+	return ""
+}
+
+var doiRegistrantPattern = regexp.MustCompile(`(?:doi\.org/|^doi:)(10\.\d{4,9})/`)
+
+var scholarlyPatterns = []struct {
+	prefix  string
+	pattern *regexp.Regexp
+}{
+	{"pmid:", regexp.MustCompile(`pubmed\.ncbi\.nlm\.nih\.gov/(\d+)`)},
+	{"pmc:", regexp.MustCompile(`ncbi\.nlm\.nih\.gov/(?:pmc/)?articles/(pmc?\d+)`)},
+	{"arxiv:", regexp.MustCompile(`arxiv\.org/(?:abs|html|pdf)/(\d{4}\.\d{4,5}(?:v\d+)?)`)},
 }

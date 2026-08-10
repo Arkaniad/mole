@@ -95,7 +95,7 @@ func (m *Miner) Mine(ctx context.Context, in MineInput) (MineOutput, error) {
 		return out, err
 	}
 	out.Usage = resp.Usage
-	out.Call = m.toolCall(in.Lead, resp, "mine:"+in.SourceURL, err)
+	out.Call = toolCallFor(m.SessionID, in.Lead, resp, "mine:"+in.SourceURL, m.Pricing, m.Log, err)
 	out.HasCall = true
 
 	if err != nil {
@@ -152,9 +152,29 @@ func (m *Miner) Mine(ctx context.Context, in MineInput) (MineOutput, error) {
 	return out, nil
 }
 
-func (m *Miner) toolCall(lead core.Lead, resp *llm.Response, input string, callErr error) core.ToolCall {
+// toolCallFor prices one model call into a ledger row.
+//
+// One implementation, and it used to be two. Miner was extracted from WebActor
+// to stop the quote check existing twice; the cost path was left duplicated —
+// same pricing lookup, same fallback, same warning string — which is the defect
+// the extraction's own comment says it existed to prevent, sitting thirty lines
+// below it.
+//
+// Package-level because neither receiver contributed anything but a session id
+// and a pricing table. The role parameter went with the duplication: both callers
+// passed RoleExecutor, so it was a parameter with one value, which is an
+// invitation to pass the wrong one later.
+func toolCallFor(
+	sessionID string,
+	lead core.Lead,
+	resp *llm.Response,
+	input string,
+	table *pricing.Table,
+	log *slog.Logger,
+	callErr error,
+) core.ToolCall {
 	tc := core.ToolCall{
-		SessionID:  m.SessionID,
+		SessionID:  sessionID,
 		LeadID:     &lead.ID,
 		Role:       core.RoleExecutor,
 		Type:       core.CallLLM,
@@ -166,7 +186,6 @@ func (m *Miner) toolCall(lead core.Lead, resp *llm.Response, input string, callE
 		tc.Err = callErr.Error()
 	}
 
-	table := m.Pricing
 	if table == nil {
 		table = pricing.NewTable()
 	}
@@ -179,7 +198,10 @@ func (m *Miner) toolCall(lead core.Lead, resp *llm.Response, input string, callE
 	if err != nil {
 		// An unpriced model still spent tokens. Zero dollars with real token
 		// counts keeps token-mode budgets correct; doctor surfaces the gap.
-		m.logger().Warn("model not in pricing table; USD cost recorded as zero",
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Warn("model not in pricing table; USD cost recorded as zero",
 			"model", resp.Model, "tokens", resp.Usage.Total())
 	}
 	tc.Cost = cost

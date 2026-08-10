@@ -148,9 +148,6 @@ func TestUnpaywallDistinguishesUnknownFromClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a known closed paper was reported as an error: %v", err)
 	}
-	if p.OpenAccess {
-		t.Error("is_oa false was read as open access")
-	}
 	if p.FullTextFormat() != academic.FormatClosed {
 		t.Errorf("format = %q, want closed", p.FullTextFormat())
 	}

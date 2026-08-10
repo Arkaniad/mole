@@ -144,3 +144,44 @@ func TestUnknownActorIsRefused(t *testing.T) {
 		t.Fatalf("refused for the wrong reason: %v", err)
 	}
 }
+
+// TestCorpusCarriesEveryRunOption. The corpus is the only thing that can measure
+// whether the escalation ladder works — tokens per claim is §14.3's headline and
+// the ladder only exists in the academic actor — so a corpus that silently ran
+// web-only made that measurement impossible to produce.
+//
+// That is exactly what happened: --actors was added to the flags and not to the
+// researchOpts literal, so the flag parsed and was discarded. Asserted on the
+// derivation rather than through the CLI, because the corpus prints each
+// question's failure with fmt.Printf rather than cobra's writer, so a
+// command-level test cannot see WHY a question failed — which is why nothing
+// caught the omission.
+func TestCorpusCarriesEveryRunOption(t *testing.T) {
+	o := corpusOpts{
+		usd: "0.40", tokens: 1000, maxSources: 6, maxDepth: 1,
+		workers: 2, actorList: "web,academic", alwaysFetch: true, dbPath: "/tmp/x.db",
+	}
+	got := o.researchOpts(nil)
+
+	for _, tc := range []struct {
+		field string
+		got   any
+		want  any
+	}{
+		{"actorList", got.actorList, "web,academic"},
+		{"usd", got.usd, "0.40"},
+		{"tokens", got.tokens, int64(1000)},
+		{"maxSources", got.maxSources, 6},
+		{"maxDepth", got.maxDepth, 1},
+		{"workers", got.workers, 2},
+		{"alwaysFetch", got.alwaysFetch, true},
+		{"dbPath", got.dbPath, "/tmp/x.db"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %v, want %v", tc.field, tc.got, tc.want)
+		}
+	}
+	if !got.silent || !got.quiet {
+		t.Error("the corpus runner must suppress per-question output")
+	}
+}

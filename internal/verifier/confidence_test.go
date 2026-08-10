@@ -38,22 +38,26 @@ func scoreOf(t *testing.T, claims []*core.Claim, edges []*core.ClaimEdge, id str
 // it splits nothing that should be split.
 func TestPublisherIdentityIsRegistrableDomain(t *testing.T) {
 	cases := map[string]string{
-		"https://www.bbc.co.uk/news/x":     "bbc.co.uk",
-		"https://theguardian.co.uk/a":      "theguardian.co.uk",
-		"https://arxiv.org/abs/2401.13660": "arxiv.org",
-		"https://blog.arxiv.org/post":      "arxiv.org",
-		"https://alice.github.io/notes":    "alice.github.io",
-		"https://bob.github.io/notes":      "bob.github.io",
-		"https://sub.deep.example.com/p":   "example.com",
-		"doi:10.1234/xyz":                  "doi.org",
-		"https://EXAMPLE.com/A":            "example.com",
-		"https://example.com./trailing":    "example.com",
+		"https://www.bbc.co.uk/news/x":   "bbc.co.uk",
+		"https://theguardian.co.uk/a":    "theguardian.co.uk",
+		"https://blog.arxiv.org/post":    "arxiv.org",
+		"https://alice.github.io/notes":  "alice.github.io",
+		"https://bob.github.io/notes":    "bob.github.io",
+		"https://sub.deep.example.com/p": "example.com",
+		"https://EXAMPLE.com/A":          "example.com",
+		"https://example.com./trailing":  "example.com",
 	}
 	for src, want := range cases {
 		if got := PublisherOf(src); got != want {
 			t.Errorf("PublisherOf(%q) = %q, want %q", src, got, want)
 		}
 	}
+
+	// SCHOLARLY sources are deliberately not registrable domains — see
+	// TestScholarlyPublishersAreCountedPerPaper. Two entries were removed from
+	// the table above when that changed: an arXiv abstract URL and a bare DOI,
+	// both of which now resolve to the paper or the DOI registrant. The table
+	// still covers arXiv's own blog, which IS a web publisher on arxiv.org.
 
 	// The pair that proves it: two UK publishers must not collapse into one.
 	if PublisherOf("https://bbc.co.uk/a") == PublisherOf("https://theguardian.co.uk/a") {
@@ -472,6 +476,59 @@ func TestDerivationIsExplained(t *testing.T) {
 	for _, want := range []string{"publisher", "peer-reviewed", "contradicted by 1", "grounding FAILED"} {
 		if !strings.Contains(found, want) {
 			t.Errorf("explanation omits %q: %s", want, found)
+		}
+	}
+}
+
+// TestScholarlyPublishersAreCountedPerPaper is §11.3 applied to literature.
+//
+// eTLD+1 is the right unit for the web and the wrong one here. A PubMed citation
+// is pubmed.ncbi.nlm.nih.gov/<PMID>/ and a PMC one is
+// pmc.ncbi.nlm.nih.gov/articles/PMC<id>/, so every academic claim folded to
+// nih.gov — two independent studies agreeing counted as ONE publisher and the
+// corroboration term could never rise for academic evidence at all.
+//
+// The unit is the paper, and for a DOI the publisher's own registrant prefix.
+func TestScholarlyPublishersAreCountedPerPaper(t *testing.T) {
+	for src, want := range map[string]string{
+		"https://pubmed.ncbi.nlm.nih.gov/32003791/":         "pmid:32003791",
+		"https://pmc.ncbi.nlm.nih.gov/articles/PMC7214034/": "pmc:pmc7214034",
+		"https://arxiv.org/abs/2401.13660v3":                "arxiv:2401.13660v3",
+		"https://doi.org/10.1093/bioinformatics/btaa073":    "doi:10.1093",
+		"doi:10.1038/s41586-020-2649-2":                     "doi:10.1038",
+	} {
+		if got := PublisherOf(src); got != want {
+			t.Errorf("PublisherOf(%q) = %q, want %q", src, got, want)
+		}
+	}
+
+	// The pair that proves it: two independent PubMed papers must corroborate.
+	a := PublisherOf("https://pubmed.ncbi.nlm.nih.gov/32003791/")
+	b := PublisherOf("https://pubmed.ncbi.nlm.nih.gov/31813824/")
+	if a == b {
+		t.Error("two different papers merged into one publisher; academic " +
+			"corroboration cannot raise confidence")
+	}
+
+	// And two papers from the SAME publisher must not. The DOI registrant is
+	// assigned per publisher, so this is the conservative direction on purpose.
+	if PublisherOf("https://doi.org/10.1093/bioinformatics/btaa073") !=
+		PublisherOf("https://doi.org/10.1093/nar/gkz1234") {
+		t.Error("two papers from one publisher were counted as two")
+	}
+}
+
+// TestSourceClassStillKeysOnTheDomain. ClassOf answers a different question from
+// PublisherOf — which host is this — and pointing it at a paper identifier made
+// every academic source classify as unknown, quietly downgrading confidence for
+// exactly the sources §11.3 trusts most.
+func TestSourceClassStillKeysOnTheDomain(t *testing.T) {
+	for src, want := range map[string]SourceClass{
+		"https://arxiv.org/abs/2401.13660": ClassPrimary,
+		"doi:10.1234/xyz":                  ClassPeerReviewed,
+	} {
+		if got := ClassOf(src); got != want {
+			t.Errorf("ClassOf(%q) = %q, want %q", src, got, want)
 		}
 	}
 }

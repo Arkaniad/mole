@@ -97,12 +97,6 @@ func TestArXivSearchParsesARealResponse(t *testing.T) {
 	if got.PDFURL == "" || got.LandingURL == "" {
 		t.Errorf("links not mapped: pdf=%q landing=%q", got.PDFURL, got.LandingURL)
 	}
-	if len(got.Authors) != 2 {
-		t.Errorf("%d authors, want 2", len(got.Authors))
-	}
-	if !got.OpenAccess {
-		t.Error("arXiv papers are open access by definition")
-	}
 }
 
 // TestArXivReportsThePublishedDateNotTheRevision. §11.2 compares when a claim
