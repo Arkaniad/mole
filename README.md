@@ -206,9 +206,10 @@ The role breakdown is a single `GROUP BY` over the ledger — the entire reason
 | `internal/session` | Runner and supervisor — session lifecycle, crash recovery |
 | `internal/daemon` | Unix socket listener, peer credential checks, graceful stop |
 | `internal/mcpserver` | The MCP tool surface the daemon speaks |
+| `internal/compute/connector` | Local data sources: intake, profiling, the read-only handle |
 | `internal/eval` | Mechanical scorecard, citation re-verification |
 | `internal/config` | Config file and environment resolution |
-| `cmd/mole` | CLI: `research`, `ask`, `serve`, `eval`, `stats`, `trace`, `sessions`, `doctor`, `config`, `migrate`, `dev` |
+| `cmd/mole` | CLI: `research`, `ask`, `serve`, `eval`, `connect`, `stats`, `trace`, `sessions`, `doctor`, `config`, `migrate`, `dev` |
 | `cmd/mole-mcp` | The disposable stdio shim — pumps bytes to the daemon's socket |
 
 ### Decisions worth knowing before you read the code
@@ -310,7 +311,7 @@ The suites that carry weight:
 | M5 | Executor pool | **done**, real-run speedup unmeasured |
 | M6 | AcademicActor | **done**, claim extraction unverified on a real model |
 | M7 | MCP daemon + stdio shim | **done** |
-| M8 | LocalComputeActor (sandbox → sqlguard → aggregation gate → actor) | |
+| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | slice 0 (connector) **done** |
 | M9 | Dataset mode | |
 
 ---
@@ -319,6 +320,16 @@ The suites that carry weight:
 
 Stated plainly rather than left to be discovered:
 
+- **M8 is one slice in: the connector, not the boundary.** `mole connect`
+  registers sources and hands out a handle that cannot write, and the profile it
+  records holds no free-text values. But nothing enforces §12.1 yet — there is no
+  `AggregateEnvelope`, no k-anonymity floor, no `sqlguard`, and no actor. The
+  privacy property is *not* in force; what exists is the least-privilege defence
+  §12.2 lists first, and the exfil regression test §14.3 asks for is slice 3.
+- **Parquet is not readable.** SQLite cannot read it and no decoder is written,
+  so a Parquet export has to be converted before `mole connect` will take it.
+  Named because "point mole at my data folder" quietly skipping half a folder is
+  worse than refusing it — the count of ignored entries is reported.
 - **The cache is session-scoped and in memory.** A cross-session cache has to
   answer "how stale is too stale", and the answer differs per question type — a
   settled fact keeps for months, a "current consensus" for days. §14.2's corpus
@@ -534,3 +545,96 @@ sessions cite older work than this corpus does — which means re-running this
 command on a broader corpus, not waiting for `unsupported_type` to accumulate:
 the academic actor never fetches a PDF, so no live run can produce that outcome.
   
+
+---
+
+## Local data: the privacy boundary (M8)
+
+Rev 1 of the sketch said "data never leaves the local machine; only aggregates
+reach the LLM." That was a comment, not a mechanism. §12 makes it one, and M8
+builds it in the order the sketch insists on — connector, then `sqlguard`, then
+the aggregation gate, then the actor, and **not** the actor before both gates
+exist.
+
+### How a model analyses data it never sees
+
+It doesn't. It chooses what to ask and reads what comes back; the computation is
+deterministic SQL.
+
+```
+schema  →  a hypothesis template          (the model picks; §12.3 forbids it authoring SQL)
+        →  read-only query
+        →  AggregateEnvelope              n, quantiles, moments, TopK, test results
+        →  the model writes the claim     "weekly seasonality in requests_per_hour,
+                                           p<0.01, stable across 3 holdout windows"
+```
+
+The model sees column names, a test name, a p-value and an n. Never a row. This
+is also more honest than letting a model read rows: a model shown five hundred
+rows will describe a trend that isn't there, and here the trend is computed
+before it is phrased — the same division of labour §11.3 already uses for
+confidence.
+
+### Choices behind this milestone
+
+**SQLite, not DuckDB.** §10.2 picks DuckDB because it "embeds in the binary" —
+but its Go driver bundles a C++ library and needs cgo, and mole builds
+`CGO_ENABLED=0` precisely so it stays one static binary. The pure-Go SQLite
+driver is already a dependency. The cost is real and worth stating: no Parquet,
+and no built-in quantile or regression aggregates.
+
+**A container runtime is never required to run mole.** The sandbox exists for
+`CodeRunner`, which executes model-authored Python against real data. Without
+podman or docker present, SQL analysis is unaffected and only code analysis is
+unavailable — `doctor` reports which, the same way it reports a missing contact
+email. mole itself is always a plain binary.
+
+### `mole connect`
+
+```
+mole connect add sales ./exports/sales.csv     # one file
+mole connect add exports ./exports             # a folder — one table per file
+mole connect add warehouse ./warehouse.db      # attached in place, never copied
+mole connect schema exports
+mole connect list
+mole connect remove exports [--purge]
+```
+
+A folder is read **one level deep**. `.csv`, `.tsv`, `.jsonl` and `.ndjson`
+become one table each; anything else is ignored and the count is reported.
+Subdirectories are not followed — a research tool that walks into folders nobody
+meant to expose is the wrong shape for a privacy boundary.
+
+Registration is the only moment mole reads a row. What it keeps is a profile —
+type, null rate, distinct count, range — which is what §12.3's templates are
+planned against. Columns holding prose or personal identifiers are flagged and
+their values are never read at all, not even the min and max:
+
+```
+exports.jan — 3 row(s)  ← jan.csv
+  COLUMN     TYPE       NULLS  DISTINCT  RANGE
+  region     text       0      2         north … south
+  units      integer    0      3         4 … 10
+  revenue    real       0      3         220 … 1050
+  closed_at  timestamp  0      3         2024-01-05T00:00:00Z … 2024-01-22T00:00:00Z
+  rep_note   text       0      2         free text — excluded from top-values (§12.1)
+```
+
+### What `mode=ro` buys that `query_only` does not
+
+§12.2 asks for least privilege first. A local file has no roles to grant, so the
+equivalent is the handle: every query runs on a connection opened `mode=ro` with
+`query_only(1)`, and no writable connection to connector data is ever opened
+after import.
+
+The two flags are not equals, and the test that established it runs statements
+rather than inspecting the DSN. **`PRAGMA query_only = 0` succeeds** on the
+handle — the SQL-layer flag can be switched off by the very statements it exists
+to constrain, so alone it stops an accident and not an attempt. `mode=ro` refuses
+at the VFS layer, cannot be reached from SQL, and is what actually holds: a write
+still fails after that PRAGMA.
+
+Two things follow. `sqlguard` must reject `PRAGMA` outright rather than treating
+it as a harmless read-only verb. And any future engine whose read-only mode is
+merely a session setting needs a different control here, because a settable flag
+is not least privilege.

@@ -119,6 +119,7 @@ func newRootCmd() *cobra.Command {
 		newServeCmd(),
 		newEvalCmd(),
 		newCorpusCmd(),
+		newConnectCmd(),
 		newPairsCmd(),
 		newMigrateCmd(),
 		newConfigCmd(),
