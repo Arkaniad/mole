@@ -6,6 +6,7 @@ require (
 	codeberg.org/readeck/go-readability/v2 v2.1.2
 	github.com/anthropics/anthropic-sdk-go v1.61.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/rqlite/sql v0.0.0-20260224021119-1b2524a41372
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
 	golang.org/x/net v0.41.0

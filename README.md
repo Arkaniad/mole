@@ -207,6 +207,7 @@ The role breakdown is a single `GROUP BY` over the ledger — the entire reason
 | `internal/daemon` | Unix socket listener, peer credential checks, graceful stop |
 | `internal/mcpserver` | The MCP tool surface the daemon speaks |
 | `internal/compute/connector` | Local data sources: intake, profiling, the read-only handle |
+| `internal/compute/sqlguard` | The parse gate — one SELECT, allowlisted functions (§12.2) |
 | `internal/eval` | Mechanical scorecard, citation re-verification |
 | `internal/config` | Config file and environment resolution |
 | `cmd/mole` | CLI: `research`, `ask`, `serve`, `eval`, `connect`, `stats`, `trace`, `sessions`, `doctor`, `config`, `migrate`, `dev` |
@@ -311,7 +312,7 @@ The suites that carry weight:
 | M5 | Executor pool | **done**, real-run speedup unmeasured |
 | M6 | AcademicActor | **done**, claim extraction unverified on a real model |
 | M7 | MCP daemon + stdio shim | **done** |
-| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | slice 0 (connector) **done** |
+| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | connector + `sqlguard` **done** |
 | M9 | Dataset mode | |
 
 ---
@@ -320,12 +321,15 @@ The suites that carry weight:
 
 Stated plainly rather than left to be discovered:
 
-- **M8 is one slice in: the connector, not the boundary.** `mole connect`
-  registers sources and hands out a handle that cannot write, and the profile it
-  records holds no free-text values. But nothing enforces §12.1 yet — there is no
-  `AggregateEnvelope`, no k-anonymity floor, no `sqlguard`, and no actor. The
-  privacy property is *not* in force; what exists is the least-privilege defence
-  §12.2 lists first, and the exfil regression test §14.3 asks for is slice 3.
+- **M8 has two of §12.2's four defences and none of §12.1.** The connector's
+  handle cannot write, and `sqlguard` refuses anything that is not a single
+  allowlisted SELECT. Missing: the row cap and statement timeout (§12.2's third
+  defence), the `AggregateEnvelope` and k-anonymity floor (§12.1), the exfil
+  regression test (§14.3), and the actor. **The privacy property is not in force
+  yet** — what exists are the gates it will be built on.
+- **`sqlguard` is not wired to anything.** Deliberate: §12 says the gates come
+  before the actor, so the guard exists and has no caller until slice 4 renders
+  the first template. Nothing today can reach a connector with SQL at all.
 - **Parquet is not readable.** SQLite cannot read it and no decoder is written,
   so a Parquet export has to be converted before `mole connect` will take it.
   Named because "point mole at my data folder" quietly skipping half a folder is
@@ -638,3 +642,53 @@ Two things follow. `sqlguard` must reject `PRAGMA` outright rather than treating
 it as a harmless read-only verb. And any future engine whose read-only mode is
 merely a session setting needs a different control here, because a settable flag
 is not least privilege.
+
+### The parse gate, and why half of it reads tokens
+
+`sqlguard` is §12.2's second defence: one statement, and it must be a `SELECT`.
+It checks two things by two different means, and the split was forced by what
+the parser actually does rather than chosen for tidiness.
+
+**Shape, from the parse tree.** Exactly one statement, and its type must be
+`*sql.SelectStatement`. An allowlist of one, not a list of banned types — a
+statement type added by a future parser version would otherwise be permitted by
+default, and a gate that fails open on a dependency upgrade is not a gate. This
+catches DDL, DML, `EXPLAIN`, `PRAGMA`, and `WITH … DELETE` (which parses as a
+delete, so the CTE buys nothing). `ATTACH` and `VACUUM` are keywords the parser
+has no statement type for, so they fail to parse at all.
+
+It uses `ParseStatements`, and the plural matters. `ParseStatement` returns the
+leading statement of `SELECT 1; DROP TABLE sales` **with no error** — a guard
+built on it would inspect the `SELECT`, approve, and hand the whole string
+including the `DROP` to the driver. One identifier apart in the API, and a test
+pins it.
+
+**Vocabulary, from the token stream.** Every identifier immediately followed by
+`(` must be on a function allowlist. This is not done over the AST because
+`sql.Walk` **does not descend into CTE bodies or subquery expressions** —
+measured. For
+
+```sql
+WITH m AS (SELECT readfile('/etc/passwd') FROM s) SELECT COUNT(*) FROM m
+```
+
+a Walk sees `COUNT` and the reference to `m`, and never sees `readfile` at all.
+An AST-based function check would have holes in precisely the places an escape
+hatch would be put. The token stream has no gaps — the scanner emits every
+token — so a rule expressed over tokens is complete by construction even though
+it understands no grammar.
+
+Adjacency is measured in tokens, not in source text, and that caught a hole in
+an earlier version of this guard: the scanner emits a comment as its own token,
+so `readfile/* nothing to see */('/etc/passwd')` put a `COMMENT` between the
+name and its parenthesis, and a check tracking the raw previous token decided it
+was not a call and permitted it.
+
+The allowlist is short and adding to it is one reviewable line. Denying the
+escape hatches by name instead would mean every function SQLite gains — and
+every extension a future build links in — is permitted until someone remembers
+to deny it. Absent on purpose: `load_extension`, `readfile`, `writefile`,
+`edit`, `fts3_tokenizer`, `hex`, `quote`, `randomblob`, `zeroblob`. Anything
+named `sqlite_*` or `pragma_*` is refused as a call *and* as a plain table
+reference — SQLite reserves that prefix, so no user table can collide with the
+rule.
