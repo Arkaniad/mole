@@ -46,6 +46,13 @@ type AcademicActor struct {
 	Fetch   fetch.Fetcher
 	Extract extract.Extractor
 
+	// Resolve places a paper the search providers could not: given a DOI it
+	// finds where the paper can legally be read. Nil disables it.
+	//
+	// Only ever consulted at escalation, and only for a paper with a DOI that
+	// neither provider gave a readable location for.
+	Resolve academic.Resolver
+
 	// Rank orders passages by relevance to a sub-question. See rankChunks for
 	// why it is injected rather than imported.
 	Rank func(question string, passages []string, n int) []int
@@ -157,14 +164,21 @@ func (a *AcademicActor) Run(ctx context.Context, lead core.Lead) (*Result, error
 		// cap exists so one verbose document cannot dominate the graph, and §11.3
 		// counts publishers, so one paper outvoting four corrupts confidence.
 		remaining := maxClaims - len(out.Claims)
-		if target := a.fullTextTarget(p); target != "" && remaining > 0 &&
-			shouldEscalate(lead.Query, out.Claims) {
-			extra, spent := a.readFullText(ctx, lead, p, target, miner, remaining, maxInput-used, res)
-			res.Claims = append(res.Claims, extra...)
-			used += spent
-			if used >= maxInput {
-				res.Truncated = true
-				break
+
+		// Gate BEFORE target, and the order is load-bearing now that
+		// fullTextTarget can make a request. Go evaluates && left to right, so
+		// asking for the target first would pay Unpaywall for every paper —
+		// including the majority whose abstract already answered the question,
+		// which is exactly the spend the ladder exists to avoid.
+		if remaining > 0 && shouldEscalate(lead.Query, out.Claims) {
+			if target := a.fullTextTarget(ctx, p); target != "" {
+				extra, spent := a.readFullText(ctx, lead, p, target, miner, remaining, maxInput-used, res)
+				res.Claims = append(res.Claims, extra...)
+				used += spent
+				if used >= maxInput {
+					res.Truncated = true
+					break
+				}
 			}
 		}
 	}
@@ -386,14 +400,36 @@ func contentTerms(q string) []string {
 // whether a paper has LaTeXML HTML, so the only way to find out is to ask — and
 // the ladder says ask only when escalating, which is here. A 404 costs one
 // guarded request and is the answer.
-func (a *AcademicActor) fullTextTarget(p academic.Paper) string {
+func (a *AcademicActor) fullTextTarget(ctx context.Context, p academic.Paper) string {
 	if u := strings.TrimSpace(p.HTMLURL); u != "" {
 		return u
 	}
 	if p.ArXivID != "" {
 		return academic.ArXivHTMLURL(p.ArXivID)
 	}
-	return ""
+
+	// Last resort, and a REQUEST — which is why this function is only ever
+	// called after the escalation gate has already said yes. Asking Unpaywall
+	// where a paper can be read is worth a rate-limited call when mole is about
+	// to read it, and worth nothing when it is not.
+	//
+	// The measured upside is small: over a 97-paper sweep, 46 papers had no DOI
+	// at all and Unpaywall was consulted for 28 unreadable ones without finding
+	// anything, so this places at most about 5%. It is here because an actor
+	// that designs in a resolver and never calls it is a capability that exists
+	// only in its comments.
+	if a.Resolve == nil || strings.TrimSpace(p.DOI) == "" {
+		return ""
+	}
+	resolved, err := a.Resolve.Resolve(ctx, p.DOI)
+	if err != nil {
+		// Not the lead's problem. Unpaywall not knowing a DOI, or being briefly
+		// unreachable, means this paper contributes its abstract and no more.
+		a.logger().DebugContext(ctx, "could not place a paper",
+			"doi", p.DOI, "err", err)
+		return ""
+	}
+	return strings.TrimSpace(resolved.HTMLURL)
 }
 
 // readFullText mines the passages of a paper's full text most relevant to the

@@ -507,6 +507,12 @@ mole dev academic-coverage testdata/corpus/contradictions.json --per-question 6
 **Measured, 2026-08-10** — 97 papers, 0 search failures, 3 DOIs Unpaywall could
 not resolve (counted, not dropped). Raw rows in `testdata/coverage/`.
 
+The same sweep sized Unpaywall's own contribution, which is smaller than §10.2
+suggests: 46 of the 97 papers carried no DOI at all, and of the 28 unreadable
+ones that did, Unpaywall placed none — so resolution is worth roughly 5%. The
+binding constraint on academic coverage is missing identifiers, not unresolved
+ones.
+
 | | html | pdf_only | closed |
 |---|---|---|---|
 | **all** | 38 (39%) | 48 (49%) | 11 (11%) |

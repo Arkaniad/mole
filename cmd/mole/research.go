@@ -780,6 +780,13 @@ func buildAcademicActor(cfg *config.Config, types []core.ActorType, web *actors.
 	if err != nil {
 		return nil, err
 	}
+	// A Resolver rather than a Provider: Unpaywall has no topical search, so it
+	// never appears in Providers. It places papers the other two found but could
+	// not give a readable location for.
+	unpaywall, err := academic.NewUnpaywall(acfg, nil, lim)
+	if err != nil {
+		return nil, err
+	}
 
 	return &actors.AcademicActor{
 		Providers: []academic.Provider{arxiv, pubmed},
@@ -792,6 +799,7 @@ func buildAcademicActor(cfg *config.Config, types []core.ActorType, web *actors.
 		// would be a second unmetered path to the same hosts.
 		Fetch:   web.Fetch,
 		Extract: web.Extract,
+		Resolve: unpaywall,
 		Rank:    rankPassages,
 	}, nil
 }

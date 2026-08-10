@@ -415,3 +415,166 @@ func TestTierOneRespectsTheClaimCap(t *testing.T) {
 		t.Fatalf("%d claims from one paper with MaxClaimsPerSource=3", len(res.Claims))
 	}
 }
+
+// fakeResolver records what it was asked to place.
+type fakeResolver struct {
+	htmlURL string
+	err     error
+	asked   []string
+}
+
+func (f *fakeResolver) Kind() academic.Kind { return academic.KindUnpaywall }
+func (f *fakeResolver) Resolve(_ context.Context, id string) (*academic.Paper, error) {
+	f.asked = append(f.asked, id)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &academic.Paper{DOI: id, HTMLURL: f.htmlURL}, nil
+}
+
+// pdfOnlyPaper has a DOI and no readable location — the only shape Unpaywall
+// can help with.
+func pdfOnlyPaper(quote string) academic.Paper {
+	p := paper("A paper", "10.1234/needs-placing", "Abstract with "+quote+" inside.",
+		at(2025, time.January, 1))
+	p.PDFURL = "https://publisher.example/paper.pdf"
+	p.HTMLURL = ""
+	p.ArXivID = ""
+	return p
+}
+
+// TestTheResolverIsNotConsultedWhenTheAbstractAnswered is the ordering guard,
+// and the reason this is not a three-line change.
+//
+// fullTextTarget makes a rate-limited request now. Go evaluates && left to
+// right, so asking for the target before the escalation gate would pay Unpaywall
+// for every paper — including the majority whose abstract already answered,
+// which is precisely the spend the ladder exists to avoid.
+func TestTheResolverIsNotConsultedWhenTheAbstractAnswered(t *testing.T) {
+	const quote = "the trial enrolled two hundred and forty adults in total"
+	prov := &fakeAcademic{kind: academic.KindPubMed, papers: []academic.Paper{pdfOnlyPaper(quote)}}
+	res := &fakeResolver{htmlURL: "https://pmc.ncbi.nlm.nih.gov/articles/PMC9/"}
+
+	// The question's terms are all present in the mined claim, so the gate says
+	// "answered" and nothing should escalate.
+	a, _ := newAcademic(t, []academic.Provider{prov}, mineOne(quote))
+	a.Resolve = res
+
+	out, err := a.Run(context.Background(), core.Lead{
+		ID: "l1", Query: "trial enrolled adults total",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Claims) == 0 {
+		t.Fatal("no claims, so the gate was never reached")
+	}
+	if len(res.asked) != 0 {
+		t.Fatalf("Unpaywall was consulted %d time(s) for a paper whose abstract "+
+			"answered the question: %v", len(res.asked), res.asked)
+	}
+}
+
+// TestTheResolverPlacesAPaperTheProvidersCouldNot.
+func TestTheResolverPlacesAPaperTheProvidersCouldNot(t *testing.T) {
+	const (
+		abstractQuote = "an abstract concerning something altogether different"
+		bodyQuote     = "the sample size was two hundred and forty adults"
+	)
+	prov := &fakeAcademic{kind: academic.KindPubMed, papers: []academic.Paper{pdfOnlyPaper(abstractQuote)}}
+	placed := "https://pmc.ncbi.nlm.nih.gov/articles/PMC9/"
+	res := &fakeResolver{htmlURL: placed}
+
+	a, _ := newAcademic(t, []academic.Provider{prov}, func(prompt string) string {
+		for _, q := range []string{bodyQuote, abstractQuote} {
+			if strings.Contains(prompt, q) {
+				out, _ := json.Marshal(map[string]any{"claims": []map[string]any{{
+					"text": "A claim.", "quote": q, "confidence": 0.9,
+				}}})
+				return string(out)
+			}
+		}
+		return `{"claims":[]}`
+	})
+	a.Resolve = res
+
+	var fetched string
+	a.Fetch = fetcherFunc(func(_ context.Context, u string) (*fetch.Result, error) {
+		fetched = u
+		body := strings.Repeat("Filler prose. ", 60) + bodyQuote + ". " + strings.Repeat("Filler. ", 60)
+		return &fetch.Result{URL: u, Outcome: fetch.OutcomeOK, StatusCode: 200,
+			ContentType: "text/html",
+			Content:     []byte("<html><body><article><p>" + body + "</p></article></body></html>")}, nil
+	})
+	a.Extract = extract.New()
+
+	out, err := a.Run(context.Background(), core.Lead{ID: "l1", Query: "what sample size did it enrol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.asked) != 1 || res.asked[0] != "10.1234/needs-placing" {
+		t.Fatalf("resolver asked %v, want the paper's DOI once", res.asked)
+	}
+	if fetched != placed {
+		t.Fatalf("fetched %q, want the placed location %q", fetched, placed)
+	}
+	var fromBody bool
+	for _, c := range out.Claims {
+		if c.Quote == bodyQuote {
+			fromBody = true
+			if c.Source != placed {
+				t.Errorf("claim cites %q, want the URL it was read from %q", c.Source, placed)
+			}
+		}
+	}
+	if !fromBody {
+		t.Fatal("no claim came from the placed full text")
+	}
+}
+
+// TestAResolveFailureCostsTheEscalationNotTheLead. Unpaywall not knowing a DOI,
+// or being briefly unreachable, means this paper contributes its abstract and no
+// more — it is not a reason to fail research that otherwise worked.
+func TestAResolveFailureCostsTheEscalationNotTheLead(t *testing.T) {
+	const quote = "an abstract about an unrelated matter entirely here"
+	prov := &fakeAcademic{kind: academic.KindPubMed, papers: []academic.Paper{pdfOnlyPaper(quote)}}
+	res := &fakeResolver{err: errors.New("unpaywall has no record")}
+
+	a, _ := newAcademic(t, []academic.Provider{prov}, mineOne(quote))
+	a.Resolve = res
+	a.Fetch = fetcherFunc(func(context.Context, string) (*fetch.Result, error) {
+		t.Error("a fetch was attempted after the resolve failed")
+		return nil, errors.New("should not be reached")
+	})
+
+	out, err := a.Run(context.Background(), core.Lead{ID: "l1", Query: "cardiovascular mortality dosage"})
+	if err != nil {
+		t.Fatalf("a resolve failure failed the lead: %v", err)
+	}
+	if len(out.Claims) != 1 {
+		t.Fatalf("%d claims, want the abstract's 1", len(out.Claims))
+	}
+	if len(res.asked) != 1 {
+		t.Fatalf("resolver asked %d times, want 1", len(res.asked))
+	}
+}
+
+// TestAPaperWithNoDOIIsNeverResolved. 46 of 97 papers in the coverage sweep had
+// no DOI; spending a request to discover that is the cost of not checking.
+func TestAPaperWithNoDOIIsNeverResolved(t *testing.T) {
+	const quote = "an abstract about an unrelated matter entirely here"
+	p := pdfOnlyPaper(quote)
+	p.DOI = ""
+	prov := &fakeAcademic{kind: academic.KindPubMed, papers: []academic.Paper{p}}
+	res := &fakeResolver{htmlURL: "https://pmc.ncbi.nlm.nih.gov/articles/PMC9/"}
+
+	a, _ := newAcademic(t, []academic.Provider{prov}, mineOne(quote))
+	a.Resolve = res
+
+	if _, err := a.Run(context.Background(), core.Lead{ID: "l1", Query: "cardiovascular mortality dosage"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.asked) != 0 {
+		t.Fatalf("resolver was asked %v for a paper with no DOI", res.asked)
+	}
+}

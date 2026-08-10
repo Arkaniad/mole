@@ -1,8 +1,15 @@
 // Package academic is the provider boundary for scholarly sources (§10.2).
 //
 // arXiv and PubMed/PMC are the keyless defaults; Unpaywall turns a DOI into a
-// legal open-access copy, which §10.2 calls the single highest-leverage call in
-// the package. Semantic Scholar and OpenAlex are deliberately absent — they
+// legal open-access copy.
+//
+// §10.2 calls Unpaywall "the single highest-leverage call in the package", and
+// measurement does not bear that out for how mole uses it. Over a 97-paper sweep
+// of the contradiction corpus, 46 papers carried no DOI at all, and of the 28
+// unreadable ones that did, Unpaywall placed none — leaving it worth about 5%.
+// The binding constraint on academic coverage is missing identifiers, not
+// unresolved ones. It is kept because that 5% is real and because a DOI is what
+// the other providers hand around; the claim about leverage is not. Semantic Scholar and OpenAlex are deliberately absent — they
 // serve citation-graph queries, which is a different capability from finding
 // papers about a question. So is ScienceDirect/Elsevier, for a harder reason:
 // full text there needs an institutional entitlement the API does not grant.
