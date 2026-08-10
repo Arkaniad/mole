@@ -48,6 +48,24 @@ type coverageOpts struct {
 	probeHTML   bool
 	asJSON      bool
 	timeout     time.Duration
+
+	// agent identifies this command's own requests. Derived, not a flag.
+	agent string
+}
+
+// paperKey identifies a paper across providers and questions. DOI first, for the
+// reason internal/actors uses the same order.
+func paperKey(p academic.Paper) string {
+	switch {
+	case strings.TrimSpace(p.DOI) != "":
+		return "doi:" + strings.ToLower(strings.TrimSpace(p.DOI))
+	case strings.TrimSpace(p.ArXivID) != "":
+		return "arxiv:" + strings.TrimSpace(p.ArXivID)
+	case strings.TrimSpace(p.PMID) != "":
+		return "pmid:" + strings.TrimSpace(p.PMID)
+	default:
+		return strings.ToLower(strings.Join(strings.Fields(p.Title), " "))
+	}
 }
 
 func newCoverageCmd() *cobra.Command {
@@ -101,6 +119,13 @@ type coverageReport struct {
 	SearchErrors  int `json:"search_errors"`
 	ResolveErrors int `json:"resolve_errors"`
 	ProbeErrors   int `json:"probe_errors"`
+	// Duplicates counts papers seen more than once across providers and
+	// questions, skipped rather than counted twice.
+	Duplicates int `json:"duplicates"`
+
+	// Incomplete is set when the sweep did not finish. A truncated run must not
+	// read as a complete one — this command is a decision gate.
+	Incomplete string `json:"incomplete,omitempty"`
 
 	Rows []coverageRow `json:"rows,omitempty"`
 }
@@ -150,8 +175,21 @@ func cmdCoverage(ctx context.Context, corpusPath string, o coverageOpts) error {
 		ByEra:     map[string]map[string]int{},
 	}
 	client := &http.Client{Timeout: 20 * time.Second}
+	o.agent = fmt.Sprintf("mole (+contact: %s)", strings.TrimSpace(cfg.ContactEmail))
+	seen := map[string]bool{}
 
 	for i, q := range corpus.Questions {
+		// Stop rather than grinding out context errors for every remaining
+		// question. Without this the deadline firing at question 3 of 50 left
+		// each of the other 47 counted as a search failure and continued, and
+		// the run still ended with "Only pdf_only is a PDF extractor's job: X of
+		// Y" and exit status 0 — a truncated sweep indistinguishable from a
+		// complete one, for the command that is meant to be a decision gate.
+		if err := ctx.Err(); err != nil {
+			rep.Incomplete = fmt.Sprintf("stopped after %d of %d question(s): %v",
+				i, len(corpus.Questions), err)
+			break
+		}
 		if !o.asJSON {
 			fmt.Printf("[%d/%d] %s\n", i+1, len(corpus.Questions), q.Question)
 		}
@@ -165,6 +203,16 @@ func cmdCoverage(ctx context.Context, corpusPath string, o coverageOpts) error {
 				continue
 			}
 			for _, p := range res.Papers {
+				// Deduped for the reason the actor dedupes: the same paper is
+				// routinely on both providers and can match several questions,
+				// and rep.Papers is len(rep.Rows) — so a duplicate counted twice
+				// in whichever bucket it landed in and moved the percentages.
+				key := paperKey(p)
+				if key == "" || seen[key] {
+					rep.Duplicates++
+					continue
+				}
+				seen[key] = true
 				rep.Rows = append(rep.Rows, classify(ctx, p, unpaywall, lim, client, o, rep))
 			}
 		}
@@ -177,6 +225,10 @@ func cmdCoverage(ctx context.Context, corpusPath string, o coverageOpts) error {
 		return enc.Encode(rep)
 	}
 	printCoverage(rep)
+	if rep.Incomplete != "" {
+		// Non-zero, so a script cannot mistake a truncated sweep for a verdict.
+		return errors.New(rep.Incomplete)
+	}
 	return nil
 }
 
@@ -216,7 +268,7 @@ func classify(
 	// make arXiv look unreadable.
 	if p.ArXivID != "" && o.probeHTML {
 		if htmlURL := academic.ArXivHTMLURL(p.ArXivID); htmlURL != "" {
-			ok, err := headOK(ctx, client, lim, htmlURL)
+			ok, err := headOK(ctx, client, lim, o.agent, htmlURL)
 			switch {
 			case err != nil:
 				rep.ProbeErrors++
@@ -228,7 +280,16 @@ func classify(
 		}
 	}
 
-	// Unpaywall is the last word on where a DOI can legally be read.
+	// Unpaywall can UPGRADE a paper's readability, never downgrade it.
+	//
+	// Its verdict is built from its own record alone, so an arXiv paper with a
+	// journal DOI that Unpaywall has as is_oa false was filed "closed" — while
+	// its PDF sits openly on arXiv, which the provider already told us. That
+	// moves papers out of pdf_only, the one bucket this command exists to size,
+	// in the direction of "we don't need a parser". The comment on pickLocations
+	// warns about the opposite bias from best_oa_location; this is the same
+	// mistake from the other side.
+	known := p.FullTextFormat()
 	if p.DOI != "" {
 		resolved, err := unpaywall.Resolve(ctx, p.DOI)
 		switch {
@@ -237,18 +298,34 @@ func classify(
 			row.Resolved = false
 			row.Note = strings.TrimPrefix(err.Error(), "academic: ")
 		default:
-			row.Format = string(resolved.FullTextFormat())
-			return row
+			if better(resolved.FullTextFormat(), known) {
+				known = resolved.FullTextFormat()
+			}
 		}
 	}
-
-	if row.Format == "" {
-		row.Format = string(p.FullTextFormat())
-	}
+	row.Format = string(known)
 	return row
 }
 
-func headOK(ctx context.Context, client *http.Client, lim *limiter.Limiter, rawURL string) (bool, error) {
+// better reports whether a is a more readable verdict than b.
+//
+// html beats pdf_only beats closed. An ordering rather than a bare comparison
+// because "which of these two verdicts do I keep" is the actual question, and
+// writing it as an if-chain at the call site is how the downgrade got in.
+func better(a, b academic.FullTextFormat) bool { return readability(a) > readability(b) }
+
+func readability(f academic.FullTextFormat) int {
+	switch f {
+	case academic.FormatHTML:
+		return 2
+	case academic.FormatPDFOnly:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func headOK(ctx context.Context, client *http.Client, lim *limiter.Limiter, agent, rawURL string) (bool, error) {
 	if err := lim.Wait(ctx, "arxiv.org"); err != nil {
 		return false, err
 	}
@@ -256,7 +333,11 @@ func headOK(ctx context.Context, client *http.Client, lim *limiter.Limiter, rawU
 	if err != nil {
 		return false, err
 	}
-	req.Header.Set("User-Agent", "mole coverage probe")
+	// Identified, like every other request this milestone makes. This is the
+	// highest-VOLUME path in M6 — up to a few hundred requests to arxiv.org, a
+	// service run by a library — and it was the one with no contact address, no
+	// version and no way for an operator to reach anyone or block selectively.
+	req.Header.Set("User-Agent", agent)
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, err
@@ -332,6 +413,12 @@ func printCoverage(rep *coverageReport) {
 		rep.SearchErrors, rep.ResolveErrors, rep.ProbeErrors)
 	if rep.SearchErrors+rep.ResolveErrors+rep.ProbeErrors > 0 {
 		fmt.Println("  counted, not dropped — a failure is not evidence that a paper is unreadable")
+	}
+	if rep.Duplicates > 0 {
+		fmt.Printf("  %d duplicate paper(s) skipped\n", rep.Duplicates)
+	}
+	if rep.Incomplete != "" {
+		fmt.Printf("\nINCOMPLETE — %s\nThe percentages below cover only what ran.\n", rep.Incomplete)
 	}
 	fmt.Printf("\nOnly pdf_only is a PDF extractor's job: %d of %d (%s).\n",
 		rep.ByFormat["pdf_only"], rep.Papers, sharePct(rep.ByFormat["pdf_only"], rep.Papers))
