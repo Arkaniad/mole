@@ -2,6 +2,7 @@ package actors
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -63,6 +64,16 @@ func (a *WebActor) Run(ctx context.Context, lead core.Lead) (*Result, error) {
 	}
 	budget = budget.withDefaults()
 	res := &Result{}
+
+	if a.Search == nil {
+		// Reachable since M8: a local-only session does not require a search
+		// provider, so the web actor is built without one and registered
+		// anyway. No lead should be typed for it — the planner distributes
+		// across the session's actors — and if one is, this says so instead of
+		// dereferencing nil three lines below.
+		return res, errors.New("actors/web: no search provider is configured, so this " +
+			"session cannot research the web")
+	}
 
 	// 1. Search.
 	sr, err := a.Search.Search(ctx, lead.Query, search.Options{

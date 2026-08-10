@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/lajosdeme/mole/internal/actors"
+	"github.com/lajosdeme/mole/internal/compute/connector"
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/executor"
@@ -110,7 +112,8 @@ func newResearchCmd() *cobra.Command {
 	f.StringVar(&o.mode, "mode", string(core.ModeReport), "session mode")
 	f.IntVar(&o.maxSources, "max-sources", 5, "sources to read per lead")
 	f.StringVar(&o.actorList, "actors", "web",
-		"comma-separated actors to use: web, academic (academic needs contact-email)")
+		"comma-separated actors: web, academic, local_compute "+
+			"(academic needs contact-email; local_compute needs `mole connect add`)")
 	f.IntVar(&o.workers, "workers", executor.DefaultWorkers,
 		"leads to run at once; 1 is required when recording or replaying a cassette")
 	f.DurationVar(&o.timeout, "timeout", 5*time.Minute, "wall-clock ceiling for the whole session")
@@ -179,7 +182,13 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 
 	// Build the actor before touching the database. A missing search key should
 	// fail in under a second, not after creating a session that can never run.
-	actor, err := buildWebActor(cfg, rec, o.maxSources, o.alwaysFetch, o.quiet)
+	// A local-only session must not require a web search provider: the point of
+	// §12 is data that does not leave the machine, and demanding a Brave or
+	// Tavily key to analyse a CSV is the opposite of that. The actor is still
+	// built — it carries the model, the pricing table and the logger the other
+	// actors borrow — just without a provider it will never use.
+	actor, err := buildWebActor(cfg, rec, o.maxSources, o.alwaysFetch, o.quiet,
+		slices.Contains(actorTypes, core.ActorWeb))
 	if err != nil {
 		return err
 	}
@@ -210,11 +219,16 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	if err != nil {
 		return err
 	}
+	localActor, err := buildLocalActor(cfg, actorTypes, o, actor)
+	if err != nil {
+		return err
+	}
 
 	runner := &session.Runner{
 		Store:             db,
 		Actor:             actor,
 		Academic:          academicActor,
+		Local:             localActor,
 		VerifierModel:     cfg.LLM.VerifierModel,
 		VerifierBatchSize: cfg.LLM.VerifierBatchSize,
 		Owner:             "cli",
@@ -324,21 +338,27 @@ func maxLeadsFor(o researchOpts) int {
 	return planner.DefaultMaxInitialLeads + depth*planner.DefaultMaxNewLeadsPerReplan + 2
 }
 
-func buildWebActor(cfg *config.Config, rec *record.Recorder, maxSources int, alwaysFetch, quiet bool) (*actors.WebActor, error) {
-	if cfg.Search.Provider == "" {
-		return nil, errors.New("no search provider selected (run: mole config set search.provider brave|tavily)")
-	}
-	if cfg.Search.ActiveKey() == "" {
-		return nil, fmt.Errorf("no API key for %s (run: mole config set search.%s-key ...)",
-			cfg.Search.Provider, cfg.Search.Provider)
-	}
-	provider, err := search.New(search.Config{
-		Provider:           search.Kind(cfg.Search.Provider),
-		APIKey:             cfg.Search.ActiveKey(),
-		CostPerQueryMicros: cfg.Search.CostPerQueryMicros,
-	}, rec.Client())
-	if err != nil {
-		return nil, err
+func buildWebActor(
+	cfg *config.Config, rec *record.Recorder, maxSources int, alwaysFetch, quiet, needSearch bool,
+) (*actors.WebActor, error) {
+	var provider search.Provider
+	if needSearch {
+		if cfg.Search.Provider == "" {
+			return nil, errors.New("no search provider selected (run: mole config set search.provider brave|tavily)")
+		}
+		if cfg.Search.ActiveKey() == "" {
+			return nil, fmt.Errorf("no API key for %s (run: mole config set search.%s-key ...)",
+				cfg.Search.Provider, cfg.Search.Provider)
+		}
+		p, err := search.New(search.Config{
+			Provider:           search.Kind(cfg.Search.Provider),
+			APIKey:             cfg.Search.ActiveKey(),
+			CostPerQueryMicros: cfg.Search.CostPerQueryMicros,
+		}, rec.Client())
+		if err != nil {
+			return nil, err
+		}
+		provider = p
 	}
 
 	model, _, err := buildLLMWithClient(cfg, rec.Client())
@@ -742,9 +762,9 @@ func parseActorTypes(raw string) ([]core.ActorType, error) {
 			continue
 		}
 		switch t {
-		case core.ActorWeb, core.ActorAcademic:
+		case core.ActorWeb, core.ActorAcademic, core.ActorLocalCompute:
 		default:
-			return nil, fmt.Errorf("unknown actor %q (want web or academic)", t)
+			return nil, fmt.Errorf("unknown actor %q (want web, academic or local_compute)", t)
 		}
 		if !seen[t] {
 			seen[t] = true
@@ -755,6 +775,35 @@ func parseActorTypes(raw string) ([]core.ActorType, error) {
 		out = []core.ActorType{core.ActorWeb}
 	}
 	return out, nil
+}
+
+// buildLocalActor wires the connector registry into the LocalComputeActor.
+//
+// It refuses when nothing is registered rather than starting a session whose
+// local leads would each report "no local data". §12's actor with no connector
+// is not a degraded run, it is a misconfiguration, and the executor treats a
+// missing actor as fatal — so the refusal has to happen here.
+func buildLocalActor(
+	cfg *config.Config, types []core.ActorType, o researchOpts, web *actors.WebActor,
+) (*actors.LocalComputeActor, error) {
+	if !slices.Contains(types, core.ActorLocalCompute) {
+		return nil, nil
+	}
+	reg, err := connector.LoadRegistry(connectorRegistryPath(o.dbPath))
+	if err != nil {
+		return nil, err
+	}
+	if len(reg.List()) == 0 {
+		return nil, fmt.Errorf("--actors local_compute needs registered data; " +
+			"add some with: mole connect add <name> <path>")
+	}
+	return &actors.LocalComputeActor{
+		Connectors: reg,
+		LLM:        web.LLM,
+		Pricing:    web.Pricing,
+		Log:        web.Log,
+		Budget:     web.Budget,
+	}, nil
 }
 
 // buildAcademicActor constructs the academic providers, or refuses.

@@ -108,7 +108,11 @@ func cmdServe(ctx context.Context, o serveOpts) error {
 
 	// Built before the socket exists. A missing search key should fail in under a
 	// second, not after advertising a daemon that cannot run anything.
-	actor, err := buildWebActor(cfg, nil, defaultServeMaxSources, false, true)
+	// needSearch is true here and not conditional: the daemon has no --actors
+	// flag (see the README's known gaps), so every session it runs is a web
+	// session and a missing key should fail before the socket exists rather
+	// than on the first request.
+	actor, err := buildWebActor(cfg, nil, defaultServeMaxSources, false, true, true)
 	if err != nil {
 		return err
 	}

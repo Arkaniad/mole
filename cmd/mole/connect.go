@@ -37,7 +37,15 @@ func newConnectCmd() *cobra.Command {
 // registryPath and scratchPath sit beside the session database, so --db keeps
 // a test or a second install fully separate rather than half of it.
 func registryPath(cmd *cobra.Command) string {
-	return filepath.Join(filepath.Dir(dbPath(cmd)), "connectors.json")
+	return connectorRegistryPath(dbPath(cmd))
+}
+
+// connectorRegistryPath is the same rule without a cobra command, for the
+// research path — which has the database path and not the flag set it came
+// from. One function, so a session and `mole connect list` cannot disagree
+// about which registry they are reading.
+func connectorRegistryPath(db string) string {
+	return filepath.Join(filepath.Dir(db), "connectors.json")
 }
 
 func scratchPath(cmd *cobra.Command, name string) string {

@@ -114,6 +114,11 @@ type Runner struct {
 	// it, so the academic path is CLI-only today.
 	Academic *actors.AcademicActor
 
+	// Local answers leads from the user's own registered data (§12). Nil
+	// disables the actor, which is the state of any install where nobody has
+	// run `mole connect add`.
+	Local *actors.LocalComputeActor
+
 	// Owner names what is running the loop, for lead leases (§9.4). A daemon and
 	// a CLI must not claim each other's leads.
 	Owner string
@@ -533,6 +538,11 @@ func actorTypesOf(spec Spec) []core.ActorType {
 func (r *Runner) actorsFor(spec Spec, web *actors.WebActor) map[core.ActorType]actors.Actor {
 	out := map[core.ActorType]actors.Actor{core.ActorWeb: web}
 	for _, t := range spec.ActorTypes {
+		if t == core.ActorLocalCompute && r.Local != nil {
+			local := *r.Local
+			out[core.ActorLocalCompute] = &local
+			continue
+		}
 		if t == core.ActorAcademic && r.Academic != nil {
 			// One per session, like the web actor: SessionID scopes the claims
 			// it writes, so a shared instance would attribute one session's

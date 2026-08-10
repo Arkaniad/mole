@@ -209,6 +209,7 @@ The role breakdown is a single `GROUP BY` over the ledger — the entire reason
 | `internal/compute/connector` | Local data sources: intake, profiling, the read-only handle |
 | `internal/compute/sqlguard` | The parse gate — one SELECT, allowlisted functions (§12.2) |
 | `internal/compute/gate` | The aggregation gate — the only path from data to a model (§12.1) |
+| `internal/compute/hypothesis` | Templates: the only SQL that reaches a connector (§12.3) |
 | `internal/eval` | Mechanical scorecard, citation re-verification |
 | `internal/config` | Config file and environment resolution |
 | `cmd/mole` | CLI: `research`, `ask`, `serve`, `eval`, `connect`, `stats`, `trace`, `sessions`, `doctor`, `config`, `migrate`, `dev` |
@@ -313,7 +314,7 @@ The suites that carry weight:
 | M5 | Executor pool | **done**, real-run speedup unmeasured |
 | M6 | AcademicActor | **done**, claim extraction unverified on a real model |
 | M7 | MCP daemon + stdio shim | **done** |
-| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | gates + exfil check **done**, actor open |
+| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | **done**, planning unverified on a capable model |
 | M9 | Dataset mode | |
 
 ---
@@ -322,12 +323,16 @@ The suites that carry weight:
 
 Stated plainly rather than left to be discovered:
 
-- **M8's gates are built; the actor is not.** All four of §12.2's defences hold
-  for the file engine — read-only handle, parse gate, row cap and statement
-  timeout — and §12.1's envelope, k-anonymity floor and free-text exclusion are
-  enforced. What is missing is the thing that would use them: no template
-  renders SQL, no actor runs a lead, and no claim cites a connector. Nothing in
-  mole can reach a connector with a query today.
+- **M8's hypothesis planning is unverified against a capable model.** The actor
+  runs end to end — a live local-only session planned, queued three local leads,
+  called the model for each and reconciled its ledger — but every planning call
+  failed to parse, because the only reachable model is the same 3B local one
+  that blocks M6. It returned a doubly-wrapped JSON array. So the pipeline is
+  verified and the model's half of §12.3 is not. Same blocker, same fix: credit.
+- **The statistical-validity verifier does not exist.** §4's table says local
+  claims are checked on n, effect size, significance and holdout stability. They
+  are currently checked exactly as web claims are — quote verification and the
+  claim graph — which is real but is not what that row promises.
 - **The exfil metric is enforced, not scored.** §14.3 lists it as a number to
   report per session; it is instead an invariant at the gate, checked before
   every envelope is returned. `mole eval` names it `blocked` with that reason,
@@ -791,3 +796,44 @@ from the rows the gate was allowed to describe, **not** from the envelope — an
 earlier version read it out of the envelope's own bucket keys and ranges, which
 meant a leaked value authorised itself. Both positive controls failed, which is
 what positive controls are for.
+
+### The actor: what a model decides, and what it cannot touch
+
+```
+profile  →  the model picks a template and columns   §12.3 — it cannot author SQL
+         →  hypothesis.Render turns that into SQL     identifiers come from the profile
+         →  sqlguard, then the aggregation gate       §12.2, §12.1
+         →  the model mines claims from the envelope  §11.5 quote check, unchanged
+```
+
+The middle two steps are deterministic. What the model influences is which
+question gets asked; what it never touches is the data, the statement, or
+whether the answer may cross.
+
+**Why lookup and not escaping.** §12.3 says web-derived content "can influence
+template and column choice; it cannot author SQL". The model returns a template
+name and column names, and those names are used as **lookup keys against the
+connector's profile** — never spliced into a statement. A column called
+`region" ); DROP TABLE tickets; --` does not match a column, so the plan is
+refused. Escaping would make a hostile name safe to interpolate; lookup makes it
+impossible to interpolate anything that is not already a column of a registered
+table. That is a stronger claim and a simpler one, and it is what the injection
+tests exercise.
+
+**A local claim is cited and quoted like any other.** Its source is
+`connector:<name>#<query hash>` — §4's "connector name + query hash" — and its
+quote must appear verbatim in the rendered envelope. So §11.5 applies unchanged:
+the envelope is the document, the numbers are the text, and a model that writes
+"revenue fell 40%" without those words in front of it has the claim dropped
+exactly as a fabricated web quote would be.
+
+**A local-only session no longer needs a web search provider.** It used to:
+the web actor was built unconditionally and refused without a Brave or Tavily
+key, so analysing a CSV required an account with a search company — the precise
+opposite of what §12 is for. Search is now required only when `web` is among
+`--actors`.
+
+```
+mole connect add sales ./exports/sales.csv
+mole research "how do the regions compare on revenue" --actors local_compute
+```
