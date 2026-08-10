@@ -75,6 +75,16 @@ func (a *AcademicActor) Run(ctx context.Context, lead core.Lead) (*Result, error
 	if maxClaims <= 0 {
 		maxClaims = 8
 	}
+	// Defaulted, not left at zero. The token guard below is written as
+	// "MaxInputTokens > 0 && ...", so a zero made it a no-op — and zero is
+	// reachable: the executor's sub-budget returns an empty Budget whenever the
+	// reservation prices to nothing, which is exactly the unpriced-model case.
+	// A web lead gets 60k from Budget.withDefaults; an academic lead had no
+	// ceiling at all.
+	maxInput := budget.MaxInputTokens
+	if maxInput <= 0 {
+		maxInput = defaultAcademicInputTokens
+	}
 
 	res := &Result{}
 	if len(a.Providers) == 0 {
@@ -105,11 +115,10 @@ func (a *AcademicActor) Run(ctx context.Context, lead core.Lead) (*Result, error
 		// The sub-budget is a ceiling on input tokens, and an abstract is small
 		// enough that the estimate can be crude: stopping before the ceiling
 		// costs a paper, exceeding it costs the reservation.
-		if budget.MaxInputTokens > 0 && used+llm.EstimateTokens(len(abstract)) > budget.MaxInputTokens {
+		if used+llm.EstimateTokens(len(abstract)) > maxInput {
 			res.Truncated = true
 			break
 		}
-		used += llm.EstimateTokens(len(abstract))
 
 		out, err := miner.Mine(ctx, MineInput{
 			Lead:      lead,
@@ -125,6 +134,12 @@ func (a *AcademicActor) Run(ctx context.Context, lead core.Lead) (*Result, error
 		}
 		res.Stats.ClaimsProposed += out.Proposed
 		res.Stats.ClaimsRejected += out.Rejected
+		// ACTUAL usage, not the estimate. WebActor accumulates what the provider
+		// reported for the same reason: the prompt is not free — system text,
+		// fencing and the question come to roughly as many tokens as a whole
+		// abstract — so counting the source text alone undercounted real input
+		// by about half.
+		used += out.Usage.InputTokens + out.Usage.CacheReadTokens
 		if err != nil {
 			a.logger().WarnContext(ctx, "mining an abstract failed",
 				"source", citationURL(p), "err", err)
@@ -133,10 +148,24 @@ func (a *AcademicActor) Run(ctx context.Context, lead core.Lead) (*Result, error
 		res.Stats.Chunks++
 		res.Claims = append(res.Claims, out.Claims...)
 
-		// Tier 1. Only for a paper whose full text is known readable, and only
-		// when the abstract did not answer the question — see shouldEscalate.
-		if p.FullTextFormat() == academic.FormatHTML && shouldEscalate(lead.Query, out.Claims) {
-			res.Claims = append(res.Claims, a.readFullText(ctx, lead, p, miner, maxClaims, res)...)
+		// Tier 1, and only when the abstract did not answer the question.
+		//
+		// The claim cap is what REMAINS for this paper, not the full allowance
+		// again. Applying it per call let one paper contribute maxClaims from its
+		// abstract and maxClaims from every escalated chunk — four times its
+		// share at the default. WebActor decrements for exactly this reason: the
+		// cap exists so one verbose document cannot dominate the graph, and §11.3
+		// counts publishers, so one paper outvoting four corrupts confidence.
+		remaining := maxClaims - len(out.Claims)
+		if target := a.fullTextTarget(p); target != "" && remaining > 0 &&
+			shouldEscalate(lead.Query, out.Claims) {
+			extra, spent := a.readFullText(ctx, lead, p, target, miner, remaining, maxInput-used, res)
+			res.Claims = append(res.Claims, extra...)
+			used += spent
+			if used >= maxInput {
+				res.Truncated = true
+				break
+			}
 		}
 	}
 
@@ -277,6 +306,12 @@ func summarize(query string, papers []academic.Paper, claims int) string {
 // "one abstract" to "one whole paper" would give the saving straight back.
 const DefaultEscalationSections = 3
 
+// defaultAcademicInputTokens matches Budget.withDefaults' web ceiling.
+//
+// Unexported: it exists because AcademicActor.Run does not call withDefaults,
+// and a caller has no reason to reach for it.
+const defaultAcademicInputTokens = 60_000
+
 // shouldEscalate decides whether the abstract answered the sub-question.
 //
 // Mechanical, and deliberately so. Asking the model "did that answer it?" costs
@@ -345,50 +380,76 @@ func contentTerms(q string) []string {
 	return out
 }
 
-// readFullText fetches a paper's full text and mines the passages most relevant
-// to the lead.
+// fullTextTarget is the URL whose text mole can read for a paper, or "".
 //
-// Only ever called for a paper whose full text is KNOWN readable — PMC says so
-// from metadata, and arXiv HTML has been probed. A paper whose only copy is a
-// PDF is left alone and recorded, which is what turns the PDF question into a
-// number rather than an assumption (§10.4).
+// PMC is reported by the provider. arXiv is a CANDIDATE: its API never says
+// whether a paper has LaTeXML HTML, so the only way to find out is to ask — and
+// the ladder says ask only when escalating, which is here. A 404 costs one
+// guarded request and is the answer.
+func (a *AcademicActor) fullTextTarget(p academic.Paper) string {
+	if u := strings.TrimSpace(p.HTMLURL); u != "" {
+		return u
+	}
+	if p.ArXivID != "" {
+		return academic.ArXivHTMLURL(p.ArXivID)
+	}
+	return ""
+}
+
+// readFullText mines the passages of a paper's full text most relevant to the
+// lead, and reports what it spent.
+//
+// A paper whose only copy is a PDF never gets here — fullTextTarget returns ""
+// for it — so mole never fetches a PDF and never records unsupported_type from
+// this path. The PDF question is answered by `mole dev academic-coverage`, from
+// metadata, and NOT by outcome rows accumulating from live runs; an earlier
+// comment here claimed the latter and was wrong.
+//
+// Every fetch this function DOES attempt writes a §10.4 row, so the tier-1 path
+// has a denominator like every other fetch — which also puts academic sources in
+// reach of grounding's ProviderSupplied skip set.
 func (a *AcademicActor) readFullText(
 	ctx context.Context,
 	lead core.Lead,
 	p academic.Paper,
+	target string,
 	miner *Miner,
 	maxClaims int,
+	tokenBudget int64,
 	res *Result,
-) []core.Claim {
-	if a.Fetch == nil || a.Extract == nil || strings.TrimSpace(p.HTMLURL) == "" {
-		return nil
+) ([]core.Claim, int64) {
+	if a.Fetch == nil || a.Extract == nil || tokenBudget <= 0 {
+		return nil, 0
 	}
 
-	fetched, err := a.Fetch.Fetch(ctx, p.HTMLURL)
-	if err != nil || fetched == nil || !fetched.Outcome.Usable() {
-		outcome := fetch.OutcomeNetworkError
-		if fetched != nil {
-			outcome = fetched.Outcome
-		}
-		a.logger().DebugContext(ctx, "full text unavailable", "url", p.HTMLURL, "outcome", outcome)
+	fetched, err := a.Fetch.Fetch(ctx, target)
+	outcome := fetch.OutcomeNetworkError
+	status, bytes := 0, int64(0)
+	if fetched != nil {
+		outcome, status, bytes = fetched.Outcome, fetched.StatusCode, fetched.Bytes
+	}
+	if err != nil || fetched == nil || !outcome.Usable() {
+		a.recordOutcome(ctx, lead, target, outcome, status, bytes, errText(err))
 		res.Stats.ChunksFailed++
-		return nil
+		return nil, 0
 	}
 	res.Stats.Fetched++
 
-	pageURL, perr := url.Parse(p.HTMLURL)
+	pageURL, perr := url.Parse(target)
 	if perr != nil {
-		return nil
+		return nil, 0
 	}
 	doc, err := a.Extract.Extract(ctx, fetched.Content, fetched.ContentType, pageURL)
 	if err != nil || doc == nil || strings.TrimSpace(doc.Text) == "" {
+		a.recordOutcome(ctx, lead, target, fetch.OutcomeExtractFailed, status, bytes, errText(err))
 		res.Stats.ChunksFailed++
-		return nil
+		return nil, 0
 	}
+	a.recordOutcome(ctx, lead, target, outcome, status, bytes, "")
 
 	chunks := llm.Split(doc.Text, llm.ChunkOptions{MaxChars: 6000, OverlapChars: 200, MinChars: 400})
 	if len(chunks) == 0 {
-		return nil
+		return nil, 0
 	}
 
 	order := a.rankChunks(lead.Query, chunks)
@@ -396,20 +457,33 @@ func (a *AcademicActor) readFullText(
 		order = order[:DefaultEscalationSections]
 	}
 
-	var claims []core.Claim
+	var (
+		claims []core.Claim
+		spent  int64
+	)
 	for _, idx := range order {
 		chunk := chunks[idx]
+		if spent+llm.EstimateTokens(len(chunk.Text)) > tokenBudget {
+			res.Truncated = true
+			break
+		}
 		out, err := miner.Mine(ctx, MineInput{
 			Lead: lead,
-			// Cited as the paper, not as the full-text URL: a reader following
-			// a citation wants the paper, and PMC's article page is where the
-			// quote can be checked either way.
-			SourceURL:   citationURL(p),
+			// The URL the text was actually READ FROM, not the abstract page.
+			// Citing the PubMed landing page for a quote taken from the PMC full
+			// text made §11.5.2's grounding re-fetch a page the quote was never
+			// on and report "the quote is no longer present; the page has
+			// changed" — a manufactured mismatch — and eval scored it a citation
+			// mismatch, which sets Regression and fails the build.
+			SourceURL:   target,
 			Title:       p.Title,
 			PublishedAt: p.PublishedAt,
 			Text:        chunk.Text,
 			Offset:      chunk.Start,
-			MaxClaims:   maxClaims,
+			// Decremented, and the break below bounds it too. Either alone holds
+			// the cap; both are kept because this one also stops the model being
+			// asked for claims that would be thrown away.
+			MaxClaims: maxClaims - len(claims),
 		})
 		if out.HasCall {
 			res.Costs = append(res.Costs, out.Call)
@@ -417,13 +491,51 @@ func (a *AcademicActor) readFullText(
 		res.Stats.ClaimsProposed += out.Proposed
 		res.Stats.ClaimsRejected += out.Rejected
 		res.Stats.Chunks++
+		spent += out.Usage.InputTokens + out.Usage.CacheReadTokens
 		if err != nil {
 			res.Stats.ChunksFailed++
 			continue
 		}
 		claims = append(claims, out.Claims...)
+		if len(claims) >= maxClaims {
+			break
+		}
 	}
-	return claims
+	return claims, spent
+}
+
+// recordOutcome writes the §10.4 row for one tier-1 fetch.
+func (a *AcademicActor) recordOutcome(
+	ctx context.Context, lead core.Lead, rawURL string,
+	outcome fetch.Outcome, status int, bytes int64, errText string,
+) {
+	if a.Store == nil {
+		return
+	}
+	sessionID, leadID := a.SessionID, lead.ID
+	if err := a.Store.WithTx(context.WithoutCancel(ctx), func(ctx context.Context, tx store.Tx) error {
+		return tx.RecordFetchOutcome(ctx, &store.FetchOutcome{
+			SessionID: &sessionID, LeadID: &leadID, URL: rawURL,
+			Domain: domainOf(rawURL), Outcome: string(outcome),
+			StatusCode: status, Bytes: bytes, Err: errText,
+		})
+	}); err != nil {
+		a.logger().WarnContext(ctx, "could not record a fetch outcome", "url", rawURL, "err", err)
+	}
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func domainOf(rawURL string) string {
+	if u, err := url.Parse(rawURL); err == nil {
+		return strings.ToLower(u.Hostname())
+	}
+	return ""
 }
 
 // rankChunks orders passages by relevance to the question.

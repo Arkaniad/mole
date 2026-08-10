@@ -8,6 +8,7 @@ import (
 
 	"github.com/lajosdeme/mole/internal/budget"
 	"github.com/lajosdeme/mole/internal/llm"
+	"github.com/lajosdeme/mole/internal/tools/academic"
 	"github.com/lajosdeme/mole/internal/tools/search"
 )
 
@@ -72,7 +73,8 @@ func Classify(err error) Class {
 		return Fatal
 
 	// The same request might work shortly.
-	case errors.Is(err, llm.ErrRateLimited),
+	case errors.Is(err, academic.ErrRateLimited),
+		errors.Is(err, llm.ErrRateLimited),
 		errors.Is(err, llm.ErrOverloaded),
 		errors.Is(err, context.DeadlineExceeded):
 		return Transient
@@ -141,7 +143,7 @@ func DeadEndCause(err error) string {
 		return "no_evidence"
 	case errors.Is(err, llm.ErrContextTooLong):
 		return "context_too_long"
-	case errors.Is(err, llm.ErrRateLimited):
+	case errors.Is(err, academic.ErrRateLimited), errors.Is(err, llm.ErrRateLimited):
 		return "rate_limited"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"

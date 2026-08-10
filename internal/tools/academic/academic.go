@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"net/mail"
+	"net/url"
 	"strings"
 	"time"
 
@@ -51,9 +52,13 @@ func (k Kind) Valid() bool {
 // configured this yet" from "the provider is down".
 var ErrNoContact = errors.New("academic: no contact email configured")
 
-// ErrRateLimited is a 429 or a provider's documented throttle response. Named to
-// match search.ErrRateLimited so the executor's §9.5 policy classifies both the
-// same way — transient, retry, never abort.
+// ErrRateLimited is a 429 or a provider's documented throttle response.
+//
+// executor.Classify has an arm for it, so §9.5 treats it as transient — retried
+// with backoff, never aborting the lead — and DeadEndCause labels it
+// rate_limited rather than a generic failure. That arm was missing when this
+// sentinel was introduced, and the doc claimed the classification anyway: the
+// error fell through to Degraded and was never retried.
 var ErrRateLimited = errors.New("academic: rate limited")
 
 // LimitFor is §10.3's table, in code.
@@ -194,10 +199,14 @@ type Response struct {
 	Query    string
 	Provider Kind
 	Papers   []Paper
-	// Cost is reported so the ledger settles against the reservation that
-	// covered this lead. These APIs are free, so it is normally zero — which
-	// means a USD budget does not bind on them and §8.5's unit-independent
-	// ceilings are what actually bound an academic session.
+	// Cost is what the search cost, for the ledger to settle.
+	//
+	// Always zero today: arXiv, PubMed and Unpaywall are free, and no provider
+	// sets it. It stays because a paid provider would need it, but nothing reads
+	// it yet — so the ceiling that actually bounds an academic session is the
+	// money spent on MINING, plus §8.5's MaxLeads and MaxWallClock. MaxToolCalls
+	// counts only the mine calls; see AcademicActor for the request rows it does
+	// and does not write.
 	Cost core.Cost
 }
 
@@ -265,4 +274,32 @@ func CheckContact(email string) error {
 		return fmt.Errorf("%w: %q is not a usable address", ErrNoContact, email)
 	}
 	return nil
+}
+
+// scrubURLError removes the query string from a transport error.
+//
+// Go's *url.Error stringifies the full URL, and NCBI and Unpaywall both require
+// the contact address as a QUERY PARAMETER — so every dial failure produced an
+// error carrying the user's personal email, which then reached a WARN log on an
+// ordinary run and, from the coverage command, a JSON report of the kind that
+// gets committed next to testdata. url.Error redacts userinfo passwords and
+// nothing else.
+//
+// The path is kept: knowing which endpoint failed is the whole value of the
+// message. Only the parameters go.
+func scrubURLError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var ue *url.Error
+	if !errors.As(err, &ue) {
+		return err.Error()
+	}
+	scrubbed := ue.URL
+	if u, perr := url.Parse(ue.URL); perr == nil {
+		u.RawQuery = ""
+		u.User = nil
+		scrubbed = u.String()
+	}
+	return fmt.Sprintf("%s %q: %v", ue.Op, scrubbed, ue.Err)
 }

@@ -333,7 +333,6 @@ func (a *WebActor) readSource(ctx context.Context, lead core.Lead, hit search.Re
 	return source{doc: doc, url: finalURL, domain: domain}, true
 }
 
-// mineChunk extracts claims from one chunk and verifies every quote.
 // mineChunk delegates to the shared Miner.
 //
 // The mining logic lives in Miner because the AcademicActor needs exactly it —

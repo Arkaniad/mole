@@ -11,6 +11,7 @@ import (
 	"github.com/lajosdeme/mole/internal/actors"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/tools/academic"
+	"github.com/lajosdeme/mole/internal/tools/extract"
 	"github.com/lajosdeme/mole/internal/tools/fetch"
 )
 
@@ -38,9 +39,6 @@ func at(y int, m time.Month, d int) *time.Time {
 	t := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 	return &t
 }
-
-// minerLLM answers the mine prompt with a claim quoting the source verbatim,
-// which is what a cooperating model does and what §11.5 requires.
 
 func paper(title, doi, abstract string, when *time.Time) academic.Paper {
 	return academic.Paper{
@@ -211,6 +209,12 @@ func TestAcademicSummaryCarriesNoMinedText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Both halves. Asserting only the absence let the test pass when the summary
+	// was never produced at all — "" contains nothing — so deleting the summarize
+	// call kept it green. Measured.
+	if !strings.Contains(res.Summary, "paper(s)") {
+		t.Fatalf("no summary was produced, so this test cannot be about its contents: %q", res.Summary)
+	}
 	if strings.Contains(res.Summary, secret) {
 		t.Fatalf("the planner's summary carries text from the abstract: %q", res.Summary)
 	}
@@ -275,3 +279,139 @@ func TestEscalationOnlyReadsPapersItCanRead(t *testing.T) {
 type fetcherFunc func(context.Context, string) (*fetch.Result, error)
 
 func (f fetcherFunc) Fetch(ctx context.Context, u string) (*fetch.Result, error) { return f(ctx, u) }
+
+// TestTierOneReadsRankedFullText covers the escalation path, which had no
+// executed coverage at all: readFullText, rankChunks and the offset, budget and
+// claim-cap bookkeeping inside them were exercised by nothing.
+func TestTierOneReadsRankedFullText(t *testing.T) {
+	const (
+		abstractQuote = "an abstract about something else entirely here"
+		bodyQuote     = "the sample size was two hundred and forty adults"
+	)
+	p := paper("A trial", "10.1234/t", "Preamble. "+abstractQuote+".", at(2025, time.January, 1))
+	p.PMCID = "PMC1"
+	p.HTMLURL = "https://pmc.ncbi.nlm.nih.gov/articles/PMC1/"
+
+	prov := &fakeAcademic{kind: academic.KindPubMed, papers: []academic.Paper{p}}
+	a, _ := newAcademic(t, []academic.Provider{prov}, func(prompt string) string {
+		// Whichever passage it is given, quote it back verbatim.
+		for _, q := range []string{bodyQuote, abstractQuote} {
+			if strings.Contains(prompt, q) {
+				out, _ := json.Marshal(map[string]any{"claims": []map[string]any{{
+					"text": "A claim.", "quote": q, "confidence": 0.9,
+				}}})
+				return string(out)
+			}
+		}
+		return `{"claims":[]}`
+	})
+
+	var fetchedURL string
+	a.Fetch = fetcherFunc(func(_ context.Context, u string) (*fetch.Result, error) {
+		fetchedURL = u
+		body := strings.Repeat("Irrelevant filler prose about unrelated matters. ", 40) +
+			bodyQuote + ". " + strings.Repeat("More filler that does not answer it. ", 40)
+		return &fetch.Result{
+			URL: u, Outcome: fetch.OutcomeOK, StatusCode: 200,
+			ContentType: "text/html", Content: []byte("<html><body><article><p>" + body + "</p></article></body></html>"),
+		}, nil
+	})
+	a.Extract = extract.New()
+
+	// The question shares no terms with the abstract, so the mechanical gate
+	// escalates — which is the precondition, asserted below rather than assumed.
+	res, err := a.Run(context.Background(), core.Lead{
+		ID: "l1", SessionID: "s_test", Query: "what sample size did the trial enrol",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetchedURL != p.HTMLURL {
+		t.Fatalf("fetched %q, want the PMC full text %q", fetchedURL, p.HTMLURL)
+	}
+
+	var fromBody int
+	for _, c := range res.Claims {
+		if c.Quote == bodyQuote {
+			fromBody++
+			// Cited as the URL it was READ FROM. Citing the abstract page would
+			// make grounding re-fetch a page the quote was never on and report
+			// "the quote is no longer present", and eval would score a citation
+			// mismatch and set Regression.
+			if c.Source != p.HTMLURL {
+				t.Errorf("full-text claim cites %q, want %q", c.Source, p.HTMLURL)
+			}
+		}
+	}
+	if fromBody == 0 {
+		t.Fatalf("no claim came from the full text; %d claims total", len(res.Claims))
+	}
+	if res.Stats.Fetched != 1 {
+		t.Errorf("Fetched = %d, want 1", res.Stats.Fetched)
+	}
+}
+
+// TestTierOneRespectsTheClaimCap. Applying MaxClaimsPerSource per call let one
+// paper contribute its whole allowance from the abstract and again from every
+// escalated chunk — four times its share. §11.3 counts publishers, so one paper
+// outvoting four corrupts confidence.
+//
+// NOT VERIFIED DISCRIMINATING. Removing both the per-call decrement and the
+// loop break leaves this passing, so something else in the fixture bounds the
+// count — probably how many chunks the extractor actually yields from synthetic
+// filler. It asserts a true property and it is not proof that the property is
+// enforced by the code it names. Left in with this warning rather than deleted
+// or quietly trusted; the cap itself is covered at the call site by `remaining`,
+// which TestTierOneReadsRankedFullText does exercise.
+func TestTierOneRespectsTheClaimCap(t *testing.T) {
+	const q = "a quotable sentence that appears in every passage here"
+	p := paper("A", "10.1234/c", "Abstract with "+q+" inside.", at(2025, time.January, 1))
+	p.HTMLURL = "https://pmc.ncbi.nlm.nih.gov/articles/PMC2/"
+
+	prov := &fakeAcademic{kind: academic.KindPubMed, papers: []academic.Paper{p}}
+	// ONE claim from the abstract, eight from every full-text passage. The
+	// abstract must not fill the cap by itself, or escalation never runs and the
+	// assertion holds for the wrong reason — which is what the first version of
+	// this test did. Measured.
+	a, _ := newAcademic(t, []academic.Provider{prov}, func(prompt string) string {
+		if !strings.Contains(prompt, q) {
+			return `{"claims":[]}`
+		}
+		n := 8
+		if strings.Contains(prompt, "Abstract with") {
+			n = 1
+		}
+		var claims []map[string]any
+		for i := 0; i < n; i++ {
+			claims = append(claims, map[string]any{
+				"text": "Claim number " + string(rune('a'+i)), "quote": q, "confidence": 0.5,
+			})
+		}
+		out, _ := json.Marshal(map[string]any{"claims": claims})
+		return string(out)
+	})
+	a.Budget = actors.Budget{MaxSources: 1, MaxClaimsPerSource: 3}
+	a.Fetch = fetcherFunc(func(_ context.Context, u string) (*fetch.Result, error) {
+		// Long enough to split into several chunks, or only one mine call
+		// happens and the per-paper cap is never actually pressed — the first
+		// version of this test could not exceed the cap even with both guards
+		// removed. Measured.
+		seg := strings.Repeat("Filler prose that does not answer anything. ", 200)
+		body := seg + q + ". " + seg + q + ". " + seg + q + "."
+		return &fetch.Result{URL: u, Outcome: fetch.OutcomeOK, StatusCode: 200,
+			ContentType: "text/html", Content: []byte("<html><body><article><p>" + body + "</p></article></body></html>")}, nil
+	})
+	a.Extract = extract.New()
+
+	res, err := a.Run(context.Background(), core.Lead{ID: "l1", Query: "totally different wording"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Precondition: escalation actually ran, or the cap was never tested.
+	if res.Stats.Fetched != 1 {
+		t.Fatalf("tier 1 did not run (Fetched=%d), so the cap was not exercised", res.Stats.Fetched)
+	}
+	if len(res.Claims) > 3 {
+		t.Fatalf("%d claims from one paper with MaxClaimsPerSource=3", len(res.Claims))
+	}
+}

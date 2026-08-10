@@ -2,6 +2,7 @@ package academic_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -179,8 +180,12 @@ func TestArXivTreats503AsTransient(t *testing.T) {
 	if err == nil {
 		t.Fatal("a 503 was accepted")
 	}
-	if !strings.Contains(err.Error(), "rate limited") {
-		t.Fatalf("503 is not reported as rate limiting: %v", err)
+	// errors.Is, not a substring. §9.5's classification calls errors.Is, so a
+	// message that merely reads "rate limited" would satisfy a substring test
+	// while the executor still treated it as a plain failure — which is exactly
+	// what happened: the sentinel was wrapped and nothing classified it.
+	if !errors.Is(err, academic.ErrRateLimited) {
+		t.Fatalf("503 does not wrap ErrRateLimited, so §9.5 cannot retry it: %v", err)
 	}
 }
 

@@ -467,11 +467,32 @@ func truncate(s string, max int) string {
 
 // LeadsFor turns open sub-questions into dispatchable leads.
 func LeadsFor(sessionID string, actor core.ActorType, qs []SubQuestion, depth int, parent *string) []core.Lead {
+	return LeadsAcross(sessionID, []core.ActorType{actor}, qs, depth, parent)
+}
+
+// LeadsAcross distributes sub-questions across the session's actors, round-robin.
+//
+// Round-robin, and not "every actor researches every question": that would
+// double the cost of a two-actor session for evidence largely about the same
+// thing. And not "one actor for the whole session", which is what this did — a
+// session asking for web AND academic got web for every lead, because the actor
+// was chosen once from the session rather than per question. The academic actor
+// was built, registered, and never handed a lead, and `--actors web,academic`
+// silently researched nothing academically.
+//
+// Deterministic by position, so a replay assigns the same actor to the same
+// question. Not model-chosen: the planner deciding per question is a separate
+// change with its own prompt and its own failure mode, and this is the
+// mechanical version that makes the flag mean what it says.
+func LeadsAcross(sessionID string, actors []core.ActorType, qs []SubQuestion, depth int, parent *string) []core.Lead {
+	if len(actors) == 0 {
+		actors = []core.ActorType{core.ActorWeb}
+	}
 	out := make([]core.Lead, 0, len(qs))
-	for _, q := range qs {
+	for i, q := range qs {
 		out = append(out, core.Lead{
 			SessionID: sessionID,
-			ActorType: actor,
+			ActorType: actors[i%len(actors)],
 			Query:     q.Text,
 			Depth:     depth,
 			ParentID:  parent,

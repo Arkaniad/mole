@@ -29,6 +29,7 @@ an abstract before it reads anything longer.
 ```bash
 ./bin/mole config set contact-email you@example.com   # required by §10.3
 ./bin/mole research "..." --actors web,academic --tokens 200000
+# sub-questions are distributed across the actors round-robin, not researched twice
 ```
 
 What is not done: M2's question corpus, and the Verifier's contradiction
@@ -453,7 +454,7 @@ The ladder, as M6 implements it for papers:
 |---|---|---|
 | 0 | title + abstract | free — arXiv and PubMed return it in the search response, no fetch at all |
 | 1 | full text, **ranked**, top sections only | one fetch, through the existing extractor |
-| 2 | PDF | not built — recorded as `unsupported_type` |
+| 2 | PDF | not built, and never fetched — so no `unsupported_type` arises from it |
 
 Two decisions worth stating, because the obvious versions of both are wrong.
 
@@ -468,8 +469,9 @@ sections for it to rank.
 
 **Escalate on a mechanical signal.** Asking the miner "did that answer it?" is
 nearly free but is a model grading its own sufficiency. The gate is whether the
-abstract yielded claims carrying the sub-question's high-IDF terms; the model's
-opinion breaks ties. The mechanical half cannot be talked into spending money.
+abstract's claims mention the sub-question's distinctive terms — a length and
+stopword filter, not IDF, and no model opinion at all. A gate that cannot be
+talked into spending money is worth more than a better-informed one.
 
 Choosing a cheaper or stronger model per task is deliberately **not** in M6.
 It cannot be tuned without the eval corpus, so any tuning now is guesswork
@@ -521,8 +523,8 @@ biomedical one (19%), where the barrier is closed access instead.
 
 So tier 1 is built first and tier 2 stays unbuilt: HTML covers most of the
 current literature mole is actually asked about, and a PDF extractor's payoff is
-real but bounded, concentrated in historical papers. The number to watch is
-whether real sessions cite older work than this corpus does — `mole stats
---fetch` counts `unsupported_type` from live runs and is the independent check
-on this one.
+real but bounded, concentrated in historical papers. The number to watch is whether real
+sessions cite older work than this corpus does — which means re-running this
+command on a broader corpus, not waiting for `unsupported_type` to accumulate:
+the academic actor never fetches a PDF, so no live run can produce that outcome.
   

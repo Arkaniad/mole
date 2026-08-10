@@ -77,7 +77,18 @@ func (u *Unpaywall) Resolve(ctx context.Context, id string) (*Paper, error) {
 	// requests without it are rejected, and it is how the operator reaches
 	// whoever is generating traffic.
 	q.Set("email", u.contact)
-	endpoint := u.baseURL + "/" + doi + "?" + q.Encode()
+
+	// PathEscape, because the DOI is THIRD-PARTY DATA — it arrives from an
+	// arXiv <arxiv:doi> element or a PubMed ArticleId, and doiPattern's \S+
+	// tail accepts ?, # and @.
+	//
+	// Concatenated raw, a DOI of "10.1234/x?email=attacker@evil.example&" put
+	// the attacker's address in the email parameter and left the real one
+	// parsed under the junk key "?email" — so the identification §10.3 makes
+	// mandatory was silently replaced with an address of the provider's
+	// choosing, pointing Unpaywall's abuse contact at a third party. Verified
+	// before this line existed.
+	endpoint := u.baseURL + "/" + url.PathEscape(doi) + "?" + q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -87,7 +98,7 @@ func (u *Unpaywall) Resolve(ctx context.Context, id string) (*Paper, error) {
 
 	resp, err := u.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("academic: unpaywall: %w", err)
+		return nil, fmt.Errorf("academic: unpaywall: %s", scrubURLError(err))
 	}
 	defer resp.Body.Close()
 
@@ -214,10 +225,28 @@ func pickLocations(locs []unpaywallLocation) (htmlURL, pdfURL, landingURL, pmcID
 // pmc.ncbi.nlm.nih.gov/articles/PMC7214034, the legacy
 // www.ncbi.nlm.nih.gov/pmc/articles/7214034 with the prefix dropped, and with or
 // without a trailing slash.
-var pmcURLPattern = regexp.MustCompile(`(?i)ncbi\.nlm\.nih\.gov/(?:pmc/)?articles/(?:PMC)?(\d+)`)
+var pmcPathPattern = regexp.MustCompile(`(?i)^/(?:pmc/)?articles/(?:PMC)?(\d+)`)
 
+// pmcHosts are the hosts whose article paths are PMC full text.
+var pmcHosts = map[string]bool{
+	"pmc.ncbi.nlm.nih.gov": true,
+	"www.ncbi.nlm.nih.gov": true,
+	"ncbi.nlm.nih.gov":     true,
+}
+
+// pmcIDFromURL recognises a PMC article, matching on HOST rather than substring.
+//
+// An unanchored pattern matched anywhere in the string, so a hostile OA-location
+// of "https://attacker.example/?r=ncbi.nlm.nih.gov/articles/7214034" was read as
+// PMC7214034 — and mole would then fetch and mine a DIFFERENT, real paper's full
+// text and attribute it, with verbatim quotes, to the DOI that was asked about.
+// The same misattribution class as PubMed's reference-list trap, one layer up.
 func pmcIDFromURL(raw string) string {
-	if m := pmcURLPattern.FindStringSubmatch(raw); m != nil {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || !pmcHosts[strings.ToLower(u.Hostname())] {
+		return ""
+	}
+	if m := pmcPathPattern.FindStringSubmatch(u.Path); m != nil {
 		return "PMC" + m[1]
 	}
 	return ""

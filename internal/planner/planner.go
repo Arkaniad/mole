@@ -144,7 +144,7 @@ func (p *Planner) InitialLeads(ctx context.Context, sess *core.Session) (*Plan, 
 		// it began. The original question is always a valid lead.
 		out.Questions = []SubQuestion{{ID: "q1", Text: sess.Prompt}}
 	}
-	out.Leads = LeadsFor(sess.ID, primaryActor(sess), out.Questions, 0, nil)
+	out.Leads = LeadsAcross(sess.ID, sessionActors(sess), out.Questions, 0, nil)
 	out.Rationale = parsed.Rationale
 	return out, nil
 }
@@ -237,26 +237,26 @@ func (p *Planner) Replan(ctx context.Context, sess *core.Session, d *Digest, dep
 	out.Answered = parsed.Answered
 
 	if !out.Done {
-		out.Leads = LeadsFor(sess.ID, primaryActor(sess), out.Questions, depth+1, nil)
+		out.Leads = LeadsAcross(sess.ID, sessionActors(sess), out.Questions, depth+1, nil)
 	}
 	return out, nil
 }
 
-// primaryActor picks the actor for a lead.
+// sessionActors is the set of actors a session's leads may be assigned to.
 //
-// One choice today because WebActor is the only one built. AcademicActor
-// arrives in M6, and the planner will have to choose per sub-question rather
-// than per session.
-func primaryActor(sess *core.Session) core.ActorType {
-	for _, a := range sess.ActorTypes {
-		if a == core.ActorWeb {
-			return core.ActorWeb
-		}
+// Every actor the session asked for, in the order it asked. This used to return
+// ONE actor and prefer web whenever web was present, which meant a session
+// asking for web and academic got web for every lead — the academic actor was
+// built, registered, and never given work. LeadsAcross distributes them.
+//
+// Not a model choice per sub-question. That is a real improvement and a separate
+// change: it needs a prompt, a schema field, and a failure mode for when the
+// model names an actor the session did not enable.
+func sessionActors(sess *core.Session) []core.ActorType {
+	if sess == nil || len(sess.ActorTypes) == 0 {
+		return []core.ActorType{core.ActorWeb}
 	}
-	if len(sess.ActorTypes) > 0 {
-		return sess.ActorTypes[0]
-	}
-	return core.ActorWeb
+	return sess.ActorTypes
 }
 
 func toSubQuestions(in []plannedQuestion, max int) []SubQuestion {

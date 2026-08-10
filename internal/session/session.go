@@ -107,9 +107,11 @@ type Runner struct {
 	// VerifierBatchSize caps pairs per adjudication call. Zero takes the default.
 	VerifierBatchSize int
 
-	// Academic researches scholarly leads (§10.2). Nil disables the actor
-	// entirely, which is the state of any install without a contact email —
-	// §10.3 makes that a hard requirement rather than a warning.
+	// Academic researches scholarly leads (§10.2). Nil disables the actor.
+	//
+	// Nil in two cases, not one: an install with no contact email (§10.3 makes
+	// that a hard requirement), and every daemon — `mole serve` does not build
+	// it, so the academic path is CLI-only today.
 	Academic *actors.AcademicActor
 
 	// Owner names what is running the loop, for lead leases (§9.4). A daemon and
@@ -521,10 +523,13 @@ func actorTypesOf(spec Spec) []core.ActorType {
 
 // actorsFor registers the actors a session asked for and can actually run.
 //
-// An actor the caller did not build is silently absent rather than registered
-// broken: the executor reports "no actor registered" for a lead it cannot serve,
-// which is a clear degraded lead, where a half-built actor would fail on every
-// request after paying for the attempt.
+// An actor the caller did not build is absent rather than registered broken. Be
+// clear about the consequence: the executor treats "no actor registered" as
+// FATAL, which cancels the batch and ends the session — it is not a degraded
+// lead. That is still the better failure, because a half-built actor would fail
+// on every request after paying for the attempt, but it is a hard stop and the
+// caller has to avoid asking for an actor it did not build. checkAcademicConfig
+// is what makes that impossible from the CLI.
 func (r *Runner) actorsFor(spec Spec, web *actors.WebActor) map[core.ActorType]actors.Actor {
 	out := map[core.ActorType]actors.Actor{core.ActorWeb: web}
 	for _, t := range spec.ActorTypes {

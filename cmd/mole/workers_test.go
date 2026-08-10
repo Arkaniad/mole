@@ -126,6 +126,13 @@ func TestWebOnlyDoesNotRequireAContactEmail(t *testing.T) {
 	if strings.Contains(err.Error(), "contact email") {
 		t.Fatalf("web-only asked for a contact email: %v", err)
 	}
+	// Naming the reason it SHOULD fail. Asserting only the absence of a string
+	// let the test pass when the --actors flag was deleted entirely — cobra then
+	// returns "unknown flag", which also lacks "contact email". Measured; the
+	// sibling test in this file already carried this lesson and this one did not.
+	if !strings.Contains(err.Error(), "search provider") {
+		t.Fatalf("failed for an unexpected reason: %v", err)
+	}
 }
 
 func TestUnknownActorIsRefused(t *testing.T) {

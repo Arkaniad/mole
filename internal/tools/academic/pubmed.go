@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -194,7 +196,7 @@ func (p *PubMed) get(ctx context.Context, rawURL string) ([]byte, error) {
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("academic: pubmed: %w", err)
+		return nil, fmt.Errorf("academic: pubmed: %s", scrubURLError(err))
 	}
 	defer resp.Body.Close()
 
@@ -232,15 +234,35 @@ type pubmedArticle struct {
 }
 
 type medlineArticle struct {
-	Title    string         `xml:"ArticleTitle"`
+	// InnerXML, not chardata. PubMed declares ArticleTitle and AbstractText as
+	// MIXED CONTENT, and biomedical records use it constantly: <i> for gene
+	// names, <sub> for formulae, MathML for equations. encoding/xml Skips nested
+	// elements when unmarshalling into a string, DISCARDING their text — so
+	// "Regulation of <i>TP53</i> in CO<sub>2</sub>-rich media" parsed as
+	// "Regulation of in CO-rich media". The subject of the sentence disappears
+	// and CO2 silently becomes CO.
+	//
+	// §11.5 cannot catch this. FindQuote verifies the model's quote against the
+	// same mangled string, so the quote matches and a corrupted claim is stored
+	// as verified evidence. Measured before this changed.
+	Title    xmlFragment    `xml:"ArticleTitle"`
 	Abstract []abstractText `xml:"Abstract>AbstractText"`
 	PubDate  pubmedDate     `xml:"Journal>JournalIssue>PubDate"`
 	Authors  []pubmedAuthor `xml:"AuthorList>Author"`
 }
 
+// xmlFragment captures an element's mixed content verbatim.
+//
+// A wrapper type because encoding/xml only accepts ",innerxml" on a field of the
+// struct mapped to the element, not as a path suffix.
+type xmlFragment struct {
+	Inner string `xml:",innerxml"`
+}
+
 type abstractText struct {
 	Label string `xml:"Label,attr"`
-	Text  string `xml:",chardata"`
+	// InnerXML for the reason above. Stripped and unescaped by flattenXML.
+	Text string `xml:",innerxml"`
 }
 
 type pubmedDate struct {
@@ -264,7 +286,7 @@ type pubmedID struct {
 }
 
 func (a pubmedArticle) toPaper() (Paper, bool) {
-	title := collapse(a.Article.Title)
+	title := flattenXML(a.Article.Title.Inner)
 	if title == "" {
 		return Paper{}, false
 	}
@@ -313,12 +335,17 @@ func (a pubmedArticle) toPaper() (Paper, bool) {
 // documentation uses: that one 301s here, and following a redirect on every
 // fetch is a request NCBI does not need to serve.
 func PMCArticleURL(pmcid string) string {
-	pmcid = strings.TrimSpace(pmcid)
-	if pmcid == "" {
+	// Validated, not merely trimmed. The identifier is XML chardata from a
+	// third party and is concatenated into a request path; the only thing
+	// otherwise standing between it and an outbound URL is the literal host
+	// prefix. "PMC" followed by digits is the whole of the real format.
+	if !pmcIDPattern.MatchString(strings.TrimSpace(pmcid)) {
 		return ""
 	}
-	return "https://pmc.ncbi.nlm.nih.gov/articles/" + pmcid + "/"
+	return "https://pmc.ncbi.nlm.nih.gov/articles/" + strings.TrimSpace(pmcid) + "/"
 }
+
+var pmcIDPattern = regexp.MustCompile(`^PMC\d+$`)
 
 // joinAbstract flattens PubMed's structured abstract.
 //
@@ -331,7 +358,7 @@ func PMCArticleURL(pmcid string) string {
 func joinAbstract(parts []abstractText) string {
 	var b strings.Builder
 	for _, part := range parts {
-		text := collapse(part.Text)
+		text := flattenXML(part.Text)
 		if text == "" {
 			continue
 		}
@@ -391,3 +418,16 @@ func (d pubmedDate) parse() (time.Time, bool) {
 	}
 	return time.Date(y, month, day, 0, 0, 0, 0, time.UTC), true
 }
+
+// flattenXML turns a mixed-content XML fragment into the text a reader sees.
+//
+// Tags out, entities in: innerxml hands back the raw fragment, so &amp;lt; is still
+// an entity and <i>TP53</i> is still markup. Both have to be resolved, and in
+// that order — unescaping first would turn an encoded &amp;lt;i&amp;gt; in the source
+// text into a tag that the strip then deletes.
+func flattenXML(fragment string) string {
+	stripped := xmlTagPattern.ReplaceAllString(fragment, "")
+	return collapse(html.UnescapeString(stripped))
+}
+
+var xmlTagPattern = regexp.MustCompile(`<[^>]*>`)
