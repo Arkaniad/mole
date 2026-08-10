@@ -22,9 +22,14 @@ ledger.
 M5's executor pool has since landed: a session runs three leads at once by
 default, per session rather than per process.
 
-M6, the AcademicActor, is in progress: arXiv and PubMed as keyless defaults,
+M6, the AcademicActor, has landed: arXiv and PubMed as keyless defaults,
 Unpaywall for DOI to legal open-access copy, and an escalation ladder that reads
 an abstract before it reads anything longer.
+
+```bash
+./bin/mole config set contact-email you@example.com   # required by §10.3
+./bin/mole research "..." --actors web,academic --tokens 200000
+```
 
 What is not done: M2's question corpus, and the Verifier's contradiction
 *recall* — its precision is measured, but no labelled set of true contradictions
@@ -302,7 +307,7 @@ The suites that carry weight:
 | M3 | Planner loop, rolling digest, error policy | **done** |
 | M4 | Claim graph + Verifier | **done**, contradiction recall unmeasured |
 | M5 | Executor pool | **done**, real-run speedup unmeasured |
-| M6 | AcademicActor | in progress |
+| M6 | AcademicActor | **done**, claim extraction unverified on a real model |
 | M7 | MCP daemon + stdio shim | **done** |
 | M8 | LocalComputeActor (sandbox → sqlguard → aggregation gate → actor) | |
 | M9 | Dataset mode | |
@@ -343,6 +348,15 @@ Stated plainly rather than left to be discovered:
   native API. Supporting them properly — reading the `reasoning` field and
   giving it its own allowance so it cannot eat the output budget — is planned,
   not merely worked around.
+- **M6's claim extraction is unverified against a capable model.** The academic
+  path is confirmed working end to end — it queries both providers, deduplicates
+  by DOI, builds openable citation URLs, and reconciles its ledger — but every
+  live run produced zero claims. Isolated with a direct probe against a real
+  arXiv abstract: the model proposed nothing at all (`proposed=0`), rather than
+  proposing claims whose quotes failed §11.5. The only reachable model is a 3B
+  local one that cannot do structured mining, and the Anthropic key has no
+  credit. So the pipeline is verified and the extraction quality is not, and
+  that distinction is the honest state of it.
 - **Contradiction recall has never been measured.** The Verifier's precision was
   checked against a labelled 37-pair set, but that set contained no true
   contradictions, so the recall §14.3 asks for has no denominator — it is `0/0`,

@@ -97,3 +97,43 @@ func TestZeroAndNegativeWorkersAreNotSerial(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// M6: actor selection
+// ---------------------------------------------------------------------------
+
+// TestAcademicRequiresAContactEmail. §10.3 makes this a startup check, and a
+// run that quietly researched half of what was asked for is worse than one that
+// says why — so it is an error rather than a silent downgrade to web-only.
+func TestAcademicRequiresAContactEmail(t *testing.T) {
+	out, err := exec(t, "research", "a question", "--tokens", "1000", "--actors", "academic")
+	if err == nil {
+		t.Fatalf("--actors academic was accepted with no contact email\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "contact email") {
+		t.Fatalf("refused for the wrong reason: %v", err)
+	}
+}
+
+// TestWebOnlyDoesNotRequireAContactEmail. The address is required of the people
+// who use academic providers, not of everyone — building providers nobody asked
+// for would make every run depend on it.
+func TestWebOnlyDoesNotRequireAContactEmail(t *testing.T) {
+	_, err := exec(t, "research", "a question", "--tokens", "1000", "--actors", "web")
+	if err == nil {
+		t.Fatal("expected a failure on the missing search provider")
+	}
+	if strings.Contains(err.Error(), "contact email") {
+		t.Fatalf("web-only asked for a contact email: %v", err)
+	}
+}
+
+func TestUnknownActorIsRefused(t *testing.T) {
+	_, err := exec(t, "research", "a question", "--tokens", "1000", "--actors", "web,quantum")
+	if err == nil {
+		t.Fatal("an unknown actor was accepted")
+	}
+	if !strings.Contains(err.Error(), "unknown actor") {
+		t.Fatalf("refused for the wrong reason: %v", err)
+	}
+}

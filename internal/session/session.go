@@ -57,6 +57,13 @@ type Spec struct {
 	// the two should not be equal — see Runner.Run.
 	Timeout time.Duration
 
+	// ActorTypes are the actors this session may use. Empty means web only.
+	//
+	// Session-level rather than planner-chosen: the actor has to be provably
+	// working before the planner starts making choices about it, and a session
+	// that never asked for academic sources should never pay for one.
+	ActorTypes []core.ActorType
+
 	// Workers is how many leads this session runs at once. Zero takes
 	// executor.DefaultWorkers. Not persisted on the session row: it is a
 	// property of the process doing the work, not of the research, and a
@@ -99,6 +106,11 @@ type Runner struct {
 	VerifierModel string
 	// VerifierBatchSize caps pairs per adjudication call. Zero takes the default.
 	VerifierBatchSize int
+
+	// Academic researches scholarly leads (§10.2). Nil disables the actor
+	// entirely, which is the state of any install without a contact email —
+	// §10.3 makes that a hard requirement rather than a warning.
+	Academic *actors.AcademicActor
 
 	// Owner names what is running the loop, for lead leases (§9.4). A daemon and
 	// a CLI must not claim each other's leads.
@@ -220,7 +232,7 @@ func (r *Runner) Create(ctx context.Context, spec Spec) (*core.Session, error) {
 	return r.ledger().CreateSession(ctx, budget.SessionSpec{
 		Prompt:     spec.Question,
 		Mode:       spec.Mode,
-		ActorTypes: []core.ActorType{core.ActorWeb},
+		ActorTypes: actorTypesOf(spec),
 		BudgetUnit: spec.BudgetUnit,
 		Budget:     spec.Budget,
 		// Unit-independent ceilings (§8.5). They bind even when the money estimate
@@ -304,7 +316,7 @@ func (r *Runner) Run(ctx context.Context, sess *core.Session, spec Spec) (*Resul
 		CheapModel: actor.LLM.ModelFor(llm.TierCheap),
 		Planner:    &planner.Planner{LLM: actor.LLM, MaxDepth: spec.MaxDepth},
 		Verifier:   vf,
-		Actors:     map[core.ActorType]actors.Actor{core.ActorWeb: &actor},
+		Actors:     r.actorsFor(spec, &actor),
 		Log:        r.logger(),
 		Owner:      owner,
 		Progress:   r.Progress,
@@ -497,4 +509,34 @@ func (r *Runner) loadSession(ctx context.Context, id string) (*core.Session, err
 		return err
 	})
 	return sess, err
+}
+
+// actorTypesOf is what the session records it may use.
+func actorTypesOf(spec Spec) []core.ActorType {
+	if len(spec.ActorTypes) == 0 {
+		return []core.ActorType{core.ActorWeb}
+	}
+	return spec.ActorTypes
+}
+
+// actorsFor registers the actors a session asked for and can actually run.
+//
+// An actor the caller did not build is silently absent rather than registered
+// broken: the executor reports "no actor registered" for a lead it cannot serve,
+// which is a clear degraded lead, where a half-built actor would fail on every
+// request after paying for the attempt.
+func (r *Runner) actorsFor(spec Spec, web *actors.WebActor) map[core.ActorType]actors.Actor {
+	out := map[core.ActorType]actors.Actor{core.ActorWeb: web}
+	for _, t := range spec.ActorTypes {
+		if t == core.ActorAcademic && r.Academic != nil {
+			// One per session, like the web actor: SessionID scopes the claims
+			// it writes, so a shared instance would attribute one session's
+			// claims to another.
+			academic := *r.Academic
+			academic.SessionID = web.SessionID
+			academic.Store = r.Store
+			out[core.ActorAcademic] = &academic
+		}
+	}
+	return out
 }

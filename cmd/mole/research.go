@@ -20,8 +20,10 @@ import (
 	"github.com/lajosdeme/mole/internal/pricing"
 	"github.com/lajosdeme/mole/internal/record"
 	"github.com/lajosdeme/mole/internal/session"
+	"github.com/lajosdeme/mole/internal/tools/academic"
 	"github.com/lajosdeme/mole/internal/tools/extract"
 	"github.com/lajosdeme/mole/internal/tools/fetch"
+	"github.com/lajosdeme/mole/internal/tools/limiter"
 	"github.com/lajosdeme/mole/internal/tools/search"
 	"github.com/lajosdeme/mole/internal/verifier"
 	"github.com/spf13/cobra"
@@ -68,6 +70,7 @@ type researchOpts struct {
 	alwaysFetch bool
 	maxDepth    int
 	workers     int
+	actorList   string
 	dbPath      string
 
 	// silent suppresses ALL output, including the report.
@@ -106,6 +109,8 @@ func newResearchCmd() *cobra.Command {
 	f.Int64Var(&o.tokens, "tokens", 0, "budget in tokens")
 	f.StringVar(&o.mode, "mode", string(core.ModeReport), "session mode")
 	f.IntVar(&o.maxSources, "max-sources", 5, "sources to read per lead")
+	f.StringVar(&o.actorList, "actors", "web",
+		"comma-separated actors to use: web, academic (academic needs contact-email)")
 	f.IntVar(&o.workers, "workers", executor.DefaultWorkers,
 		"leads to run at once; 1 is required when recording or replaying a cassette")
 	f.DurationVar(&o.timeout, "timeout", 5*time.Minute, "wall-clock ceiling for the whole session")
@@ -139,6 +144,18 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	}
 	if sessionMode != core.ModeReport {
 		return fmt.Errorf("mode %q is not implemented yet (M3 for report+, M9 for dataset)", o.mode)
+	}
+
+	actorTypes, err := parseActorTypes(o.actorList)
+	if err != nil {
+		return err
+	}
+	// Checked here, before anything is built. A missing contact address and a
+	// missing search key are both configuration errors, and which one a user is
+	// told about should not depend on the order the actors happen to be
+	// constructed in — this one is free to check, so it goes first.
+	if err := checkAcademicConfig(cfg, actorTypes); err != nil {
+		return err
 	}
 
 	// Before the cassette is opened, not after: in replay, opening fails on a
@@ -189,9 +206,15 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	ctx, cancel := context.WithTimeout(ctx, o.timeout+30*time.Second)
 	defer cancel()
 
+	academicActor, err := buildAcademicActor(cfg, actorTypes, actor)
+	if err != nil {
+		return err
+	}
+
 	runner := &session.Runner{
 		Store:             db,
 		Actor:             actor,
+		Academic:          academicActor,
 		VerifierModel:     cfg.LLM.VerifierModel,
 		VerifierBatchSize: cfg.LLM.VerifierBatchSize,
 		Owner:             "cli",
@@ -216,6 +239,7 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 		MaxLeads:   maxLeadsFor(o),
 		Timeout:    o.timeout,
 		Workers:    o.workers,
+		ActorTypes: actorTypes,
 	}
 
 	sess, err := runner.Create(ctx, spec)
@@ -681,4 +705,124 @@ func checkCassetteIsSerial(workers int) error {
 			"recorded with a worker pool cannot be replayed, because lead "+
 			"completion order decides the prompts it is keyed on",
 		mode, workers, effective)
+}
+
+// checkAcademicConfig refuses --actors academic without a contact address.
+//
+// §10.3 makes this a startup check rather than a README line. An error rather
+// than a silent downgrade to web-only: a run that quietly researched half of
+// what was asked for is worse than one that says why.
+func checkAcademicConfig(cfg *config.Config, types []core.ActorType) error {
+	if !wantsAcademic(types) {
+		return nil
+	}
+	if err := academic.CheckContact(cfg.ContactEmail); err != nil {
+		return fmt.Errorf("%w\n--actors academic requires it; set one with: "+
+			"mole config set contact-email you@example.com", err)
+	}
+	return nil
+}
+
+func wantsAcademic(types []core.ActorType) bool {
+	for _, t := range types {
+		if t == core.ActorAcademic {
+			return true
+		}
+	}
+	return false
+}
+
+// parseActorTypes reads the --actors list.
+func parseActorTypes(raw string) ([]core.ActorType, error) {
+	var out []core.ActorType
+	seen := map[core.ActorType]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		t := core.ActorType(strings.ToLower(strings.TrimSpace(part)))
+		if t == "" {
+			continue
+		}
+		switch t {
+		case core.ActorWeb, core.ActorAcademic:
+		default:
+			return nil, fmt.Errorf("unknown actor %q (want web or academic)", t)
+		}
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	if len(out) == 0 {
+		out = []core.ActorType{core.ActorWeb}
+	}
+	return out, nil
+}
+
+// buildAcademicActor constructs the academic providers, or refuses.
+//
+// Nil when the session did not ask for academic sources — building providers
+// nobody requested would make every run depend on a contact email §10.3 only
+// requires of the people who use them. When it IS asked for, a missing address
+// is an error rather than a silent downgrade to web-only: a run that quietly
+// researched half of what was requested is worse than one that says why.
+func buildAcademicActor(cfg *config.Config, types []core.ActorType, web *actors.WebActor) (*actors.AcademicActor, error) {
+	if !wantsAcademic(types) {
+		return nil, nil
+	}
+	lim := limiter.New(limiter.Unlimited)
+	academic.Register(lim)
+
+	acfg := academic.Config{ContactEmail: cfg.ContactEmail}
+	arxiv, err := academic.NewArXiv(acfg, nil, lim)
+	if err != nil {
+		return nil, err
+	}
+	pubmed, err := academic.NewPubMed(acfg, nil, lim)
+	if err != nil {
+		return nil, err
+	}
+
+	return &actors.AcademicActor{
+		Providers: []academic.Provider{arxiv, pubmed},
+		LLM:       web.LLM,
+		Pricing:   web.Pricing,
+		Log:       web.Log,
+		Budget:    web.Budget,
+		// Shared with the web actor on purpose: the fetcher carries the egress
+		// guard, the robots cache and the per-domain limiter, and a second one
+		// would be a second unmetered path to the same hosts.
+		Fetch:   web.Fetch,
+		Extract: web.Extract,
+		Rank:    rankPassages,
+	}, nil
+}
+
+// rankPassages orders passages by relevance, using the Verifier's retriever.
+//
+// Supplied here rather than imported by internal/actors, which cannot reach
+// internal/verifier: verifier/ground.go imports actors, so the dependency only
+// runs one way. Wiring it at the composition root is what keeps one scorer in
+// the codebase instead of two that drift.
+func rankPassages(question string, passages []string, n int) []int {
+	if len(passages) == 0 {
+		return nil
+	}
+	pool := make([]*core.Claim, len(passages))
+	index := map[string]int{}
+	for i, p := range passages {
+		id := fmt.Sprintf("p%d", i)
+		pool[i] = &core.Claim{ID: id, Text: p}
+		index[id] = i
+	}
+	got, err := verifier.LexicalRetriever{}.Candidates(
+		context.Background(), &core.Claim{Text: question}, pool, n)
+	if err != nil {
+		return nil
+	}
+	out := make([]int, 0, len(got))
+	for _, c := range got {
+		if i, ok := index[c.ID]; ok {
+			out = append(out, i)
+		}
+	}
+	return out
 }
