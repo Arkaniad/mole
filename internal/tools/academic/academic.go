@@ -201,15 +201,27 @@ type Response struct {
 	Cost core.Cost
 }
 
-// Provider is one scholarly source.
-type Provider interface {
-	Search(ctx context.Context, query string, opts Options) (*Response, error)
+// Resolver turns an identifier into a paper.
+//
+// Split out from Provider because Unpaywall is one and is not the other. It has
+// no topical search — it answers "where can I legally read this DOI" and
+// nothing else — and giving it a Search method that always errored would be an
+// interface lying about what its implementations do. §10's sketch shows a single
+// AcademicProvider with both; this is the one place the implementation
+// deliberately differs, because the split is what the real APIs are.
+type Resolver interface {
 	// Resolve looks a paper up by identifier — a DOI for Unpaywall, an arXiv ID
-	// for arXiv. Each provider answers for the identifiers it indexes and
-	// refuses the rest, rather than reporting "not found" for a paper that
+	// for arXiv, either for PubMed. Each answers for the identifiers it indexes
+	// and refuses the rest, rather than reporting "not found" for a paper that
 	// exists somewhere it cannot see.
 	Resolve(ctx context.Context, id string) (*Paper, error)
 	Kind() Kind
+}
+
+// Provider is a Resolver that can also search by topic.
+type Provider interface {
+	Resolver
+	Search(ctx context.Context, query string, opts Options) (*Response, error)
 }
 
 // Config is what every provider needs.
