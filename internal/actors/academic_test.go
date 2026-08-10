@@ -3,6 +3,7 @@ package actors_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/lajosdeme/mole/internal/actors"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/tools/academic"
+	"github.com/lajosdeme/mole/internal/tools/fetch"
 )
 
 // fakeAcademic returns scripted papers without touching the network.
@@ -213,3 +215,63 @@ func TestAcademicSummaryCarriesNoMinedText(t *testing.T) {
 		t.Fatalf("the planner's summary carries text from the abstract: %q", res.Summary)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Tier 1 escalation
+// ---------------------------------------------------------------------------
+
+// TestEscalationGateIsMechanical. The decision to spend more money is not left
+// to a model grading its own sufficiency.
+func TestEscalationGateIsMechanical(t *testing.T) {
+	q := "does intermittent fasting reduce cardiovascular events"
+	for _, tc := range []struct {
+		name   string
+		claims []core.Claim
+		want   bool
+	}{
+		{"nothing found escalates", nil, true},
+		{"claims that answer it do not", []core.Claim{
+			{Text: "Intermittent fasting reduced cardiovascular events in the trial."},
+		}, false},
+		{"claims about something else escalate", []core.Claim{
+			{Text: "The authors describe their funding arrangements."},
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := actors.ShouldEscalateForTest(q, tc.claims); got != tc.want {
+				t.Fatalf("shouldEscalate = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEscalationOnlyReadsPapersItCanRead. A paper whose only copy is a PDF is
+// left alone rather than fetched and failed — that is what keeps the PDF
+// question a measurement instead of an assumption.
+func TestEscalationOnlyReadsPapersItCanRead(t *testing.T) {
+	const quote = "an abstract sentence long enough to count"
+	pdfOnly := paper("PDF paper", "10.1234/pdf", "Text with "+quote+" inside.", at(2024, time.January, 1))
+	pdfOnly.PDFURL = "https://example.org/paper.pdf"
+	pdfOnly.HTMLURL = ""
+
+	prov := &fakeAcademic{kind: academic.KindArXiv, papers: []academic.Paper{pdfOnly}}
+	a, _ := newAcademic(t, []academic.Provider{prov}, mineOne(quote))
+
+	fetched := false
+	a.Fetch = fetcherFunc(func(context.Context, string) (*fetch.Result, error) {
+		fetched = true
+		return nil, errors.New("should not be reached")
+	})
+
+	if _, err := a.Run(context.Background(), core.Lead{ID: "l1", Query: "totally unrelated terminology here"}); err != nil {
+		t.Fatal(err)
+	}
+	if fetched {
+		t.Fatal("a PDF-only paper was fetched; escalation must only read known-readable full text")
+	}
+}
+
+// fetcherFunc adapts a function to fetch.Fetcher.
+type fetcherFunc func(context.Context, string) (*fetch.Result, error)
+
+func (f fetcherFunc) Fetch(ctx context.Context, u string) (*fetch.Result, error) { return f(ctx, u) }
