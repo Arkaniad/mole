@@ -208,6 +208,7 @@ The role breakdown is a single `GROUP BY` over the ledger — the entire reason
 | `internal/mcpserver` | The MCP tool surface the daemon speaks |
 | `internal/compute/connector` | Local data sources: intake, profiling, the read-only handle |
 | `internal/compute/sqlguard` | The parse gate — one SELECT, allowlisted functions (§12.2) |
+| `internal/compute/gate` | The aggregation gate — the only path from data to a model (§12.1) |
 | `internal/eval` | Mechanical scorecard, citation re-verification |
 | `internal/config` | Config file and environment resolution |
 | `cmd/mole` | CLI: `research`, `ask`, `serve`, `eval`, `connect`, `stats`, `trace`, `sessions`, `doctor`, `config`, `migrate`, `dev` |
@@ -312,7 +313,7 @@ The suites that carry weight:
 | M5 | Executor pool | **done**, real-run speedup unmeasured |
 | M6 | AcademicActor | **done**, claim extraction unverified on a real model |
 | M7 | MCP daemon + stdio shim | **done** |
-| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | connector + `sqlguard` **done** |
+| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | both gates **done**, actor open |
 | M9 | Dataset mode | |
 
 ---
@@ -321,15 +322,21 @@ The suites that carry weight:
 
 Stated plainly rather than left to be discovered:
 
-- **M8 has two of §12.2's four defences and none of §12.1.** The connector's
-  handle cannot write, and `sqlguard` refuses anything that is not a single
-  allowlisted SELECT. Missing: the row cap and statement timeout (§12.2's third
-  defence), the `AggregateEnvelope` and k-anonymity floor (§12.1), the exfil
-  regression test (§14.3), and the actor. **The privacy property is not in force
-  yet** — what exists are the gates it will be built on.
-- **`sqlguard` is not wired to anything.** Deliberate: §12 says the gates come
-  before the actor, so the guard exists and has no caller until slice 4 renders
-  the first template. Nothing today can reach a connector with SQL at all.
+- **M8's gates are built; the actor is not.** All four of §12.2's defences hold
+  for the file engine — read-only handle, parse gate, row cap and statement
+  timeout — and §12.1's envelope, k-anonymity floor and free-text exclusion are
+  enforced. What is missing is the thing that would use them: no template
+  renders SQL, no actor runs a lead, and no claim cites a connector. Nothing in
+  mole can reach a connector with a query today.
+- **The audit trail is a log line, not a table.** §12.1 asks that "every
+  crossing is logged, so a user can audit exactly what left their machine", and
+  every envelope emits a structured record — query, hash, rows described,
+  buckets crossed, buckets suppressed, columns withheld. It carries no value
+  from the data. A durable table lands with the actor, where there is a session
+  to attach a crossing to.
+- **`TestResults` is not in the envelope.** §12.1 lists it; nothing produces a
+  statistical test yet, so the field would be a shape with no filling. It
+  arrives with the statistical-validity verifier.
 - **Parquet is not readable.** SQLite cannot read it and no decoder is written,
   so a Parquet export has to be converted before `mole connect` will take it.
   Named because "point mole at my data folder" quietly skipping half a folder is
@@ -692,3 +699,50 @@ to deny it. Absent on purpose: `load_extension`, `readfile`, `writefile`,
 named `sqlite_*` or `pragma_*` is refused as a call *and* as a plain table
 reference — SQLite reserves that prefix, so no user table can collide with the
 rule.
+
+### The aggregation gate
+
+§12.1's rule is that nothing crosses to a model except an `AggregateEnvelope`.
+That is enforced by a type rather than by discipline: **the package exposes no
+function that returns rows.** `Aggregate` reads the result set, computes
+statistics, and returns the statistics — the rows exist only inside that call,
+and there is no API through which to obtain one. A `Query` returning rows plus a
+`Summarize` turning them into an envelope would enforce nothing, since the
+property would hold only while every caller remembered the second call, which is
+the situation §12.1 exists to end.
+
+**It refuses rather than truncates.** A result past `maxRawRows` is an error, not
+a summary of its first five thousand rows — a summary of an arbitrary prefix of
+an unordered result describes nothing while reading like a description of the
+whole.
+
+Two refusals are about SQLite specifically, and neither is obvious from the
+sketch:
+
+- **A bare column beside an aggregate.** SQLite permits `SELECT rep_note,
+  COUNT(*) FROM tickets` and answers `rep_note` from an arbitrary row. That is
+  one row of real data wearing an aggregate's clothes, and it passes any check
+  that only counts result rows. The same permissiveness applies inside a group,
+  so every non-aggregated result column must appear in `GROUP BY` — by position,
+  by expression, or by alias.
+- **A grouped query must select `COUNT(*)`.** Without it there is no *k* to
+  compare against the floor. `SUM(spend) = 5` is not five records, so
+  `SELECT email, SUM(spend) … GROUP BY email` would otherwise cross with one
+  bucket per person and nothing to suppress it on.
+
+A windowed call is not an aggregate regardless of its name: `COUNT(*) OVER ()`
+returns one row per input row, so a statement whose only aggregate is windowed
+is the raw result set with a count stapled to each row.
+
+**The k-anonymity floor** folds every bucket covering fewer than five records
+into a single `other` bucket, which names no key — that is what makes reporting
+its count safe. The number folded is reported as `Suppressed`, because a
+distribution missing its tail reads as a complete one otherwise.
+
+**Free text is decided twice.** The connector flags it at ingest; the gate
+re-derives it from the result, because a result column can be an expression no
+profile ever described — `MIN(rep_note) AS lo` is a column called `lo` that
+holds somebody's note. It is the *same rule*, exported from the connector rather
+than reimplemented, since two copies would drift and the one that drifted would
+be the one deciding whether prose reaches a model. A free-text column carries no
+range, contributes no buckets, and grouping on one produces no buckets at all.

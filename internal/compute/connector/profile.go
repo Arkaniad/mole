@@ -42,8 +42,14 @@ const (
 	profileScalarMaxLen = 64
 )
 
-// isFreeText decides the flag from the profile and the column's name.
-func isFreeText(name, label string, t ColumnType, rows, distinct int64, avgLen float64) bool {
+// IsFreeText decides the flag from the profile and the column's name.
+//
+// Exported because the aggregation gate applies the same rule to the columns of
+// a RESULT set, which no profile describes — a grouping key can be an
+// expression, an alias, or a column from a table that was never registered. Two
+// implementations of this rule would drift, and the one that drifted would be
+// the one deciding whether prose crosses to a model.
+func IsFreeText(name, label string, t ColumnType, rows, distinct int64, avgLen float64) bool {
 	if t != TypeText {
 		// A number or a timestamp has a range, not contents. Whatever it
 		// reveals, it does not reveal it by being listed.
@@ -107,7 +113,7 @@ func profileColumn(ctx context.Context, db *sql.DB, qt string, c *Column, rows i
 	c.Nulls = nulls.Int64
 	c.Distinct = distinct.Int64
 	c.AvgLen = avgLen.Float64
-	c.FreeText = isFreeText(c.Name, c.Label, c.Type, rows, c.Distinct, c.AvgLen)
+	c.FreeText = IsFreeText(c.Name, c.Label, c.Type, rows, c.Distinct, c.AvgLen)
 
 	if c.FreeText {
 		return nil
