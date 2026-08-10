@@ -523,6 +523,7 @@ func newDevCmd() *cobra.Command {
 			return cmd.Help()
 		},
 	}
+	c.AddCommand(newCoverageCmd())
 	c.AddCommand(&cobra.Command{
 		Use:   "seed",
 		Short: "Write a synthetic session through the real ledger",

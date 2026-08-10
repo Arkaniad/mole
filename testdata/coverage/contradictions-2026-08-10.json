@@ -1,0 +1,771 @@
+{
+  "corpus": "contradictions",
+  "questions": 10,
+  "papers": 97,
+  "by_format": {
+    "closed": 11,
+    "html": 38,
+    "pdf_only": 48
+  },
+  "by_source": {
+    "arxiv": {
+      "html": 19,
+      "pdf_only": 41
+    },
+    "pubmed": {
+      "closed": 11,
+      "html": 19,
+      "pdf_only": 7
+    }
+  },
+  "by_era": {
+    "2024+": {
+      "closed": 7,
+      "html": 28,
+      "pdf_only": 6
+    },
+    "pre-2024": {
+      "closed": 4,
+      "html": 10,
+      "pdf_only": 42
+    }
+  },
+  "search_errors": 0,
+  "resolve_errors": 3,
+  "probe_errors": 0,
+  "rows": [
+    {
+      "source": "arxiv",
+      "title": "Shesop Healthcare: Stress and influenza classification using support v…",
+      "doi": "10.13140/RG.2.1.2449.0486",
+      "year": 2016,
+      "format": "pdf_only",
+      "resolved": false,
+      "note": "unpaywall: Get \"https://api.unpaywall.org/v2/10.13140/RG.2.1.2449.0486?email=lajos%40cryptopicnic.io\": dial tcp: lookup api.unpaywall.org on 127.0.0.53:53: read udp 127.0.0.1:49067-\u003e127.0.0.53:53: i/o timeout"
+    },
+    {
+      "source": "arxiv",
+      "title": "The Australian Aboriginal People: How to Misunderstand Their Science",
+      "year": 2014,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Shesop Healthcare: Android application to monitor heart rate variance,…",
+      "doi": "10.13140/RG.2.1.1400.4729",
+      "year": 2016,
+      "format": "pdf_only",
+      "resolved": false,
+      "note": "unpaywall has no record of \"10.13140/RG.2.1.1400.4729\""
+    },
+    {
+      "source": "arxiv",
+      "title": "Computational efficiency of numerical integration methods for the tang…",
+      "year": 2018,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Effects of Reactive Social Distancing on the 1918 Influenza Pandemic",
+      "doi": "10.1371/journal.pone.0180545",
+      "year": 2017,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "SafeStep: AI-powered Travel Assistance for Elderly People with Frailty…",
+      "year": 2026,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Exploring Racial Disparities in the 1918 Influenza Pandemic: A Case St…",
+      "doi": "10.1093/jhmas/jrad066",
+      "year": 2025,
+      "format": "closed",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "[Deadliest flu].",
+      "doi": "10.5802/crbiol.112",
+      "year": 2023,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Historically High Excess Mortality During the COVID-19 Pandemic in Swi…",
+      "doi": "10.7326/M21-3824",
+      "year": 2022,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Spanish Flu and the End of World War I in Southern Iran from 1917-1920…",
+      "doi": "10.34172/aim.2021.11",
+      "year": 2021,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "A role for pathogen risk factors and autoimmunity in encephalitis leth…",
+      "doi": "10.1016/j.pnpbp.2021.110276",
+      "year": 2021,
+      "format": "closed",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "The propagation of a cultural or biological trait by neutral genetic d…",
+      "doi": "10.1016/j.tpb.2007.01.006",
+      "year": 2006,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Modeling Coincident Peak Pricing in Electricity Markets: Challenges an…",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "A Mathematical Model with Modified Logistic Approach for Singly-Peaked…",
+      "year": 1999,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "What-If World: A Causal Benchmark for General World Models in Embodied…",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Multi-messenger Observations of a Binary Neutron Star Merger",
+      "doi": "10.3847/2041-8213/aa91c9",
+      "year": 2017,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "World-in-World: World Models in a Closed-Loop World",
+      "year": 2025,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "France's demographic trends up to 2050: What challenges for health and…",
+      "doi": "10.1177/10519815261470788",
+      "year": 2026,
+      "format": "closed",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Unbound cloxacillin plasma concentrations in relation to toxicity and …",
+      "doi": "10.1136/bmjopen-2025-109745",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Respiratory syncytial virus (RSV) notifications and trends in the tran…",
+      "doi": "10.1136/bmjopen-2025-107050",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "UNIversity students' LIFEstyle behaviours and Mental health cohort (UN…",
+      "doi": "10.1136/bmjopen-2024-085006",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Can multidisciplinary teams improve the quality of primary care? A sco…",
+      "doi": "10.1016/j.eclinm.2025.103497",
+      "year": 2025,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "An analysis of Bitcoin OP_RETURN metadata",
+      "year": 2017,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Inferring the interplay of network structure and market effects in Bit…",
+      "doi": "10.1088/1367-2630/16/12/125003",
+      "year": 2014,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "How to Charge Lightning: The Economics of Bitcoin Transaction Channels",
+      "year": 2017,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Does Gravity Care About Electric Charge? A Minimalist Model and Experi…",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Niji: Bitcoin Bridge Utilizing Payment Channels",
+      "year": 2018,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Functional Classification of Bitcoin Addresses",
+      "year": 2022,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Kurt Lewin, psychological constructs and sources of brain cognitive ac…",
+      "year": 2017,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "How do Visualization Designers Think? Design Cognition as a Core Aspec…",
+      "year": 2020,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Juxtaposing Controlled Empirical Studies in Visualization with Topic D…",
+      "year": 2019,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Developing Effective Community Network Analysis Tools According to Vis…",
+      "year": 2020,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Applying Quantum Principles to Psychology",
+      "doi": "10.1088/0031-8949/2014/T163/014007",
+      "year": 2014,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Nondistributivity of human logic and violation of response replicabili…",
+      "year": 2022,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Changes in resting-state functional connectivity linked to affective s…",
+      "doi": "10.1038/s41398-026-04269-y",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Highly replicable multisite patterns of adolescent white matter matura…",
+      "doi": "10.64898/2026.04.18.719321",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Tolman's Sunburst Maze 80 Years on: A Meta-Analysis Reveals Poor Repli…",
+      "doi": "10.1111/ejn.70365",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Reduced Gray-White Matter Contrast in Chronic Posttraumatic Stress Dis…",
+      "doi": "10.1016/j.bpsc.2025.10.018",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Enhancing the quality and reproducibility of research: Preferred Evalu…",
+      "doi": "10.3758/s13428-025-02705-3",
+      "year": 2025,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "A multilingual app for studying children's developing values: Introduc…",
+      "doi": "10.1037/dev0001957",
+      "year": 2026,
+      "format": "closed",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "The Frontiers of Nuclear Science, A Long Range Plan",
+      "year": 2008,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Nuclear Symmetry Energy Extracted from Laboratory Experiments",
+      "doi": "10.1080/10619127.2017.1388681",
+      "year": 2017,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Beyond-mean-field approaches for nuclear neutrinoless double beta deca…",
+      "doi": "10.1016/j.ppnp.2022.103965",
+      "year": 2021,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Comparison of nuclear data uncertainty propagation methodologies for P…",
+      "doi": "10.1016/j.anucene.2014.10.022",
+      "year": 2014,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Nuclear Reactions in Evolving Stars",
+      "doi": "10.1007/978-981-15-8818-1_115-2",
+      "year": 2023,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Consistency Examinations of Calculations of Nuclear Matrix Elements of…",
+      "year": 2019,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Instruction Tuning with GPT-4",
+      "year": 2023,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Capabilities of GPT-4 on Medical Challenge Problems",
+      "year": 2023,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "GPT4Vis: What Can GPT-4 Do for Zero-shot Visual Recognition?",
+      "year": 2023,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Solving Challenging Math Word Problems Using GPT-4 Code Interpreter wi…",
+      "year": 2023,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Does Gravity Care About Electric Charge? A Minimalist Model and Experi…",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Exploiting Novel GPT-4 APIs",
+      "year": 2023,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "MEAT: Multiview Diffusion Model for Human Generation on Megapixels wit…",
+      "year": 2025,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Reconstruction of the temporal correlation network of all-cause mortal…",
+      "doi": "10.3390/e25010021",
+      "year": 2022,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Does Gravity Care About Electric Charge? A Minimalist Model and Experi…",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "A Meat-Summer Night's Dream: A Tangible Design Fiction Exploration of …",
+      "doi": "10.1145/3772318.3790678",
+      "year": 2025,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Supporting 'Good Habits' through User-Led Design of Food Safety Applic…",
+      "year": 2016,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Current Safety Legislation of Food Processing Smart Robot Systems The …",
+      "year": 2023,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Association Between Ultra-Processed Food Intake and All-Cause Mortalit…",
+      "doi": "10.1093/aje/kwac039",
+      "year": 2022,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Associations of meat consumption and changes with all-cause mortality …",
+      "doi": "10.1016/j.clnu.2020.06.040",
+      "year": 2021,
+      "format": "closed",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Dietary patterns and risk of mortality from cardiovascular disease, ca…",
+      "doi": "10.1161/CIRCULATIONAHA.108.771881",
+      "year": 2008,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Neurotrophic Effects of Intermittent Fasting, Calorie Restriction and …",
+      "year": 2023,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "CaLoRAify: Calorie Estimation with Visual-Text Pairing and LoRA-Driven…",
+      "year": 2024,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Bat Algorithm is Better Than Intermittent Search Strategy",
+      "year": 2014,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Why males compete rather than care, with an application to supplying c…",
+      "doi": "10.1007/s11538-020-00800-4",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Guaranteed inference in topic models",
+      "year": 2015,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Sum rules for the Gravitational Form Factors using light-front dressed…",
+      "doi": "10.1007/s00601-023-01841-w",
+      "year": 2023,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Comparative Effects of 16:8 Intermittent Fasting and Continuous Calori…",
+      "doi": "10.62438/tunismed.v103i8.5777",
+      "year": 2025,
+      "format": "closed",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Effects of Dietary Weight Loss on Brain-Derived Neurotrophic Factor in…",
+      "doi": "10.1093/nutrit/nuaf308",
+      "year": 2026,
+      "format": "closed",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "The effect of continuous or intermittent calorie-restricted diet on bo…",
+      "doi": "10.1016/j.clnesp.2026.102940",
+      "year": 2026,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Comparison of time-restricted eating and a six-meal diet: Effects on b…",
+      "doi": "10.6133/apjcn.202508_34(4).0010",
+      "year": 2025,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "A Pilot Randomized Control Trial to Assess the Adjunctive Effect of Di…",
+      "doi": "10.1016/j.cgh.2025.03.020",
+      "year": 2025,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Is Fasting Superior to Continuous Caloric Restriction for Weight Loss …",
+      "doi": "10.3390/nu16203533",
+      "year": 2024,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Navigation in the Ancient Mediterranean and Beyond",
+      "doi": "10.14586/astroedu/1645",
+      "year": 2017,
+      "format": "pdf_only",
+      "resolved": false,
+      "note": "unpaywall has no record of \"10.14586/astroedu/1645\""
+    },
+    {
+      "source": "arxiv",
+      "title": "Diet Your LLM: Dimension-wise Global Pruning of LLMs via Merging Task-…",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Least-cost diets to teach optimization and consumer behavior, with app…",
+      "year": 2023,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Higher Mediterranean diet score is associated with longer time between…",
+      "year": 2023,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Automated cardiovascular magnetic resonance image analysis with fully …",
+      "year": 2017,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Zero-Dimensional Cardiovascular Modeling: A Personalized Approach to N…",
+      "year": 2025,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Associations of Dietary Patterns and Micronutrients With Major Adverse…",
+      "doi": "10.1002/fsn3.72082",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "High postprandial endotoxemia is associated with recurrence of cardiov…",
+      "doi": "10.1016/j.ajcnut.2026.101323",
+      "year": 2026,
+      "format": "closed",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Association between first ischemic major acute cardiovascular events a…",
+      "doi": "10.1016/j.envint.2026.110326",
+      "year": 2026,
+      "format": "closed",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Updated trends in the global prevalence and burden of mental disorders…",
+      "doi": "10.1016/S0140-6736(26)00519-2",
+      "year": 2026,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Association of Dietary Patterns and Genetic Risk With Cardiovascular D…",
+      "doi": "10.1161/JAHA.125.048476",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "The Mediterranean Diet and Cardiovascular Protection: Biochemical Mech…",
+      "doi": "10.3390/nu18091320",
+      "year": 2026,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "From Workplace to Residence: The Spillover Effects of Minimum Wage Pol…",
+      "year": 2022,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Does regional variation in wage levels identify the effects of a natio…",
+      "year": 2023,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Minimum Wages and Optimal Redistribution",
+      "year": 2022,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Minimum Wages in Concentrated Labor Markets",
+      "year": 2021,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "The effect of minimum wages on employment in the presence of productiv…",
+      "year": 2025,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "arxiv",
+      "title": "Firms' Risk Adjustments to Minimum Wage: Financial Leverage and Labor …",
+      "year": 2024,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Paid Leave for Personal and Family Illness: Impacts of State Policy De…",
+      "doi": "10.1215/03616878-11856131",
+      "year": 2025,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Prevalence of food and housing insecurity among direct support profess…",
+      "doi": "10.1016/j.dhjo.2024.101769",
+      "year": 2025,
+      "format": "pdf_only",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "The Impact of Recent State and Local Minimum Wage Increases on Nursing…",
+      "doi": "10.1007/s12122-022-09338-x",
+      "year": 2022,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "The impact of minimum wage increases on cigarette smoking.",
+      "doi": "10.1002/hec.4362",
+      "year": 2021,
+      "format": "closed",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "Responding to an Increased Minimum Wage: A Mixed Methods Study of Chil…",
+      "year": 2018,
+      "format": "html",
+      "resolved": true
+    },
+    {
+      "source": "pubmed",
+      "title": "The Maternity Benefit (Amendment) Act, 1988 (No. 61 of 1988), 30 Novem…",
+      "year": 1988,
+      "format": "closed",
+      "resolved": true
+    }
+  ]
+}

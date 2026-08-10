@@ -482,8 +482,33 @@ Three buckets, not two, because only the middle one is a PDF extractor's job:
 The sample is `testdata/corpus/contradictions.json`, whose ten questions span
 epidemiology, demography, energy, ML benchmarks, nutrition and economics — a
 single-domain sample would answer this question wrong in a predictable
-direction. Two skews get reported rather than smoothed over: arXiv's HTML only
-exists for papers from late 2023 onward, so back-catalogue coverage understates
-what current research will look like, and a hundred papers gives an interval
-rather than a point.
+direction.
+
+```
+mole dev academic-coverage testdata/corpus/contradictions.json --per-question 6
+```
+
+**Measured, 2026-08-10** — 97 papers, 0 search failures, 3 DOIs Unpaywall could
+not resolve (counted, not dropped). Raw rows in `testdata/coverage/`.
+
+| | html | pdf_only | closed |
+|---|---|---|---|
+| **all** | 38 (39%) | 48 (49%) | 11 (11%) |
+| pre-2024 | 10 | **42 (75%)** | 4 |
+| 2024+ | 28 (68%) | **6 (15%)** | 7 |
+| arXiv | 19 | 41 (68%) | 0 |
+| PubMed | 19 | 7 (19%) | 11 |
+
+The era split is the answer, and reporting one blended number would have been
+misleading. For research published since arXiv's HTML rollout, 68% is readable
+today and only 15% would need a PDF extractor. For the back catalogue it is 75%.
+PDF-only is also overwhelmingly an arXiv phenomenon (68%) rather than a
+biomedical one (19%), where the barrier is closed access instead.
+
+So tier 1 is built first and tier 2 stays unbuilt: HTML covers most of the
+current literature mole is actually asked about, and a PDF extractor's payoff is
+real but bounded, concentrated in historical papers. The number to watch is
+whether real sessions cite older work than this corpus does — `mole stats
+--fetch` counts `unsupported_type` from live runs and is the independent check
+on this one.
   
