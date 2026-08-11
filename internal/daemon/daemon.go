@@ -361,3 +361,119 @@ func (s *Server) shutdown(wg *sync.WaitGroup, cause error) error {
 	// checked ownership first. It did not.
 	return cause
 }
+
+// -----------------------------------------------------------------------------
+// Inspecting an install (for `mole doctor`)
+// -----------------------------------------------------------------------------
+
+// SocketState is what `mole doctor` can say about the MCP socket without starting
+// a daemon.
+type SocketState struct {
+	Path string
+	// DirMode and DirOwned describe the parent directory — the control that
+	// closes the window between net.Listen and Chmod.
+	DirMode  os.FileMode
+	DirOwned bool
+	DirOK    bool
+	// Present is whether a socket file exists at all; Live is whether something
+	// accepts on it.
+	Present bool
+	Live    bool
+	Mode    os.FileMode
+	// Problems are the reasons this install would be refused or is exposed,
+	// phrased for a user rather than a caller.
+	Problems []string
+	// Notes are true statements that are not problems.
+	Notes []string
+}
+
+// InspectSocket reports the §3.5 properties of a socket path.
+//
+// It calls the SAME checkPrivateDir the daemon enforces, rather than a second
+// hand-written check beside it: `mole doctor` existed for two milestones saying
+// socket permissions were "informational until M7 lands", M7 landed, and a check
+// that is free to drift from the thing it gates is worth nothing. This is the
+// M8 lesson (§12.1's "every crossing is logged" emitted nothing for a milestone)
+// applied before it costs anything.
+//
+// Reports rather than fixes. A directory that is not ours is not ours to chmod,
+// and a user who pointed the socket somewhere shared should be told.
+func InspectSocket(path string) SocketState {
+	st := SocketState{Path: path}
+	if path == "" {
+		st.Problems = append(st.Problems, "no socket path")
+		return st
+	}
+	if n := len(path); n >= maxSocketPath {
+		st.Problems = append(st.Problems, fmt.Sprintf(
+			"the path is %d bytes, over the %d the kernel allows; choose a shorter one",
+			n, maxSocketPath))
+	}
+
+	dir := filepath.Dir(path)
+	if fi, err := os.Stat(dir); err == nil {
+		st.DirMode = fi.Mode().Perm()
+		st.DirOwned = true
+		if s, ok := fi.Sys().(*syscall.Stat_t); ok {
+			st.DirOwned = s.Uid == uint32(os.Getuid())
+		}
+		if err := checkPrivateDir(dir); err != nil {
+			st.Problems = append(st.Problems, err.Error())
+		} else {
+			st.DirOK = true
+		}
+	} else {
+		// Absent is fine: the daemon creates it 0700. Said out loud so a reader
+		// does not take a tick as "checked and private".
+		st.Notes = append(st.Notes,
+			"the directory does not exist yet; mole serve will create it 0700")
+		st.DirOK = true
+	}
+
+	info, err := os.Stat(path)
+	switch {
+	case err != nil:
+		st.Notes = append(st.Notes, "no socket yet — the daemon is not running")
+		return st
+	case info.Mode()&os.ModeSocket == 0:
+		st.Present = true
+		st.Problems = append(st.Problems, "the path exists and is not a socket")
+		return st
+	}
+	st.Present = true
+	st.Mode = info.Mode().Perm()
+	if st.Mode&0o077 != 0 {
+		st.Problems = append(st.Problems, fmt.Sprintf(
+			"the socket is mode %#o — group or other can connect", st.Mode))
+	}
+
+	// Dialled, because a socket file that nothing accepts on is the state a dead
+	// daemon leaves and the state a squatter creates, and doctor should not report
+	// a stale file as a running daemon.
+	conn, derr := net.DialTimeout("unix", path, 2*time.Second)
+	if derr == nil {
+		_ = conn.Close()
+		st.Live = true
+	} else {
+		st.Notes = append(st.Notes,
+			"the socket file exists but nothing accepts on it; mole serve clears it")
+	}
+	return st
+}
+
+// OK reports whether this install would be accepted.
+func (s SocketState) OK() bool { return len(s.Problems) == 0 }
+
+// Summary is the one-line form for doctor.
+func (s SocketState) Summary() string {
+	switch {
+	case !s.OK():
+		return s.Path + " — " + s.Problems[0]
+	case s.Live:
+		return fmt.Sprintf("%s, mode %#o, daemon listening", s.Path, s.Mode)
+	case s.Present:
+		return fmt.Sprintf("%s, mode %#o, no daemon accepting", s.Path, s.Mode)
+	default:
+		return s.Path + " — not created yet (mole serve makes it 0600 in a 0700 directory)"
+	}
+}

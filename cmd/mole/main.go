@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -23,6 +24,7 @@ import (
 	"github.com/lajosdeme/mole/internal/compute/sandbox"
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/daemon"
 	"github.com/lajosdeme/mole/internal/llm"
 	"github.com/lajosdeme/mole/internal/obs"
 	"github.com/lajosdeme/mole/internal/pricing"
@@ -159,8 +161,8 @@ func cmdMigrate(ctx context.Context, path string) error {
 
 // cmdDoctor is where the "check this at startup, not in the README"
 // requirements live: the database, the schema, the ledger's own consistency,
-// and the credentials M1 needs to make a call. Socket permissions and sandbox
-// availability get added as their milestones land.
+// the credentials M1 needs to make a call, the sandbox M8 uses when it is there,
+// and the MCP socket M7 listens on.
 //
 // It exits non-zero when something is actually broken, so a setup script can
 // branch on it.
@@ -233,6 +235,7 @@ func cmdDoctor(ctx context.Context, path string) error {
 
 	reportConfig(r)
 	reportSandbox(ctx, r)
+	reportSocket(r)
 
 	if r.pending > 0 {
 		fmt.Println("\nsome checks are informational until their milestone lands")
@@ -323,6 +326,82 @@ func reportSandbox(ctx context.Context, r *checks) {
 		r.print(false, "", "  local SQL analysis is unaffected (§12.2)")
 	}
 }
+
+// reportSocket checks the MCP socket's §3.5 properties.
+//
+// require, not note: M7 has landed, and an exposed socket is a real problem with
+// this install rather than a milestone that has not arrived — anything that can
+// connect can spend the user's budget and read every claim they have collected.
+// A socket that does not exist yet is not a problem, and says so.
+//
+// The check calls daemon.InspectSocket, which calls the same checkPrivateDir the
+// daemon enforces. A doctor line that reported a property nothing enforced, or
+// enforced a property doctor did not report, is the failure this project has
+// already made once (§12.1's "every crossing is logged", which emitted nothing
+// for a whole milestone).
+func reportSocket(r *checks) {
+	st := daemon.InspectSocket(defaultSocket())
+	r.require(st.OK(), "mcp socket", st.Summary())
+	// The first problem is already in the summary line.
+	for _, p := range st.Problems[min(1, len(st.Problems)):] {
+		r.print(false, "", "  "+p)
+	}
+	if st.Present {
+		// Notes about an absent socket would only repeat the summary.
+		for _, n := range st.Notes {
+			r.print(st.OK(), "", "  "+n)
+		}
+	}
+	if st.DirMode != 0 {
+		owner := "owned by this user"
+		if !st.DirOwned {
+			owner = "owned by another user"
+		}
+		r.print(st.DirOK, "", fmt.Sprintf("  directory %#o, %s", st.DirMode, owner))
+	}
+	// The other half of §3.5 that a user can get wrong on their own: a key in
+	// .mcp.json is a leaked key, because that file gets committed.
+	if path, found := mcpConfigWithSecret(); found {
+		r.require(false, "mcp config", path+" contains what looks like an API key")
+		r.print(false, "", "  .mcp.json is committed; credentials belong in "+
+			config.Path()+" (mode 0600), and the shim passes none")
+	}
+}
+
+// mcpConfigWithSecret looks for a credential in the MCP config files a coding
+// agent reads.
+//
+// Cheap and specific: the shim takes no credentials at all (§5.2), so anything
+// key-shaped in there was put there by hand and is both useless and exposed. Only
+// the files in the current directory and the user's home are read — this is a
+// check, not a filesystem scan.
+func mcpConfigWithSecret() (string, bool) {
+	home, _ := os.UserHomeDir()
+	candidates := []string{".mcp.json"}
+	if home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".mcp.json"),
+			filepath.Join(home, ".claude.json"))
+	}
+	for _, path := range candidates {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if !strings.Contains(string(raw), "mole") {
+			continue
+		}
+		if secretPattern.MatchString(string(raw)) {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+// secretPattern matches the key shapes the providers mole uses actually issue,
+// rather than the word "key": a config naming `MOLE_DB_PATH` is not a leak, and a
+// pattern that flagged it would train the user to ignore this line.
+var secretPattern = regexp.MustCompile(`(sk-[A-Za-z0-9_-]{16,}|tvly-[A-Za-z0-9_-]{16,}|BSA[A-Za-z0-9_-]{16,})`)
 
 // reportConfig checks credentials and settings. These are the "verify at
 // startup, not in a README" requirements: a missing search key is a session

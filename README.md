@@ -471,11 +471,18 @@ Stated plainly rather than left to be discovered:
   — `docker` 27.8MB, `gh` 38.6MB, `kubectl` 84.8MB. It would matter for a
   per-invocation container image or an edge target, and neither is the plan.
 - **`mole doctor` checks what has landed, and says so about the rest.** The store,
-  schema, pricing table, ledger reconciliation, config permissions, and both
-  provider credentials are checked for real — including whether the search provider
-  returns page content, which decides whether §17.1's gate has a denominator. The
-  contact email (Unpaywall/NCBI, M6), MCP socket permissions (M7), and sandbox
-  availability (M8) are reported as informational until their milestone lands.
+  schema, pricing table, ledger reconciliation, config permissions, both provider
+  credentials — including whether the search provider returns page content, which
+  decides whether §17.1's gate has a denominator — the sandbox, and the MCP socket
+  are all checked for real. The socket check is a *requirement* rather than a note
+  now that M7 has landed: an exposed socket directory or a world-connectable socket
+  fails the command, because anything that can connect can spend the user's budget
+  and read every claim they have collected. It calls the same `checkPrivateDir` the
+  daemon enforces rather than a second hand-written check beside it. `doctor` also
+  reads `.mcp.json` (and `~/.claude.json`) for a mole entry holding something
+  key-shaped: the shim passes no credentials at all, so a key there is both useless
+  and committed. The contact email stays a *note* — an install with no academic
+  provider in use is not broken for want of an address.
 
 ---
 
