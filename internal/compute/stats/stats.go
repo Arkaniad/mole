@@ -200,6 +200,15 @@ type Test struct {
 	Statistic float64 `json:"statistic"`
 	DF        float64 `json:"df"`
 	P         float64 `json:"p"`
+	// PAdjusted is P after the Holm–Bonferroni correction for however many
+	// pairwise comparisons were run, and it is the value every verdict is derived
+	// from. Equal to P when there was one comparison, which is what makes the
+	// two-group and k-group paths the same code rather than two rules.
+	PAdjusted float64 `json:"p_adjusted,omitempty"`
+	// Comparisons is how many pairs were tested together. 0 or 1 means no
+	// correction was needed; a reader seeing 15 knows why the adjusted value is
+	// so much larger than the raw one.
+	Comparisons int `json:"comparisons,omitempty"`
 	// EffectSize is Cohen's d on the pooled standard deviation. §4 asks for it
 	// by name, and for the reason it is usually asked for: a significant
 	// difference can still be too small to act on, and p alone cannot say so.
@@ -307,6 +316,10 @@ func WelchOrReason(measure string, a, b Group) (Test, error) {
 		Statistic: t, DF: df, P: p, EffectSize: d,
 		CILow: diff - half, CIHigh: diff + half,
 	}
+	// PAdjusted equals P until something corrects it. Set here rather than left
+	// zero, so a caller reading PAdjusted on a single test gets the p-value the
+	// verdict came from instead of a zero that looks overwhelmingly significant.
+	test.PAdjusted = p
 	test.Verdict = VerdictFor(p, a.N, b.N)
 	test.Summary = summarize(test)
 	return test, nil
@@ -372,7 +385,18 @@ func summarize(t Test) string {
 	detail := fmt.Sprintf(", Welch t = %s, effect size %s (%s), 95%% CI %s to %s",
 		Num(t.Statistic), Num(t.EffectSize), Magnitude(t.EffectSize),
 		Num(t.CILow), Num(t.CIHigh))
-	return Sentence(head, t.Verdict, t.P, detail)
+	if t.Comparisons > 1 {
+		// Stated in the sentence a claim must quote, not only in the JSON. A model
+		// handed "p = 0.03" out of fifteen comparisons will write "significant",
+		// and the only defence is for the correction to be part of the text it has
+		// to reproduce verbatim.
+		detail += fmt.Sprintf(", unadjusted p = %s over %d pairwise comparisons",
+			PValue(t.P), t.Comparisons)
+	}
+	// The ADJUSTED p is the one in the sentence, because it is the one the verdict
+	// came from. The raw value is in the detail clause above when there was more
+	// than one comparison.
+	return Sentence(head, t.Verdict, t.PAdjusted, detail)
 }
 
 // magnitude labels an effect size, because "d = 0.21" means nothing to a reader

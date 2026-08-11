@@ -82,8 +82,10 @@ func TestATestReachesTheEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(env.TestResults) != 1 {
-		t.Fatalf("%d test(s), want exactly 1: %+v", len(env.TestResults), env.TestResults)
+	// Three named groups in the fixture, so three pairs. Ordered most significant
+	// first, which puts the two large well-separated groups at the top.
+	if len(env.TestResults) != 3 {
+		t.Fatalf("%d test(s), want 3 (one per pair): %+v", len(env.TestResults), env.TestResults)
 	}
 	got := env.TestResults[0]
 	if got.Verdict != stats.Significant {
@@ -110,13 +112,13 @@ func TestATestReachesTheEnvelope(t *testing.T) {
 	}
 }
 
-// TestOnlyTheTwoLargestGroupsAreCompared.
+// TestEveryPairIsComparedWithACorrection.
 //
-// Comparing every pair of k groups is k(k−1)/2 tests against the same alpha,
-// which manufactures a significant result out of noise as soon as there are a
-// few groups — in the one place mole reports statistics as if they settled
-// something.
-func TestOnlyTheTwoLargestGroupsAreCompared(t *testing.T) {
+// The gate used to compare the two largest buckets only, on the argument that
+// k(k−1)/2 tests against the same alpha manufacture significance out of noise.
+// True, and the remedy for it is a multiple-comparison correction rather than
+// declining to look: a user with five regions was told about two of them.
+func TestEveryPairIsComparedWithACorrection(t *testing.T) {
 	env, err := gate.Aggregate(context.Background(), samplesDB(t, 40), comparisonQuery(),
 		gate.Options{KFloor: 2})
 	if err != nil {
@@ -131,21 +133,65 @@ func TestOnlyTheTwoLargestGroupsAreCompared(t *testing.T) {
 	if named != 3 {
 		t.Fatalf("%d named buckets, want 3 — the fixture is not exercising the choice", named)
 	}
-	if len(env.TestResults) != 1 {
-		t.Fatalf("%d test(s) over 3 groups, want 1", len(env.TestResults))
+	if len(env.TestResults) != 3 {
+		t.Fatalf("%d test(s) over 3 groups, want 3", len(env.TestResults))
 	}
-	if strings.Contains(env.TestResults[0].GroupA+env.TestResults[0].GroupB, "tiny") {
-		t.Errorf("the six-record group was compared: %+v", env.TestResults[0])
+
+	// The small group is compared now, and its results carry their own verdict
+	// rather than being hidden: n = 6 is underpowered, which is a statement about
+	// the data the user can act on.
+	var sawTiny bool
+	for _, tr := range env.TestResults {
+		if strings.Contains(tr.GroupA+tr.GroupB, "tiny") {
+			sawTiny = true
+			if tr.Verdict != stats.Underpowered {
+				t.Errorf("the six-record group reported %q, want underpowered", tr.Verdict)
+			}
+		}
+		if tr.Comparisons != 3 {
+			t.Errorf("comparisons = %d, want 3 — the correction has to know how many "+
+				"tests it is correcting for", tr.Comparisons)
+		}
+		if tr.PAdjusted < tr.P {
+			t.Errorf("adjusted p %v is below the raw p %v", tr.PAdjusted, tr.P)
+		}
 	}
+	if !sawTiny {
+		t.Error("the smallest group was not compared at all")
+	}
+
 	var said bool
 	for _, n := range env.Notes {
-		if strings.Contains(n, "largest groups only") {
+		if strings.Contains(n, "Holm-adjusted") {
 			said = true
 		}
 	}
 	if !said {
-		t.Error("nothing says only two groups were compared, so a reader takes the " +
-			"one test as covering all of them")
+		t.Errorf("nothing says the p-values were adjusted, so a reader takes three "+
+			"tests at face value: %v", env.Notes)
+	}
+}
+
+// TestTheCorrectionIsInTheSentenceAClaimMustQuote.
+//
+// §11.5 makes a claim quote the passage verbatim, which is the only lever that
+// stops a model writing "significant" over a p-value it should not have believed.
+// A correction present only in the JSON would not survive the one path that
+// matters.
+func TestTheCorrectionIsInTheSentenceAClaimMustQuote(t *testing.T) {
+	env, err := gate.Aggregate(context.Background(), samplesDB(t, 40), comparisonQuery(),
+		gate.Options{KFloor: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := env.Text()
+	if !strings.Contains(text, "pairwise comparisons") {
+		t.Errorf("the passage does not mention the correction:\n%s", text)
+	}
+	for _, tr := range env.TestResults {
+		if !strings.Contains(text, tr.Summary) {
+			t.Errorf("a test summary is missing from the passage: %q", tr.Summary)
+		}
 	}
 }
 

@@ -554,38 +554,41 @@ func (a *accumulator) envelope(query string) (AggregateEnvelope, []int) {
 	return env, described
 }
 
-// addTests compares the two largest buckets, when the query supplied enough to.
+// addTests compares the buckets pairwise, when the query supplied enough to.
 //
-// TWO, not every pair. Comparing every pair of k buckets is k(k−1)/2 tests
-// against the same alpha, which manufactures a significant result out of noise
-// as soon as there are a handful of groups — and it would do it in the one
-// place mole reports statistics as though they settled something. One
-// comparison, named, with no multiple-testing correction needed because there
-// is nothing to correct for.
+// It used to compare the two largest and nothing else, with the reason written
+// into the code: comparing every pair of k buckets is k(k−1)/2 tests against the
+// same alpha, which manufactures significance out of noise. That is right about
+// the danger and wrong about the remedy — it is why multiple-comparison
+// corrections exist, and refusing to look at eight groups out of ten is not the
+// only alternative. A user with five regions was told about two of them.
+//
+// So every pair is tested and every p is Holm-adjusted before any verdict is
+// derived from it (stats.Pairwise). One comparison is the identity case of the
+// same code, so the two-group result is unchanged and there is no second verdict
+// rule for it.
 func (a *accumulator) addTests(env *AggregateEnvelope) {
-	var named []Bucket
+	var groups []stats.Group
 	for _, b := range env.TopK {
-		if !b.Other {
-			named = append(named, b)
+		if b.Other {
+			// The folded remainder is not a group: its key names no entity and its
+			// sums cover buckets a reader cannot see.
+			continue
+		}
+		if g, ok := groupFrom(b); ok {
+			groups = append(groups, g)
 		}
 	}
-	if len(named) < 2 {
+	if len(groups) < 2 {
 		return
 	}
-	// TopK is already ordered by count.
-	first, ok := groupFrom(named[0])
-	if !ok {
+	tests, note := stats.Pairwise(a.measureName(), groups)
+	if len(tests) == 0 {
 		return
 	}
-	second, ok := groupFrom(named[1])
-	if !ok {
-		return
-	}
-	measure := a.measureName()
-	if t, ok := stats.Welch(measure, first, second); ok {
-		env.TestResults = append(env.TestResults, t)
-		env.Notes = append(env.Notes, "a two-sample comparison was run on the two "+
-			"largest groups only; comparing every pair would invent significance")
+	env.TestResults = append(env.TestResults, tests...)
+	if note != "" {
+		env.Notes = append(env.Notes, note)
 	}
 }
 

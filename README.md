@@ -358,11 +358,6 @@ Stated plainly rather than left to be discovered:
   windows" would mean re-running each comparison on deterministic subsets, which
   is three more queries per hypothesis and a splitting rule nobody has chosen.
   Named rather than quietly dropped.
-- **The comparison is two groups, and only ever two.** Comparing every pair of
-  k groups is k(k−1)/2 tests against the same alpha, which manufactures
-  significance out of noise. The two largest are compared and the envelope says
-  so. A proper k-group test (ANOVA, or pairwise with a correction) is the
-  obvious extension.
 - **Parquet is not readable.** SQLite cannot read it and no decoder is written,
   so a Parquet export has to be converted before `mole connect` will take it.
   Named because "point mole at my data folder" quietly skipping half a folder is
@@ -911,6 +906,42 @@ statistics library in a binary that is one static file on purpose. It is checked
 against published critical values at df = 2, 10, 20, 48 and ∞, and against the
 closed form `1 − |t|/√(t²+2)` at df = 2. The incomplete beta's two evaluation
 paths are asserted to agree, because that identity is what both of them rest on.
+
+### Comparing more than two groups
+
+The gate compared the two largest buckets and nothing else, with the reason
+written into the code: k(k−1)/2 tests against the same alpha manufacture
+significance out of noise. That is right about the danger and wrong about the
+remedy — ten groups at α = 0.05 give a 90% chance of at least one spurious
+"significant", which is why multiple-comparison corrections exist. Declining to
+look at eight groups out of ten is not the only alternative, and a user with five
+regions was told about two of them.
+
+Every pair is tested now, and every p is **Holm–Bonferroni adjusted** before any
+verdict is derived from it. Holm rather than plain Bonferroni because it is
+uniformly more powerful at the same family-wise error rate — it dominates
+Bonferroni rather than approximating it — and rather than Benjamini–Hochberg
+because BH controls the false-discovery *rate*, which is right for screening a
+hundred hypotheses and wrong when a research tool is about to state a difference
+as a finding.
+
+Three details that are the point rather than the implementation:
+
+- **One comparison is the identity case of the same code.** There is no separate
+  two-group rule, and no version of the verdict that only the single-comparison
+  path takes.
+- **The correction is in the sentence a claim must quote**, not only in the JSON:
+  `…, unadjusted p = 0.037 over 15 pairwise comparisons`. §11.5 is the only lever
+  that stops a model writing "significant" over a p-value it should not have
+  believed, and a correction present only in a field it never reads is no lever at
+  all.
+- **Six groups is the cap** (fifteen comparisons), past which Holm's threshold for
+  the smallest p is α/15 and a genuine moderate effect stops being detectable. The
+  largest are compared and the envelope says how many were left out — the honest
+  version of the old behaviour rather than a silent one.
+
+A test pins the property the old restriction existed for: a result that is
+significant on its own stops being significant as one of fifteen.
 
 ### The audit trail: a table, not a log line
 

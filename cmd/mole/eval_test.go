@@ -94,8 +94,11 @@ func TestEvalNamesWhatIsNotMeasured(t *testing.T) {
 		"not measured yet", "claim precision", "grounding rate",
 		"citation accuracy", "contradiction recall", "staleness detection",
 		"exfil regression",
-		// What each is actually waiting for.
-		"§14.2", "aggregation gate",
+		// What each is actually waiting for. The exfil line used to say "needs the
+		// aggregation gate (M8)" long after M8 landed; it is measured now for a
+		// session that used a connector, and this session did not, so what it must
+		// say is where the assertion IS enforced.
+		"§14.2", "enforced at the gate",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("scorecard does not mention %q:\n%s", want, out)
