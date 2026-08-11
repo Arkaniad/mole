@@ -254,3 +254,87 @@ func TestACodeRunCrossesAndIsRecorded(t *testing.T) {
 		t.Errorf("withheld = %d, want the two undeclared outputs", c.ColumnsWithheld)
 	}
 }
+
+// TestLocalClaimsArePersisted.
+//
+// Found by a live run, not by reading: the actor returned claims in Result and
+// wrote none. The executor carries Result.Claims in memory for the digest only, and
+// the report, the scorecard and `mole ask` are all built from the STORE — so a
+// local-only session printed "1 claim(s)" as it went past and then reported "No
+// verifiable evidence was found".
+func TestLocalClaimsArePersisted(t *testing.T) {
+	db, sessionID := crossingStore(t)
+	reg := localRegistry(t)
+	fl := scriptedModel(`[
+	  {"connector":"sales","table":"tickets","template":"distribution",
+	   "columns":{"key":"region"},"question":"How do records split by region?"}
+	]`, quoteAGroupLine)
+
+	a := &actors.LocalComputeActor{Connectors: reg, LLM: fl, Store: db}
+	res, err := a.Run(context.Background(), core.Lead{
+		ID: "lead-1", SessionID: sessionID, Query: "how do the regions compare",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Claims) == 0 {
+		t.Fatal("the run produced no claims; the test cannot observe persistence")
+	}
+
+	var stored []*core.Claim
+	if err := db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		var err error
+		stored, err = q.ListClaims(ctx, sessionID, 100)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != len(res.Claims) {
+		t.Fatalf("%d claim(s) in the store, %d returned — a local session's evidence "+
+			"never reaches the report", len(stored), len(res.Claims))
+	}
+	if stored[0].Quote == "" || stored[0].Source == "" {
+		t.Errorf("stored claim lost its provenance: %+v", stored[0])
+	}
+}
+
+// TestLocalClaimsSurviveACancelledRun, for the reason web.go's do: the calls have
+// been made and the ledger will charge for them either way.
+func TestLocalClaimsSurviveACancelledRun(t *testing.T) {
+	db, sessionID := crossingStore(t)
+	reg := localRegistry(t)
+	plans := `[
+	  {"connector":"sales","table":"tickets","template":"distribution",
+	   "columns":{"key":"region"},"question":"How do records split by region?"}
+	]`
+	inner := scriptedModel(plans, quoteAGroupLine)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a := &actors.LocalComputeActor{Connectors: reg, Store: db,
+		LLM: &fakeLLM{mineFunc: func(prompt string) string {
+			out := inner.mineFunc(prompt)
+			if !strings.Contains(prompt, "Research question:") {
+				// The mining call has returned; cancel before the write.
+				cancel()
+			}
+			return out
+		}}}
+
+	if _, err := a.Run(ctx, core.Lead{
+		ID: "lead-1", SessionID: sessionID, Query: "how do the regions compare",
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var stored []*core.Claim
+	if err := db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		var err error
+		stored, err = q.ListClaims(ctx, sessionID, 100)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) == 0 {
+		t.Fatal("a cancelled run discarded evidence it had already paid for")
+	}
+}

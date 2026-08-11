@@ -61,7 +61,9 @@ and the planner replans against a rolling digest as evidence arrives. The report
 is paid from escrow held back at session start, so a run that spends everything
 it is allowed can still afford to write up what it found.
 
---mode accepts only "report"; dataset and chain arrive with their milestones.
+--mode is "report" (prose with citations) or "dataset" (§13: a table, one row per
+entity, merged across sources — needs --schema or --schema-file). Chain mode
+arrives with its milestone.
 `
 
 // researchOpts is what the flags resolve to.

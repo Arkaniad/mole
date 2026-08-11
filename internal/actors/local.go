@@ -193,6 +193,28 @@ func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, e
 		}
 	}
 
+	// Claims are PERSISTED here, and were not until a live run made it obvious.
+	//
+	// WebActor and AcademicActor each write their own claims; this actor returned
+	// them in Result and wrote nothing, and the executor only carries Result.Claims
+	// in memory for the digest. So every local claim was lost: a live local-only
+	// session reported "1 claim(s)" on its way past and then produced a report
+	// saying "No verifiable evidence was found", `mole eval` said "no claims", and
+	// `mole ask` had nothing to answer from — because the report and the scorecard
+	// are both built from the STORE.
+	//
+	// Uncancellable, for the reason web.go gives: by this point the model calls
+	// have happened and the ledger will charge for them whether or not this write
+	// lands.
+	if len(res.Claims) > 0 && a.Store != nil {
+		if err := a.Store.WithTx(context.WithoutCancel(ctx),
+			func(ctx context.Context, tx store.Tx) error {
+				return tx.InsertClaims(ctx, res.Claims)
+			}); err != nil {
+			return res, fmt.Errorf("actors/local: persist claims: %w", err)
+		}
+	}
+
 	// The audit trail, on an uncancellable context and for a reason stronger than
 	// the one that applies to claims: the data has ALREADY left the machine by
 	// this point, so a cancelled write loses the record of a crossing that
