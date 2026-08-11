@@ -222,30 +222,41 @@ func Normalise(s string) string {
 	return strings.Join(kept, " ")
 }
 
-// fold maps the common accented Latin letters onto their base form.
+// foldTable maps the accented Latin letters that appear in entity names onto
+// their base form.
+//
+// A map, and it started as two parallel strings — which silently misaligned. The
+// "from" side had 75 runes and the "to" side 79, so every letter past the drift
+// mapped to the wrong base: "Łódź" normalised to "dodz" rather than "lodz". Two
+// parallel sequences whose correspondence nothing checks is the construct that
+// caused it, so the correspondence is now written out and cannot drift.
 //
 // A table rather than golang.org/x/text/unicode/norm: this binary has no
 // third-party dependency it does not need, and the set that matters for entity
 // names on the web is small and stable.
+var foldTable = map[rune]rune{
+	'à': 'a', 'á': 'a', 'â': 'a', 'ã': 'a', 'ä': 'a', 'å': 'a', 'ā': 'a', 'ă': 'a', 'ą': 'a',
+	'è': 'e', 'é': 'e', 'ê': 'e', 'ë': 'e', 'ē': 'e', 'ĕ': 'e', 'ė': 'e', 'ę': 'e', 'ě': 'e',
+	'ì': 'i', 'í': 'i', 'î': 'i', 'ï': 'i', 'ĩ': 'i', 'ī': 'i', 'ĭ': 'i', 'į': 'i',
+	'ò': 'o', 'ó': 'o', 'ô': 'o', 'õ': 'o', 'ö': 'o', 'ø': 'o', 'ō': 'o', 'ŏ': 'o', 'ő': 'o',
+	'ù': 'u', 'ú': 'u', 'û': 'u', 'ü': 'u', 'ũ': 'u', 'ū': 'u', 'ŭ': 'u', 'ů': 'u', 'ű': 'u', 'ų': 'u',
+	'ç': 'c', 'ć': 'c', 'ĉ': 'c', 'ċ': 'c', 'č': 'c',
+	'ñ': 'n', 'ń': 'n', 'ņ': 'n', 'ň': 'n',
+	'ý': 'y', 'ÿ': 'y', 'ŷ': 'y',
+	'ž': 'z', 'ź': 'z', 'ż': 'z',
+	'š': 's', 'ś': 's', 'ŝ': 's', 'ş': 's', 'ß': 's',
+	'ğ': 'g', 'ĝ': 'g',
+	'ď': 'd', 'đ': 'd', 'ð': 'd',
+	'ł': 'l', 'ļ': 'l', 'ľ': 'l',
+	'ŕ': 'r', 'ř': 'r',
+	'ť': 't', 'ţ': 't', 'þ': 't',
+	'æ': 'a', 'œ': 'o',
+}
+
+// fold maps one rune onto its base form, or returns it unchanged.
 func fold(r rune) rune {
-	const (
-		from = "àáâãäåāăąèéêëēĕėęěìíîïĩīĭįòóôõöøōŏőùúûüũūŭůűųçćĉċčñńņňýÿŷžźżšśŝşğĝďđłļľŕřťţ"
-		to   = "aaaaaaaaaeeeeeeeeeiiiiiiiiooooooooouuuuuuuuuucccccnnnnyyyzzzsssssgggddllllrrttt"
-	)
-	if i := strings.IndexRune(from, r); i >= 0 {
-		return []rune(to)[len([]rune(from[:i]))]
-	}
-	switch r {
-	case 'ß':
-		return 's'
-	case 'æ':
-		return 'a'
-	case 'œ':
-		return 'o'
-	case 'þ':
-		return 't'
-	case 'ð':
-		return 'd'
+	if base, ok := foldTable[r]; ok {
+		return base
 	}
 	return r
 }
