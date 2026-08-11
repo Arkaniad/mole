@@ -223,9 +223,28 @@ func Render(c connector.Connector, p Plan) (string, error) {
 	if !ok {
 		return "", invalid("no template named %q; known: %s", p.Template, strings.Join(kinds(), ", "))
 	}
+	cols, qt, err := resolve(c, p)
+	if err != nil {
+		return "", err
+	}
+	return tpl.render(qt, cols), nil
+}
+
+// resolve validates a plan's slots against the profile and returns the quoted
+// identifiers a statement may be built from.
+//
+// Split out of Render so the holdout statement (§4's stability check) goes through
+// the SAME validation rather than a second copy of it: the lookup is the injection
+// defence, and a second path that skipped it would be the hole.
+func resolve(c connector.Connector, p Plan) (map[string]string, string, error) {
+	tpl, ok := TemplateFor(p.Template)
+	if !ok {
+		return nil, "", invalid("no template named %q; known: %s",
+			p.Template, strings.Join(kinds(), ", "))
+	}
 	table, ok := c.Table(p.Table)
 	if !ok {
-		return "", invalid("connector %q has no table %q; known: %s",
+		return nil, "", invalid("connector %q has no table %q; known: %s",
 			c.Name, p.Table, strings.Join(tableNames(c), ", "))
 	}
 
@@ -236,15 +255,15 @@ func Render(c connector.Connector, p Plan) (string, error) {
 			if slot.Optional {
 				continue
 			}
-			return "", invalid("template %s needs a column for %q", tpl.Kind, slot.Name)
+			return nil, "", invalid("template %s needs a column for %q", tpl.Kind, slot.Name)
 		}
 		col, ok := table.Column(name)
 		if !ok {
-			return "", invalid("table %s has no column %q; known: %s",
+			return nil, "", invalid("table %s has no column %q; known: %s",
 				table.Name, name, strings.Join(columnNames(table), ", "))
 		}
 		if err := satisfies(col, slot.Role); err != nil {
-			return "", invalid("column %q cannot fill %q: %s", name, slot.Name, err)
+			return nil, "", invalid("column %q cannot fill %q: %s", name, slot.Name, err)
 		}
 		// Taken from the profile rather than from the plan. The two are equal
 		// whenever the lookup succeeded, so this is hygiene and not a second
@@ -252,16 +271,16 @@ func Render(c connector.Connector, p Plan) (string, error) {
 		// tests exercise.
 		quoted, err := ident(col.Name)
 		if err != nil {
-			return "", err
+			return nil, "", err
 		}
 		cols[slot.Name] = quoted
 	}
 
 	qt, err := ident(table.Name)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
-	return tpl.render(qt, cols), nil
+	return cols, qt, nil
 }
 
 // satisfies reports whether a column can fill a role.

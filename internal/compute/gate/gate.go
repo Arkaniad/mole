@@ -98,6 +98,19 @@ type Options struct {
 	// Log receives one record per crossing. §12.1: "Every crossing is logged,
 	// so a user can audit exactly what left their machine."
 	Log *slog.Logger
+
+	// SkipTests suppresses the pairwise comparison.
+	//
+	// For a query whose buckets are a group CROSSED with something else — the
+	// holdout-window statement §4's stability check renders — the pairwise
+	// comparison would compare "north in window 1" against "south in window 2",
+	// which is not a question anybody asked. The caller wants the sufficient
+	// statistics per bucket and computes its own comparison from them.
+	//
+	// An option rather than the caller ignoring TestResults: fifteen Welch tests
+	// would still be computed, and the audit record would report a crossing that
+	// carried tests nothing meant.
+	SkipTests bool
 }
 
 func (o Options) withDefaults() Options {
@@ -550,7 +563,9 @@ func (a *accumulator) envelope(query string) (AggregateEnvelope, []int) {
 		env.Columns = append(env.Columns, col)
 		env.Notes = append(env.Notes, notes...)
 	}
-	a.addTests(&env)
+	if !a.opts.SkipTests {
+		a.addTests(&env)
+	}
 	return env, described
 }
 
@@ -591,6 +606,14 @@ func (a *accumulator) addTests(env *AggregateEnvelope) {
 		env.Notes = append(env.Notes, note)
 	}
 }
+
+// GroupFrom reads a bucket's sufficient statistics as a comparable group.
+//
+// Exported because §4's holdout check needs the same reading, and the rule it
+// encodes — n is COUNT(measure), never COUNT(*) — has already been got wrong once
+// by being written twice: a group with half its measure NULL reported a mean half
+// its real value and the test called the difference significant.
+func GroupFrom(b Bucket) (stats.Group, bool) { return groupFrom(b) }
 
 func groupFrom(b Bucket) (stats.Group, bool) {
 	sum, ok := b.Measures[stats.SumColumn]

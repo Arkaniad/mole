@@ -353,11 +353,6 @@ Stated plainly rather than left to be discovered:
   rather than inferred, deliberately: inference costs a model call, and a session
   that silently invented its own columns would produce a table nobody asked for and
   charge for it. It also could not be verified here for the reason above.
-- **Holdout stability is the one part of §4's row still missing.** n, effect
-  size and significance are computed and enforced; "stable across 3 holdout
-  windows" would mean re-running each comparison on deterministic subsets, which
-  is three more queries per hypothesis and a splitting rule nobody has chosen.
-  Named rather than quietly dropped.
 - **Parquet is not readable.** SQLite cannot read it and no decoder is written,
   so a Parquet export has to be converted before `mole connect` will take it.
   Named because "point mole at my data folder" quietly skipping half a folder is
@@ -906,6 +901,49 @@ statistics library in a binary that is one static file on purpose. It is checked
 against published critical values at df = 2, 10, 20, 48 and ∞, and against the
 closed form `1 − |t|/√(t²+2)` at df = 2. The incomplete beta's two evaluation
 paths are asserted to agree, because that identity is what both of them rest on.
+
+### Stability across holdout windows
+
+§4's row asks for n, effect size, significance **and** stability. The first three
+were computed and enforced from M8; the fourth was a known gap needing "three more
+queries per hypothesis and a splitting rule nobody has chosen". It needs one more
+query, and the rule is `rowid % 3`.
+
+Why re-test at all: a significant result on one sample is one draw, and the failure
+that misses is the one this tool is most exposed to — a difference driven by a
+subset (one month, one region's rows, one batch of imports) reported as a property
+of the data. No amount of care with α catches that; disjoint subsets do.
+
+- **The rule is direction, not significance.** A third of the rows has a third of
+  the power, so requiring each window to clear α would mark almost every real
+  effect unstable — a statement about sample size dressed as one about the data. The
+  count of individually-significant windows is reported beside it.
+- **`rowid % 3` is deterministic and interleaved.** Deterministic so a replayed
+  session gets the same evidence rather than a coin toss. Interleaved rather than
+  sliced, because contiguous thirds of a file exported in date order would turn the
+  check into a comparison of three time periods — which fails for a seasonal
+  measure that is perfectly stable.
+- **The per-window tests are not Holm-corrected against each other.** They are the
+  same hypothesis re-examined on disjoint data, not three new hypotheses. (Contrast
+  the pairwise comparison above, where correction is exactly right.)
+- **"Could not be checked" never looks like "stable".** A third of a group often
+  falls under the k-anonymity floor — the privacy guarantee holding, not a fault —
+  and the clause says so explicitly.
+
+The clause lands in the sentence a claim must quote, for the same reason the Holm
+correction does:
+
+```
+the mean in "south" is lower than in "north" by 20 (means 80 and 100; n = 90 and 90);
+statistically significant (p = <0.001), Welch t = -6.47, effect size -0.96 (large),
+95% CI -26.14 to -13.86; the difference does NOT hold across holdout windows — it
+points the same way in only 1 of 3, so it may be driven by a subset of the records
+rather than being a property of the data
+```
+
+The holdout statement is audited like any other crossing: it reads the same data
+and its figures reach the same model, so a trail that recorded one and not the
+other would understate what left the machine.
 
 ### Comparing more than two groups
 

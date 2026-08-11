@@ -150,9 +150,7 @@ func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, e
 			break
 		}
 		text, cite, note, err := a.evidence(ctx, lead, sources, p)
-		if note.crossing.QueryHash != "" {
-			crossings = append(crossings, note.crossing)
-		}
+		crossings = append(crossings, note.crossings...)
 		if err != nil {
 			// A refused or unanswerable hypothesis is a normal outcome, not a
 			// failed run: the gate exists to say no. It is recorded so the
@@ -230,11 +228,18 @@ func (a *LocalComputeActor) recordCrossings(ctx context.Context, crossings []cor
 type verdictNote struct {
 	finding     string
 	unsupported bool
-	// crossing is the audit row for this hypothesis, present whether or not the
-	// gate let anything through. The zero value means no gate ran — the sandbox
-	// route, where the container rather than the gate is the control.
-	crossing core.Crossing
+	// crossings are the audit rows for this hypothesis — one for the statement,
+	// and one more for §4's holdout statement when it ran. Empty means no gate
+	// ran at all.
+	//
+	// Carried out through the return value rather than accumulated on the actor:
+	// one actor instance serves a session's leads CONCURRENTLY, so a field
+	// appended to during Run is a data race, and the race would be on the record
+	// of what left the user's machine.
+	crossings []core.Crossing
 }
+
+func (n *verdictNote) add(c core.Crossing) { n.crossings = append(n.crossings, c) }
 
 // cap applies §4's statistical-validity check.
 func (n verdictNote) cap(claims []core.Claim) []core.Claim {
@@ -319,8 +324,8 @@ func (a *LocalComputeActor) runQuery(
 		// are exactly the attempts a user auditing this would want to see. There is
 		// no statement to record because none was built, so the hash is over the
 		// plan instead.
-		note.crossing = a.crossing(lead, c, planDescriptor(p), gate.Record{},
-			core.CrossingRefused, err.Error())
+		note.add(a.crossing(lead, c, planDescriptor(p), gate.Record{},
+			core.CrossingRefused, err.Error()))
 		return "", "", note, err
 	}
 	// hypothesis.Render only emits statements from its own templates, so this
@@ -328,15 +333,15 @@ func (a *LocalComputeActor) runQuery(
 	// gate on the path to the database, not on the paths thought likely to
 	// carry something bad.
 	if err := sqlguard.Check(query); err != nil {
-		note.crossing = a.crossing(lead, c, query, gate.Record{},
-			core.CrossingRefused, err.Error())
+		note.add(a.crossing(lead, c, query, gate.Record{},
+			core.CrossingRefused, err.Error()))
 		return "", "", note, err
 	}
 
 	db, err := c.Open()
 	if err != nil {
-		note.crossing = a.crossing(lead, c, query, gate.Record{},
-			core.CrossingRefused, err.Error())
+		note.add(a.crossing(lead, c, query, gate.Record{},
+			core.CrossingRefused, err.Error()))
 		return "", "", note, err
 	}
 	defer db.Close()
@@ -355,10 +360,19 @@ func (a *LocalComputeActor) runQuery(
 		if errors.Is(err, gate.ErrLeak) {
 			outcome = core.CrossingWithheld
 		}
-		note.crossing = a.crossing(lead, c, query, gate.Record{}, outcome, err.Error())
+		note.add(a.crossing(lead, c, query, gate.Record{}, outcome, err.Error()))
 		return "", "", note, err
 	}
-	note.crossing = a.crossing(lead, c, query, gate.Describe(env), core.CrossingCrossed, "")
+	note.add(a.crossing(lead, c, query, gate.Describe(env), core.CrossingCrossed, ""))
+
+	// §4's fourth column, when there is a comparison to check.
+	//
+	// A second statement rather than one cleverer one: the pooled comparison and
+	// the per-window statistics are different groupings of the same table, and
+	// folding them together would make every bucket a (group, window) pair — so
+	// the k-anonymity floor would apply to thirds of a group and the envelope a
+	// reader sees would be three times as long and about nothing they asked.
+	env = a.checkStability(ctx, lead, c, p, env, &note)
 
 	note.finding = describeFinding(p, env)
 	note.unsupported = unsupported(envelopeVerdicts(env))
@@ -366,6 +380,94 @@ func (a *LocalComputeActor) runQuery(
 	// claim nobody can trace back to a statement is not evidence.
 	cite := fmt.Sprintf("connector:%s#%s", c.Name, env.QueryHash[:16])
 	return env.Text(), cite, note, nil
+}
+
+// checkStability re-tests each comparison on deterministic holdout windows (§4).
+//
+// Best effort, and quiet about it: a failure here is one qualifying clause missing
+// from evidence that is otherwise complete and already paid for. The clause says
+// which of "stable", "not stable" and "could not be checked" happened, so a
+// missing check is never read as a passed one.
+//
+// The second statement is audited like the first. It reads the same data and the
+// figures it produces cross to the same model, so a trail that recorded one and
+// not the other would understate what left the machine.
+func (a *LocalComputeActor) checkStability(
+	ctx context.Context, lead core.Lead, c connector.Connector, p hypothesis.Plan,
+	env gate.AggregateEnvelope, note *verdictNote,
+) gate.AggregateEnvelope {
+	if len(env.TestResults) == 0 {
+		return env
+	}
+	query, err := hypothesis.RenderHoldout(c, p, stats.HoldoutWindows)
+	if err != nil {
+		return env
+	}
+	if err := sqlguard.Check(query); err != nil {
+		a.logger().WarnContext(ctx, "the holdout statement did not pass the parse gate",
+			"connector", c.Name, "err", err)
+		return env
+	}
+
+	db, err := c.Open()
+	if err != nil {
+		return env
+	}
+	defer db.Close()
+
+	opts := a.Gate
+	opts.Log = a.logger()
+	opts.FreeTextColumns = freeTextColumns(c)
+	// The pairwise comparison is suppressed: over (group, window) buckets it would
+	// compare "north in window 1" against "south in window 2".
+	opts.SkipTests = true
+
+	windowed, err := gate.Aggregate(ctx, db, query, opts)
+	if err != nil {
+		// Recorded as a refusal like any other. The commonest cause is the floor:
+		// a third of a group is often under five records, which is the privacy
+		// guarantee holding rather than a fault.
+		note.add(a.crossing(lead, c, query, gate.Record{}, core.CrossingRefused, err.Error()))
+		env.Notes = append(env.Notes, "stability across holdout windows could not be "+
+			"checked: "+err.Error())
+		return env
+	}
+	note.add(a.crossing(lead, c, query, gate.Describe(windowed), core.CrossingCrossed, ""))
+
+	byGroup := windowGroups(windowed)
+	measure := "the mean"
+	for i, t := range env.TestResults {
+		h := stats.CheckStability(measure, t, byGroup[t.GroupA], byGroup[t.GroupB])
+		env.TestResults[i] = stats.WithHoldout(t, h)
+	}
+	return env
+}
+
+// windowGroups indexes a windowed envelope by group, then by window label.
+//
+// The bucket key is [group, window] because the statement groups by both, in that
+// order. Buckets the gate folded or suppressed are absent, which CheckStability
+// reports as an untestable window rather than a passing one.
+func windowGroups(env gate.AggregateEnvelope) map[string]map[string]stats.Group {
+	out := map[string]map[string]stats.Group{}
+	for _, b := range env.TopK {
+		if b.Other || len(b.Key) != 2 {
+			continue
+		}
+		g, ok := gate.GroupFrom(b)
+		if !ok {
+			continue
+		}
+		group, window := b.Key[0], b.Key[1]
+		// The group's own name, so it matches the pooled test's GroupA/GroupB —
+		// which gate.groupFrom builds by joining the whole key.
+		g.Name = group
+		if out[group] == nil {
+			out[group] = map[string]stats.Group{}
+		}
+		out[group][window] = g
+	}
+	return out
 }
 
 // runCode is the sandbox route (§12.1).
@@ -418,19 +520,19 @@ func (a *LocalComputeActor) runCode(
 		},
 	})
 	if err != nil {
-		note.crossing = a.crossing(lead, c, query, gate.Record{QueryHash: codeHash, Query: query},
-			core.CrossingRefused, err.Error())
+		note.add(a.crossing(lead, c, query, gate.Record{QueryHash: codeHash, Query: query},
+			core.CrossingRefused, err.Error()))
 		return "", "", note, err
 	}
 	if out.Empty() {
 		refusal := fmt.Errorf(
 			"the analysis produced nothing that may cross (%d declared and %d undeclared "+
 				"output(s) refused)", len(out.Dropped), out.Undeclared)
-		note.crossing = a.crossing(lead, c, query, gate.Record{QueryHash: codeHash, Query: query},
-			core.CrossingRefused, refusal.Error())
+		note.add(a.crossing(lead, c, query, gate.Record{QueryHash: codeHash, Query: query},
+			core.CrossingRefused, refusal.Error()))
 		return "", "", note, refusal
 	}
-	note.crossing = a.crossing(lead, c, query, gate.Record{
+	note.add(a.crossing(lead, c, query, gate.Record{
 		QueryHash: codeHash,
 		Query:     query,
 		// The counts a script's output has: how many declared numbers crossed, and
@@ -439,7 +541,7 @@ func (a *LocalComputeActor) runCode(
 		Columns:         len(out.Metrics),
 		ColumnsWithheld: len(out.Dropped) + out.Undeclared,
 		Tests:           len(out.Findings),
-	}, core.CrossingCrossed, "")
+	}, core.CrossingCrossed, ""))
 
 	note.finding = describeCodeFinding(p, out)
 	note.unsupported = unsupported(outputVerdicts(out))

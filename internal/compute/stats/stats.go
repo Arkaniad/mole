@@ -217,6 +217,10 @@ type Test struct {
 	CIHigh     float64 `json:"ci_high"`
 
 	Verdict Verdict `json:"verdict"`
+	// Holdout is §4's stability check, present when the caller ran it. Nil means
+	// it was not attempted, which is different from having failed — see
+	// Holdout.Clause.
+	Holdout *Holdout `json:"holdout,omitempty"`
 	// Summary is the sentence that reaches a model. It is the whole point of
 	// the package: a model handed two means will describe a trend, and a model
 	// handed "not distinguishable from chance (p = 0.41)" has to quote that or
