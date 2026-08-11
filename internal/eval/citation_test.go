@@ -273,3 +273,43 @@ func TestCitationsAreOptOutByDefault(t *testing.T) {
 		t.Errorf("reason does not say how to enable it: %q", m.Reason)
 	}
 }
+
+// TestDriftIsAccurateButNotPrecise.
+//
+// A live academic run scored citation accuracy 0.0% with every one of its eight
+// quotes present in the source it cited: they sat at different offsets, because the
+// claim was mined from the abstract the provider returned and the re-read fetches
+// the publisher's page. The verdict's own doc comment said "the citation is sound"
+// while the arithmetic counted it as a failure — and 0% next to eight sound
+// citations reads as fabrication, which is what this metric exists to catch.
+func TestDriftIsAccurateButNotPrecise(t *testing.T) {
+	rep := eval.CitationReport{Verified: 2, OffsetDrift: 8}
+
+	acc := eval.CitationAccuracyFor(rep)
+	if acc.Value != 100 {
+		t.Errorf("accuracy = %v, want 100 — every quote was found", acc.Value)
+	}
+	if acc.Regression {
+		t.Error("sound citations at moved offsets failed the build")
+	}
+
+	drift := eval.CitationOffsetDriftFor(rep)
+	if drift.Value != 80 {
+		t.Errorf("drift = %v, want 80 (8 of 10)", drift.Value)
+	}
+	if drift.Regression {
+		t.Error("drift is structural on some paths and must not fail the build")
+	}
+}
+
+// TestAMissingQuoteStillFailsTheBuild. The relaxation must not touch the finding
+// the metric exists for: a citation pointing at a page that never said it.
+func TestAMissingQuoteStillFailsTheBuild(t *testing.T) {
+	acc := eval.CitationAccuracyFor(eval.CitationReport{Verified: 9, Mismatch: 1})
+	if !acc.Regression {
+		t.Error("a quote absent from its cited source did not fail the build")
+	}
+	if acc.Value != 90 {
+		t.Errorf("accuracy = %v, want 90", acc.Value)
+	}
+}

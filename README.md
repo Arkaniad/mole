@@ -432,7 +432,15 @@ Stated plainly rather than left to be discovered:
   planner now sees how much allowance is left so `done` is at least an informed
   choice. Tapering the fan-out is the obvious next move and is a cost/quality
   tradeoff that cannot be evaluated without the corpus above.
-- **M6's claim extraction is unverified against a capable model.** The academic
+- ~~**M6's claim extraction is unverified against a capable model.**~~ **Closed.**
+  DeepSeek, one live run: 14 claims from PubMed and Crossref, all quote-verified, all
+  reconciled, $0.0030. §11.5.2's grounding pass ran for the first time — 5 claims
+  re-read, 4 confirmed, 1 flagged unsupported — and the synthesized report *used*
+  that, writing "that finding is flagged as failing a source re-read, so it should
+  not be relied upon". Grounding rate and citation accuracy are both measured
+  numbers now rather than blocked entries. The original text is kept below for the
+  record.
+- **(Historical)** **M6's claim extraction was unverified against a capable model.** The academic
   path is confirmed working end to end — it queries both providers, deduplicates
   by DOI, builds openable citation URLs, and reconciles its ledger — but every
   live run produced zero claims. Isolated with a direct probe against a real

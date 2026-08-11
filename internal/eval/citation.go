@@ -157,6 +157,14 @@ func (r *CitationReport) addProblem(v Verdict, c *core.Claim, detail string) {
 }
 
 // citationAccuracy turns the report into a scorecard line.
+// CitationAccuracyFor and CitationOffsetDriftFor are exported for the tests that
+// pin the two apart: the distinction between "the source never said it" and "the
+// offset moved" is the whole content of this pair, and it was wrong once.
+func CitationAccuracyFor(rep CitationReport) Metric { return citationAccuracy(rep) }
+
+// CitationOffsetDriftFor is the precision half. See CitationAccuracyFor.
+func CitationOffsetDriftFor(rep CitationReport) Metric { return citationOffsetDrift(rep) }
+
 func citationAccuracy(rep CitationReport) Metric {
 	m := Metric{Name: "citation accuracy", Status: Measured, Unit: "%"}
 
@@ -167,11 +175,21 @@ func citationAccuracy(rep CitationReport) Metric {
 		return m
 	}
 
-	m.Value = 100 * float64(rep.Verified) / float64(rep.Checked())
+	// Drift counts as ACCURATE, and the arithmetic used to say otherwise while the
+	// verdict's own doc comment said "the citation is sound". A live academic run
+	// scored 0.0% with every one of its eight quotes present in the source it
+	// cited — they were simply at different offsets, because the claim was mined
+	// from an abstract the API supplied and the re-read fetches the page. Reporting
+	// that as zero conflates "this source never said it", which is the fabrication
+	// this metric exists to catch, with "the byte offset moved", which is a
+	// provenance-precision problem and has its own line below.
+	found := rep.Verified + rep.OffsetDrift
+	m.Value = 100 * float64(found) / float64(rep.Checked())
 	m.Detail = fmt.Sprintf("%d of %d quotes found in the source they cite",
-		rep.Verified, rep.Checked())
+		found, rep.Checked())
 	if rep.OffsetDrift > 0 {
-		m.Detail += fmt.Sprintf(" · %d at a different offset", rep.OffsetDrift)
+		m.Detail += fmt.Sprintf(" · %d at a different offset (see citation offset drift)",
+			rep.OffsetDrift)
 	}
 	if rep.Unreachable > 0 || rep.Skipped > 0 {
 		m.Detail += fmt.Sprintf(" · %d unreachable, %d provider-supplied (excluded)",
@@ -184,6 +202,28 @@ func citationAccuracy(rep CitationReport) Metric {
 	if rep.Mismatch > 0 {
 		m.Regression = true
 	}
+	return m
+}
+
+// citationOffsetDrift is the precision half, reported separately so raising one
+// number cannot hide the other.
+//
+// Not a regression. Drift is structural on some paths rather than a fault: an
+// academic claim is mined from the abstract a provider returned and re-read from
+// the publisher's page, so the same sentence sits at a different byte offset by
+// construction. It still matters — a later re-verification that trusts the offset
+// reads the wrong span — so it is measured rather than folded away.
+func citationOffsetDrift(rep CitationReport) Metric {
+	m := Metric{Name: "citation offset drift", Status: Measured, Unit: "%"}
+	if rep.Checked() == 0 {
+		m.Status = NotApplicable
+		m.Detail = "nothing verifiable"
+		return m
+	}
+	m.Value = 100 * float64(rep.OffsetDrift) / float64(rep.Checked())
+	m.Detail = fmt.Sprintf("%d of %d quotes sit at a different offset than the claim "+
+		"records; the citation is sound and the stored span is not",
+		rep.OffsetDrift, rep.Checked())
 	return m
 }
 

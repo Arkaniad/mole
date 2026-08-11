@@ -138,7 +138,7 @@ func Score(ctx context.Context, st store.Store, sessionID string, opts Options) 
 	if opts.Citations != nil {
 		rep := VerifyCitations(ctx, claims, fetch.ProviderSupplied(outcomes), opts.Citations)
 		card.Citations = &rep
-		card.Metrics = append(card.Metrics, citationAccuracy(rep))
+		card.Metrics = append(card.Metrics, citationAccuracy(rep), citationOffsetDrift(rep))
 	}
 
 	// Graph metrics (§11). Blocked until M4 built the Verifier; computable now, and
