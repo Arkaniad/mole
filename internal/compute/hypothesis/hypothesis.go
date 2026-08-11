@@ -162,6 +162,23 @@ func TemplateFor(k Kind) (Template, bool) {
 	return Template{}, false
 }
 
+// Code is an analysis a template cannot express (§12.1: "regression,
+// seasonality decomposition").
+//
+// This is the one place a model DOES author code, and the sandbox is why that is
+// acceptable: §12.3 forbids it authoring SQL because SQL runs against the user's
+// database with the user's privileges, and a script here runs with no network,
+// no writable filesystem, no capabilities, and a read-only view of one file.
+//
+// Outputs must be declared. The script's stdout is filtered down to these names
+// before anything crosses, so a declaration is not documentation — it is the
+// channel.
+type Code struct {
+	Script  string   `json:"script"`
+	Metrics []string `json:"metrics,omitempty"`
+	Tests   []string `json:"tests,omitempty"`
+}
+
 // Plan is what a model returns: a choice, never a statement.
 type Plan struct {
 	Connector string            `json:"connector"`
@@ -171,6 +188,10 @@ type Plan struct {
 	// Question is the plan in words, carried into the claim's lead so a reader
 	// can see what was asked as well as what was run.
 	Question string `json:"question"`
+
+	// Code, when set, replaces the template: the analysis runs in the sandbox
+	// instead of as SQL. Only offered to the model when a runtime is usable.
+	Code *Code `json:"code,omitempty"`
 }
 
 // Render validates a plan against a connector's profile and returns the SQL.

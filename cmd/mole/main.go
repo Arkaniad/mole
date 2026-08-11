@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/lajosdeme/mole/internal/budget"
+	"github.com/lajosdeme/mole/internal/compute/coderunner"
 	"github.com/lajosdeme/mole/internal/compute/sandbox"
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
@@ -295,6 +296,15 @@ func reportSandbox(ctx context.Context, r *checks) {
 	case rep.Usable:
 		r.note(true, "sandbox", rep.Detail)
 		r.print(true, "", "  "+sandbox.DefaultLimits().Summary())
+		// A usable runtime with no interpreter image is ready for everything
+		// except the one thing that needs one, so the two are reported apart.
+		if rep.HasImage(ctx, coderunner.DefaultImage) {
+			r.print(true, "", "  image "+coderunner.DefaultImage+" present")
+		} else {
+			r.note(false, "sandbox image", coderunner.DefaultImage+" not pulled")
+			r.print(false, "", "  code analysis needs it: "+
+				string(rep.Runtime)+" pull "+coderunner.DefaultImage)
+		}
 		if len(rep.Missing) > 0 {
 			// Usable and imperfect. Said out loud, because the alternative is a
 			// tick beside a runtime that cannot report memory limits reliably.

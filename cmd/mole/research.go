@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/lajosdeme/mole/internal/actors"
+	"github.com/lajosdeme/mole/internal/compute/coderunner"
 	"github.com/lajosdeme/mole/internal/compute/connector"
+	"github.com/lajosdeme/mole/internal/compute/sandbox"
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/executor"
@@ -797,13 +799,22 @@ func buildLocalActor(
 		return nil, fmt.Errorf("--actors local_compute needs registered data; " +
 			"add some with: mole connect add <name> <path>")
 	}
-	return &actors.LocalComputeActor{
+	local := &actors.LocalComputeActor{
 		Connectors: reg,
 		LLM:        web.LLM,
 		Pricing:    web.Pricing,
 		Log:        web.Log,
 		Budget:     web.Budget,
-	}, nil
+	}
+
+	// The sandbox is optional and its absence is not an error (§12.2: it "is not
+	// the control here"). A nil Code means code hypotheses are never offered to
+	// the model, so the run loses the analyses SQL cannot express and nothing
+	// else. `mole doctor` is where somebody finds out.
+	if rep := sandbox.Detect(context.Background()); rep.Usable {
+		local.Code = coderunner.Sandboxed{Report: rep}
+	}
+	return local, nil
 }
 
 // buildAcademicActor constructs the academic providers, or refuses.

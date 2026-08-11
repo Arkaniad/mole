@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	"github.com/lajosdeme/mole/internal/actors"
+	"github.com/lajosdeme/mole/internal/compute/coderunner"
 	"github.com/lajosdeme/mole/internal/compute/connector"
+	"github.com/lajosdeme/mole/internal/compute/stats"
 	"github.com/lajosdeme/mole/internal/core"
 )
 
@@ -401,5 +403,234 @@ func TestAQueryWithNoComparisonIsNotCapped(t *testing.T) {
 			t.Errorf("a claim from a query with no comparison was capped: %v",
 				c.AssertionStrength)
 		}
+	}
+}
+
+// -----------------------------------------------------------------------------
+// The sandbox route (§12.1)
+// -----------------------------------------------------------------------------
+
+// fakeRunner stands in for the container. The container itself is tested in
+// internal/compute/coderunner against a real runtime; what is checked here is
+// the seam — that a code plan reaches it, that its figures become quotable
+// evidence, and that its absence is not a failure.
+type fakeRunner struct {
+	out      coderunner.Output
+	err      error
+	requests []coderunner.Request
+}
+
+func (f *fakeRunner) Analyze(_ context.Context, req coderunner.Request) (coderunner.Output, error) {
+	f.requests = append(f.requests, req)
+	return f.out, f.err
+}
+
+const codePlan = `[
+  {"connector":"sales","table":"samples","template":"group_comparison",
+   "columns":{"key":"region","measure":"spend"},
+   "question":"Is spend seasonal?",
+   "code":{"script":"import sqlite3, os\nprint('{}')","metrics":["amplitude"],"tests":["seasonality"]}}
+]`
+
+// quoteAMetricLine cites a figure the sandbox returned.
+func quoteAMetricLine(passage string) (string, string) {
+	for _, line := range strings.Split(passage, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "seasonality:") || strings.Contains(line, "analysis computed") {
+			return "The analysis found " + line, line
+		}
+	}
+	return quoteAGroupLine(passage)
+}
+
+// TestACodePlanRunsInTheSandboxAndItsFiguresBecomeEvidence.
+func TestACodePlanRunsInTheSandboxAndItsFiguresBecomeEvidence(t *testing.T) {
+	runner := &fakeRunner{out: coderunner.Output{
+		Metrics: map[string]float64{"amplitude": 12.5},
+		Findings: []coderunner.Finding{{
+			Name: "seasonality", N: 8760, Statistic: 4.2, P: 0.0003,
+			EffectSize: 0.6, Verdict: stats.Significant,
+		}},
+	}}
+	fl := scriptedModel(codePlan, quoteAMetricLine)
+
+	a := &actors.LocalComputeActor{Connectors: samplesRegistry(t, 40), LLM: fl, Code: runner}
+	res, err := a.Run(context.Background(), localLead())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(runner.requests) != 1 {
+		t.Fatalf("the sandbox was asked %d time(s), want 1", len(runner.requests))
+	}
+	req := runner.requests[0]
+	// The contract is the plan's declaration, not something invented downstream.
+	if len(req.Contract.Metrics) != 1 || req.Contract.Metrics[0] != "amplitude" {
+		t.Errorf("contract metrics = %v, want the plan's declaration", req.Contract.Metrics)
+	}
+	if !strings.HasSuffix(req.DBPath, ".db") {
+		t.Errorf("the runner was given %q, not a connector database", req.DBPath)
+	}
+
+	if len(res.Claims) == 0 {
+		t.Fatalf("no claims; summary was:\n%s", res.Summary)
+	}
+	for _, c := range res.Claims {
+		// A code claim cites the SCRIPT, because the script is what produced the
+		// evidence — a query hash would name a statement that only suggested
+		// what to look at.
+		if !strings.HasPrefix(c.Source, "connector:sales#code:") {
+			t.Errorf("claim cites %q, want connector:sales#code:<hash>", c.Source)
+		}
+		if strings.TrimSpace(c.Quote) == "" {
+			t.Error("a claim crossed with no quote, so §11.5 verified nothing")
+		}
+		if c.AssertionStrength <= 0.3 {
+			t.Errorf("a significant finding was capped: %v", c.AssertionStrength)
+		}
+	}
+}
+
+// TestAnUnsupportedSandboxFindingIsCappedToo. §4's check cannot depend on which
+// route produced the evidence, or the code path becomes the way around it.
+func TestAnUnsupportedSandboxFindingIsCappedToo(t *testing.T) {
+	runner := &fakeRunner{out: coderunner.Output{
+		Metrics: map[string]float64{"amplitude": 12.5},
+		Findings: []coderunner.Finding{{
+			Name: "seasonality", N: 12, Statistic: 4.2, P: 0.0003,
+			EffectSize: 0.6, Verdict: stats.Underpowered,
+		}},
+	}}
+	fl := scriptedModel(codePlan, quoteAMetricLine)
+
+	a := &actors.LocalComputeActor{Connectors: samplesRegistry(t, 40), LLM: fl, Code: runner}
+	res, err := a.Run(context.Background(), localLead())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Claims) == 0 {
+		t.Fatalf("no claims:\n%s", res.Summary)
+	}
+	for _, c := range res.Claims {
+		if c.AssertionStrength > 0.3 {
+			t.Errorf("an underpowered sandbox finding asserted %v; the SQL route would "+
+				"have been capped", c.AssertionStrength)
+		}
+	}
+	if !strings.Contains(res.Summary, "underpowered") {
+		t.Errorf("the planner's summary hides the verdict:\n%s", res.Summary)
+	}
+}
+
+// TestACodePlanWithoutARuntimeIsSkippedNotFatal. §12.2: the sandbox is not the
+// control for the SQL path, so a machine without one loses the analyses SQL
+// cannot express and keeps the rest.
+func TestACodePlanWithoutARuntimeIsSkippedNotFatal(t *testing.T) {
+	fl := scriptedModel(codePlan, quoteAMetricLine)
+
+	// Code left nil: no runtime.
+	a := &actors.LocalComputeActor{Connectors: samplesRegistry(t, 40), LLM: fl}
+	res, err := a.Run(context.Background(), localLead())
+	if err != nil {
+		t.Fatalf("a code plan with no runtime failed the whole run: %v", err)
+	}
+	if len(res.Claims) != 0 {
+		t.Errorf("claims came back with no runtime: %+v", res.Claims)
+	}
+	if res.Stats.ChunksSkipped == 0 {
+		t.Error("the skipped hypothesis was not counted")
+	}
+}
+
+// TestTheCodeOptionIsOnlyOfferedWhenItCanRun. Describing a capability the
+// machine does not have gets a plan mole must then refuse, and a refusal the
+// model could not have avoided is a wasted call.
+func TestTheCodeOptionIsOnlyOfferedWhenItCanRun(t *testing.T) {
+	for _, tc := range []struct {
+		why     string
+		runner  coderunner.Runner
+		offered bool
+	}{
+		{"with a runtime", &fakeRunner{out: coderunner.Output{
+			Metrics: map[string]float64{"amplitude": 1}}}, true},
+		{"without one", nil, false},
+	} {
+		t.Run(tc.why, func(t *testing.T) {
+			fl := scriptedModel(`[]`, quoteAMetricLine)
+			a := &actors.LocalComputeActor{
+				Connectors: samplesRegistry(t, 40), LLM: fl, Code: tc.runner,
+			}
+			if _, err := a.Run(context.Background(), localLead()); err != nil {
+				t.Fatal(err)
+			}
+			if len(fl.calls) == 0 {
+				t.Fatal("no planning call was made")
+			}
+			prompt := fl.calls[0].Messages[0].Text
+			if mentions := strings.Contains(prompt, `"code"`); mentions != tc.offered {
+				t.Errorf("the prompt offers a code block = %v, want %v", mentions, tc.offered)
+			}
+		})
+	}
+}
+
+// TestAnAnalysisThatReturnsNothingIsNotAFinding. Every declared output refused
+// means the plan and the script disagreed, and that must not read as an analysis
+// that ran and found nothing to report.
+func TestAnAnalysisThatReturnsNothingIsNotAFinding(t *testing.T) {
+	runner := &fakeRunner{out: coderunner.Output{
+		Dropped: []string{"ada@example.org", "note_for_row_7"},
+	}}
+	fl := scriptedModel(codePlan, quoteAMetricLine)
+
+	a := &actors.LocalComputeActor{Connectors: samplesRegistry(t, 40), LLM: fl, Code: runner}
+	res, err := a.Run(context.Background(), localLead())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Claims) != 0 {
+		t.Fatalf("claims were mined from an empty analysis: %+v", res.Claims)
+	}
+	// One call — the plan. A second would mean an empty result was sent to be
+	// mined.
+	if len(res.Costs) != 1 {
+		t.Errorf("%d model call(s); an empty analysis was mined anyway", len(res.Costs))
+	}
+}
+
+// TestAMetricAloneCanBeCited.
+//
+// §11.5 requires a quote of at least minQuoteLen characters, and an earlier
+// rendering emitted `amplitude = 12.5000` — nineteen. Every claim about a single
+// metric was dropped by the quote check, which looked exactly like a sandbox
+// that had returned nothing.
+//
+// So the case is a run whose ONLY quotable line is a metric: no statistical
+// result to fall back on.
+func TestAMetricAloneCanBeCited(t *testing.T) {
+	runner := &fakeRunner{out: coderunner.Output{
+		Metrics: map[string]float64{"amplitude": 12.5},
+	}}
+	fl := scriptedModel(codePlan, func(passage string) (string, string) {
+		for _, line := range strings.Split(passage, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.Contains(line, "amplitude") {
+				return "The analysis reports an amplitude", line
+			}
+		}
+		return "nothing", "nothing"
+	})
+
+	a := &actors.LocalComputeActor{Connectors: samplesRegistry(t, 40), LLM: fl, Code: runner}
+	res, err := a.Run(context.Background(), localLead())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Claims) == 0 {
+		t.Fatalf("a claim quoting a metric line was dropped, so metrics are "+
+			"unciteable; summary was:\n%s", res.Summary)
+	}
+	if got := res.Claims[0].Quote; !strings.Contains(got, "amplitude") {
+		t.Errorf("quote = %q, want the metric line", got)
 	}
 }

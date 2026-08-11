@@ -211,7 +211,8 @@ The role breakdown is a single `GROUP BY` over the ledger — the entire reason
 | `internal/compute/gate` | The aggregation gate — the only path from data to a model (§12.1) |
 | `internal/compute/hypothesis` | Templates: the only SQL that reaches a connector (§12.3) |
 | `internal/compute/stats` | Welch's t-test, effect size, and the verdict (§4) |
-| `internal/compute/sandbox` | Container runtime detection and §3.6's flags |
+| `internal/compute/sandbox` | Container runtime detection, §3.6's flags, and running in one |
+| `internal/compute/coderunner` | Model-authored analysis, and what may come back (§12.1) |
 | `internal/eval` | Mechanical scorecard, citation re-verification |
 | `internal/config` | Config file and environment resolution |
 | `cmd/mole` | CLI: `research`, `ask`, `serve`, `eval`, `connect`, `stats`, `trace`, `sessions`, `doctor`, `config`, `migrate`, `dev` |
@@ -316,7 +317,7 @@ The suites that carry weight:
 | M5 | Executor pool | **done**, real-run speedup unmeasured |
 | M6 | AcademicActor | **done**, claim extraction unverified on a real model |
 | M7 | MCP daemon + stdio shim | **done** |
-| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | **done** except `CodeRunner`; planning unverified on a capable model |
+| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | **done**; planning unverified on a capable model |
 | M9 | Dataset mode | |
 
 ---
@@ -331,10 +332,16 @@ Stated plainly rather than left to be discovered:
   failed to parse, because the only reachable model is the same 3B local one
   that blocks M6. It returned a doubly-wrapped JSON array. So the pipeline is
   verified and the model's half of §12.3 is not. Same blocker, same fix: credit.
-- **`CodeRunner` is not built.** The sandbox is detected, its flags are written
-  down and verified against a real container, and `doctor` reports the
-  capability — but nothing executes model-authored code yet. Slice 7. Until then
-  the only local analysis is SQL, which needs no sandbox at all.
+- **`CodeRunner`'s interpreter path is unverified.** The container mechanism is
+  verified against a real runtime — read-only mount, output cap, wallclock kill,
+  exit codes — but with a shell script in a locally present image, because
+  `python:3.13-slim` could not be pulled where this was written. Nothing has run
+  actual Python against a connector database.
+- **The channel out of the sandbox is bounded, not zero.** Only names the plan
+  declared come back, and only as finite numbers, so a script cannot return rows
+  or labels. A determined model could still encode a value in the digits of a
+  declared number. Stated because calling it zero would be the kind of claim the
+  package exists to avoid making.
 - **The podman detection path is unverified against a real podman.** There is
   none on the machine this was written on, so the podman branch is tested only
   against a recorded reply. The docker branch is verified end to end, including
@@ -953,3 +960,60 @@ confirm each one holds:
 
 That test skips without a runtime and never pulls an image — a suite that
 downloads 150MB on a cold cache is a suite people switch off.
+
+### `CodeRunner`: the boundary moves inside the container
+
+§12.1 says where this is needed: *"Where analysis genuinely needs row-level data
+(regression, seasonality decomposition), the computation happens inside the
+sandbox and only its output envelope crosses the gate."*
+
+So the script gets the connector's database **in full, read-only** — and that is
+not a concession. Inside the sandbox there is no model to protect the data from:
+no network, no writable filesystem, no capabilities, uid 65534. Extracting a
+subset first would put a second copy of the user's data on the host, written by
+mole, for nothing.
+
+**The channel out is the whole design.** The script's stdout is untrusted — a
+model wrote it, and a model reading a prompt-injected page is a threat §3.2
+already assumes. So output is not parsed as "whatever the script wanted to say".
+It is matched against names the plan **declared before the script ran**, and
+values that are finite numbers:
+
+```json
+"code": {
+  "script":  "…",
+  "metrics": ["weekly_amplitude"],
+  "tests":   ["seasonality"]
+}
+```
+
+Declare `weekly_amplitude` and print `{"ada@example.org": 1}` and nothing comes
+back — because the key is not on the list, not because something inspected it
+for personal data. That is §12.3's choice again: the model declares, mole looks
+up.
+
+It is bounded, not zero. A determined model could encode a value in the digits of
+a declared number. What it stops is the realistic case — a script that prints its
+input, or an output shape nobody constrained.
+
+**The verdict is not the script's to decide.** It supplies n, the statistic and
+p; significance is derived with the same thresholds as the SQL path, so the two
+routes cannot disagree about what counts as evidence. A claim from an
+underpowered sandbox finding is capped exactly as one from an underpowered
+`GROUP BY` is — otherwise the code path becomes the way around §4's check.
+
+**A code claim cites the script, not a query.** `connector:<name>#code:<hash>` —
+the script is what produced the figures; a query hash would name a statement that
+only suggested what to look at. And it quotes its evidence like every other
+claim: §11.5 applies unchanged.
+
+That last part produced the one behavioural bug of the slice. The renderer first
+emitted `amplitude = 12.5000` — nineteen characters, under §11.5's 24-character
+minimum — so **every claim about a single metric was silently dropped by the
+quote check**, which looked exactly like a sandbox returning nothing. Metrics are
+now rendered as sentences.
+
+Verified against a real container: the mounted database is readable and not
+writable, a script printing half a megabyte is refused rather than parsed, a
+script that never finishes is killed at the wallclock limit, and stderr reaches
+the model so the next attempt is not the same attempt.

@@ -2,11 +2,15 @@ package actors
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 
+	"github.com/lajosdeme/mole/internal/compute/coderunner"
 	"github.com/lajosdeme/mole/internal/compute/connector"
 	"github.com/lajosdeme/mole/internal/compute/gate"
 	"github.com/lajosdeme/mole/internal/compute/hypothesis"
@@ -48,6 +52,12 @@ type LocalComputeActor struct {
 	// Gate tunes the aggregation gate. The zero value is §12.1's defaults, and
 	// raising KFloor is the only knob a privacy-conscious user needs.
 	Gate gate.Options
+
+	// Code runs model-authored analysis in the sandbox (§12.1). Nil disables it,
+	// which is the state of any machine without a container runtime — and a
+	// supported one: the SQL path needs no sandbox, so a nil Code costs the
+	// hypotheses SQL cannot express and nothing else.
+	Code coderunner.Runner
 }
 
 // ConnectorSource is the registry, narrowed to what the actor needs.
@@ -106,7 +116,7 @@ func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, e
 			res.Truncated = true
 			break
 		}
-		env, cite, err := a.ask(ctx, sources, p)
+		text, cite, note, err := a.evidence(ctx, sources, p)
 		if err != nil {
 			// A refused or unanswerable hypothesis is a normal outcome, not a
 			// failed run: the gate exists to say no. It is recorded so the
@@ -119,11 +129,10 @@ func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, e
 		res.Stats.SearchResults++
 		res.Stats.Chunks++
 
-		text := env.Text()
 		out, err := miner.Mine(ctx, MineInput{
 			Lead:      lead,
 			SourceURL: cite,
-			Title:     fmt.Sprintf("%s.%s — %s", p.Connector, p.Table, p.Template),
+			Title:     evidenceTitle(p),
 			Text:      text,
 			MaxClaims: maxClaims,
 		})
@@ -138,44 +147,75 @@ func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, e
 				"connector", p.Connector, "err", err)
 			continue
 		}
-		res.Claims = append(res.Claims, capUnsupported(out.Claims, env)...)
-		findings = append(findings, describeFinding(p, env))
+		res.Claims = append(res.Claims, note.cap(out.Claims)...)
+		findings = append(findings, note.finding)
 	}
 
 	res.Summary = localSummary(lead, findings, res)
 	return res, nil
 }
 
-// ask renders one plan, runs it through both gates, and returns the envelope.
+// verdictNote is what a run learned about its own evidence, kept separately from
+// the passage so the two paths can share the capping rule.
+type verdictNote struct {
+	finding     string
+	unsupported bool
+}
+
+// cap applies §4's statistical-validity check.
+func (n verdictNote) cap(claims []core.Claim) []core.Claim {
+	if !n.unsupported {
+		return claims
+	}
+	for i := range claims {
+		if claims[i].AssertionStrength > unsupportedAssertionCap {
+			claims[i].AssertionStrength = unsupportedAssertionCap
+		}
+	}
+	return claims
+}
+
+// evidence turns one plan into the passage claims are mined from.
 //
-// The citation is built here rather than by the caller because it has to name
-// the query that produced the evidence: §4's table gives a local claim's source
-// as "connector name + query hash", and a claim nobody can trace back to a
-// statement is not evidence.
-func (a *LocalComputeActor) ask(
+// Two routes, and which one is taken is the plan's choice rather than a
+// fallback: a template renders SQL through both gates, and a code plan runs in
+// the sandbox. Both end at a passage of figures and a citation, so everything
+// downstream — mining, the quote check, the claim graph — cannot tell them
+// apart. That is the point: the evidence differs and the standard does not.
+func (a *LocalComputeActor) evidence(
 	ctx context.Context, sources []connector.Connector, p hypothesis.Plan,
-) (gate.AggregateEnvelope, string, error) {
+) (text, cite string, note verdictNote, err error) {
 	c, ok := findConnector(sources, p.Connector)
 	if !ok {
-		return gate.AggregateEnvelope{}, "", fmt.Errorf(
-			"no connector named %q is registered", p.Connector)
+		return "", "", note, fmt.Errorf("no connector named %q is registered", p.Connector)
 	}
+	if p.Code != nil {
+		return a.runCode(ctx, c, p)
+	}
+	return a.runQuery(ctx, c, p)
+}
+
+// runQuery is the SQL route: render, both gates, envelope.
+func (a *LocalComputeActor) runQuery(
+	ctx context.Context, c connector.Connector, p hypothesis.Plan,
+) (string, string, verdictNote, error) {
+	var note verdictNote
 
 	query, err := hypothesis.Render(c, p)
 	if err != nil {
-		return gate.AggregateEnvelope{}, "", err
+		return "", "", note, err
 	}
 	// hypothesis.Render only emits statements from its own templates, so this
 	// cannot fail — which is exactly why it is called. §12.2 asks for the parse
 	// gate on the path to the database, not on the paths thought likely to
 	// carry something bad.
 	if err := sqlguard.Check(query); err != nil {
-		return gate.AggregateEnvelope{}, "", err
+		return "", "", note, err
 	}
 
 	db, err := c.Open()
 	if err != nil {
-		return gate.AggregateEnvelope{}, "", err
+		return "", "", note, err
 	}
 	defer db.Close()
 
@@ -185,9 +225,106 @@ func (a *LocalComputeActor) ask(
 
 	env, err := gate.Aggregate(ctx, db, query, opts)
 	if err != nil {
-		return gate.AggregateEnvelope{}, "", err
+		return "", "", note, err
 	}
-	return env, fmt.Sprintf("connector:%s#%s", c.Name, env.QueryHash[:16]), nil
+
+	note.finding = describeFinding(p, env)
+	note.unsupported = unsupportedComparison(env)
+	// §4's table: a local claim's source is "connector name + query hash", and a
+	// claim nobody can trace back to a statement is not evidence.
+	cite := fmt.Sprintf("connector:%s#%s", c.Name, env.QueryHash[:16])
+	return env.Text(), cite, note, nil
+}
+
+// runCode is the sandbox route (§12.1).
+//
+// The script never touches the aggregation gate, because it is on the other side
+// of it: the gate exists to stop rows reaching a model, and inside the sandbox
+// there is no model. What constrains this route is the container and the output
+// contract — see internal/compute/coderunner.
+func (a *LocalComputeActor) runCode(
+	ctx context.Context, c connector.Connector, p hypothesis.Plan,
+) (string, string, verdictNote, error) {
+	var note verdictNote
+	if a.Code == nil {
+		return "", "", note, errors.New(
+			"no container runtime is available, so a code hypothesis cannot run " +
+				"(mole doctor reports what is missing)")
+	}
+	query, _ := hypothesis.Render(c, p)
+
+	out, err := a.Code.Analyze(ctx, coderunner.Request{
+		DBPath: c.DBPath,
+		Query:  query,
+		Script: p.Code.Script,
+		Contract: coderunner.Contract{
+			Metrics: p.Code.Metrics,
+			Tests:   p.Code.Tests,
+		},
+	})
+	if err != nil {
+		return "", "", note, err
+	}
+	if out.Empty() {
+		return "", "", note, fmt.Errorf(
+			"the analysis produced nothing that may cross (%d output(s) refused)",
+			len(out.Dropped))
+	}
+
+	note.finding = describeCodeFinding(p, out)
+	note.unsupported = unsupportedFindings(out)
+	// The script is what produced the evidence, so the script is what the
+	// citation identifies. A query hash would name a statement that only
+	// suggested what to look at.
+	cite := fmt.Sprintf("connector:%s#code:%s", c.Name, shortHash(p.Code.Script))
+	return out.Text(p.Code.Script), cite, note, nil
+}
+
+func shortHash(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+// unsupportedComparison reports whether an envelope ran a comparison and none of
+// them supported a difference.
+func unsupportedComparison(env gate.AggregateEnvelope) bool {
+	if len(env.TestResults) == 0 {
+		return false
+	}
+	for _, t := range env.TestResults {
+		if t.Verdict == stats.Significant {
+			return false
+		}
+	}
+	return true
+}
+
+func unsupportedFindings(out coderunner.Output) bool {
+	if len(out.Findings) == 0 {
+		return false
+	}
+	for _, f := range out.Findings {
+		if f.Verdict == stats.Significant {
+			return false
+		}
+	}
+	return true
+}
+
+func describeCodeFinding(p hypothesis.Plan, out coderunner.Output) string {
+	q := p.Question
+	if strings.TrimSpace(q) == "" {
+		q = "a sandboxed analysis over " + p.Connector
+	}
+	line := fmt.Sprintf("%s — ran in the sandbox, %d metric(s) and %d statistical result(s)",
+		q, len(out.Metrics), len(out.Findings))
+	if len(out.Dropped) > 0 {
+		line += fmt.Sprintf(", %d output(s) refused as undeclared", len(out.Dropped))
+	}
+	for _, f := range out.Findings {
+		line += fmt.Sprintf("; %s %s", f.Name, f.Verdict)
+	}
+	return line
 }
 
 func findConnector(sources []connector.Connector, name string) (connector.Connector, bool) {
@@ -224,33 +361,6 @@ func freeTextColumns(c connector.Connector) []string {
 // about itself; an underpowered result should not say much.
 const unsupportedAssertionCap = 0.3
 
-// capUnsupported applies §4's statistical-validity check to what was mined.
-//
-// The rule is deliberately mechanical. Deciding whether a sentence ASSERTS the
-// difference the test failed to find would take another model call and would be
-// wrong sometimes in both directions; capping every claim mined from an
-// unsupported comparison is blunt, cheap, and cannot be argued with.
-//
-// A query with no comparison in it — a distribution, an overview — is left
-// alone. There is no test to fail, and capping those would punish the claims
-// that are simply counts.
-func capUnsupported(claims []core.Claim, env gate.AggregateEnvelope) []core.Claim {
-	if len(env.TestResults) == 0 {
-		return claims
-	}
-	for _, t := range env.TestResults {
-		if t.Verdict == stats.Significant {
-			return claims
-		}
-	}
-	for i := range claims {
-		if claims[i].AssertionStrength > unsupportedAssertionCap {
-			claims[i].AssertionStrength = unsupportedAssertionCap
-		}
-	}
-	return claims
-}
-
 // -----------------------------------------------------------------------------
 // Planning
 // -----------------------------------------------------------------------------
@@ -263,7 +373,7 @@ func (a *LocalComputeActor) plan(
 	ctx context.Context, lead core.Lead, sources []connector.Connector, max int, res *Result,
 ) ([]hypothesis.Plan, error) {
 	fence := fenceToken()
-	prompt := planPrompt(fence, lead.Query, sources, max)
+	prompt := planPrompt(fence, lead.Query, sources, max, a.Code != nil)
 
 	resp, err := a.LLM.Complete(ctx, llm.Request{
 		Tier:      llm.TierCheap,
@@ -365,4 +475,12 @@ func plural(n int) string {
 		return "is"
 	}
 	return "es"
+}
+
+// evidenceTitle names the source in the mining prompt.
+func evidenceTitle(p hypothesis.Plan) string {
+	if p.Code != nil {
+		return fmt.Sprintf("%s.%s — sandboxed analysis", p.Connector, p.Table)
+	}
+	return fmt.Sprintf("%s.%s — %s", p.Connector, p.Table, p.Template)
 }

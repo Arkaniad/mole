@@ -27,6 +27,11 @@ You never write SQL. You pick a template by name and say which columns fill its
 slots; the tool renders the statement and refuses anything that does not name a
 real column of a real table.
 
+Where a sandbox is available the request will offer a "code" block instead, for
+analysis no template can express. That is the one thing you may author, because
+it runs with no network and a read-only view of one file — and only the figures
+you declare come back from it.
+
 Rules:
 - Only use table and column names that appear in the schema you are given.
 - Respect each slot's requirement. A measure must be a numeric column, a time
@@ -52,7 +57,7 @@ Reply with a JSON array and nothing else:
 Return fewer entries than the maximum if fewer are worth asking. Return an empty
 array if the schema has nothing relevant to the research question.`
 
-func planPrompt(fence, question string, sources []connector.Connector, max int) string {
+func planPrompt(fence, question string, sources []connector.Connector, max int, allowCode bool) string {
 	var b strings.Builder
 
 	b.WriteString("Research question: " + question + "\n\n")
@@ -66,6 +71,31 @@ func planPrompt(fence, question string, sources []connector.Connector, max int) 
 			}
 			fmt.Fprintf(&b, "    slot %q: needs a %s column%s\n", s.Name, s.Role, opt)
 		}
+	}
+
+	if allowCode {
+		// Offered only when a runtime is usable. Describing a capability the
+		// machine does not have would get a plan mole then has to refuse, and a
+		// refusal the model could not have avoided is a wasted call.
+		b.WriteString("\nOr, for an analysis none of those templates can express — a\n")
+		b.WriteString("regression, a seasonality decomposition, anything needing row-level\n")
+		b.WriteString("computation — you may instead return a \"code\" block:\n\n")
+		b.WriteString("  \"code\": {\n")
+		b.WriteString("    \"script\":  \"<python read from stdin>\",\n")
+		b.WriteString("    \"metrics\": [\"<name>\", …],\n")
+		b.WriteString("    \"tests\":   [\"<name>\", …]\n")
+		b.WriteString("  }\n\n")
+		b.WriteString("The script runs in a container with no network, a read-only copy of the\n")
+		b.WriteString("data at $MOLE_DB, and scratch space at /tmp. It must print one JSON\n")
+		b.WriteString("object:\n\n")
+		b.WriteString("  {\"metrics\": {\"<name>\": <number>}, \"tests\": [\n")
+		b.WriteString("     {\"name\": \"<name>\", \"n\": <int>, \"statistic\": <number>,\n")
+		b.WriteString("      \"p\": <number>, \"effect_size\": <number>}]}\n\n")
+		b.WriteString("Only the names you declare above come back. Anything else is discarded,\n")
+		b.WriteString("including any value that is not a finite number — so declare every\n")
+		b.WriteString("figure you intend to report, and do not try to return rows, labels or\n")
+		b.WriteString("text. Do not report your own verdict on significance; it is derived\n")
+		b.WriteString("from n and p.\n")
 	}
 
 	fmt.Fprintf(&b, "\nAt most %d hypothes%s.\n\n", max, plural(max))
