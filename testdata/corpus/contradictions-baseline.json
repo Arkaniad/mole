@@ -1,0 +1,1322 @@
+{
+  "corpus": "contradictions",
+  "results": [
+    {
+      "id": "flu-1918-deaths",
+      "question": "how many people died in the 1918 influenza pandemic?",
+      "tags": [
+        "disputed",
+        "epidemiology",
+        "numeric"
+      ],
+      "session_id": "s_06FZ395TJ4Z4K25W",
+      "status": "done",
+      "claims": 35,
+      "scorecard": {
+        "session_id": "s_06FZ395TJ4Z4K25W",
+        "metrics": [
+          {
+            "name": "budget overshoot",
+            "status": "measured",
+            "unit": "%",
+            "detail": "spent $0.0131 of $0.4000, no overshoot"
+          },
+          {
+            "name": "ledger consistency",
+            "status": "measured",
+            "value": 1,
+            "unit": "ok",
+            "detail": "35 call(s) reconcile"
+          },
+          {
+            "name": "holds released",
+            "status": "measured",
+            "unit": "held",
+            "detail": "no reservations left held"
+          },
+          {
+            "name": "claim integrity",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "35 of 35 claims well-formed"
+          },
+          {
+            "name": "source concentration",
+            "status": "measured",
+            "value": 22.857142857142858,
+            "unit": "%",
+            "detail": "6 distinct source(s); the largest contributed 8 of 35 claims (https://pmc.ncbi.nlm.nih.gov/articles/PMC7314216)"
+          },
+          {
+            "name": "cost per claim",
+            "status": "measured",
+            "value": 0.000375,
+            "unit": "usd",
+            "detail": "$0.0131 over 35 claims = $0.0003 each"
+          },
+          {
+            "name": "tool calls",
+            "status": "measured",
+            "value": 35,
+            "unit": "calls",
+            "detail": "llm 34 · search 1"
+          },
+          {
+            "name": "verification coverage",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "35 of 35 claim(s) verified"
+          },
+          {
+            "name": "duplicate collapse",
+            "status": "measured",
+            "value": 42.857142857142854,
+            "unit": "%",
+            "detail": "35 claim(s) render as 20 finding(s)"
+          },
+          {
+            "name": "disagreement rate",
+            "status": "measured",
+            "value": 42.857142857142854,
+            "unit": "%",
+            "detail": "17 contradiction(s) involving 15 of 35 claim(s)"
+          },
+          {
+            "name": "staleness separation",
+            "status": "measured",
+            "unit": "edges",
+            "detail": "0 of 17 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+          },
+          {
+            "name": "grounding rate",
+            "status": "blocked",
+            "reason": "no claim was re-read: §11.5.2's grounding pass needs escrow left over and a fetcher configured"
+          },
+          {
+            "name": "exfil regression",
+            "status": "blocked",
+            "reason": "this session crossed no local data; the assertion is enforced at the gate on every envelope (internal/compute/gate, §14.3) and is scored here only for a session that used a connector"
+          },
+          {
+            "name": "claim precision",
+            "status": "blocked",
+            "reason": "needs labelled answers; the question corpus (§14.2) is not built yet"
+          },
+          {
+            "name": "contradiction recall",
+            "status": "blocked",
+            "reason": "the Verifier now finds contradictions (see disagreement rate), but recall needs planted disagreements to measure what it MISSED — the question corpus (§14.2)"
+          },
+          {
+            "name": "staleness detection",
+            "status": "blocked",
+            "reason": "supersedes edges now exist (see staleness separation), but detection needs a corpus with known-stale sources to measure what was missed (§14.2)"
+          },
+          {
+            "name": "citation accuracy",
+            "status": "blocked",
+            "reason": "not requested; re-reads every cited source, so pass --citations (free and deterministic under MOLE_RECORD=replay)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "population-peak",
+      "question": "when will the world population peak and at what level?",
+      "tags": [
+        "disputed",
+        "demography",
+        "numeric"
+      ],
+      "session_id": "s_06FZ39KQHSXAWRCS",
+      "status": "done",
+      "claims": 22,
+      "scorecard": {
+        "session_id": "s_06FZ39KQHSXAWRCS",
+        "metrics": [
+          {
+            "name": "budget overshoot",
+            "status": "measured",
+            "unit": "%",
+            "detail": "spent $0.0132 of $0.4000, no overshoot"
+          },
+          {
+            "name": "ledger consistency",
+            "status": "measured",
+            "value": 1,
+            "unit": "ok",
+            "detail": "27 call(s) reconcile"
+          },
+          {
+            "name": "holds released",
+            "status": "measured",
+            "unit": "held",
+            "detail": "no reservations left held"
+          },
+          {
+            "name": "claim integrity",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "22 of 22 claims well-formed"
+          },
+          {
+            "name": "source concentration",
+            "status": "measured",
+            "value": 36.36363636363637,
+            "unit": "%",
+            "detail": "6 distinct source(s); the largest contributed 8 of 22 claims (https://en.wikipedia.org/wiki/Human_population_projections)"
+          },
+          {
+            "name": "cost per claim",
+            "status": "measured",
+            "value": 0.000602,
+            "unit": "usd",
+            "detail": "$0.0132 over 22 claims = $0.0006 each"
+          },
+          {
+            "name": "tool calls",
+            "status": "measured",
+            "value": 27,
+            "unit": "calls",
+            "detail": "llm 26 · search 1"
+          },
+          {
+            "name": "verification coverage",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "22 of 22 claim(s) verified"
+          },
+          {
+            "name": "duplicate collapse",
+            "status": "measured",
+            "value": 54.54545454545455,
+            "unit": "%",
+            "detail": "22 claim(s) render as 10 finding(s)"
+          },
+          {
+            "name": "disagreement rate",
+            "status": "measured",
+            "value": 68.18181818181819,
+            "unit": "%",
+            "detail": "27 contradiction(s) involving 15 of 22 claim(s)"
+          },
+          {
+            "name": "staleness separation",
+            "status": "measured",
+            "unit": "edges",
+            "detail": "0 of 27 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+          },
+          {
+            "name": "grounding rate",
+            "status": "blocked",
+            "reason": "no claim was re-read: §11.5.2's grounding pass needs escrow left over and a fetcher configured"
+          },
+          {
+            "name": "exfil regression",
+            "status": "blocked",
+            "reason": "this session crossed no local data; the assertion is enforced at the gate on every envelope (internal/compute/gate, §14.3) and is scored here only for a session that used a connector"
+          },
+          {
+            "name": "claim precision",
+            "status": "blocked",
+            "reason": "needs labelled answers; the question corpus (§14.2) is not built yet"
+          },
+          {
+            "name": "contradiction recall",
+            "status": "blocked",
+            "reason": "the Verifier now finds contradictions (see disagreement rate), but recall needs planted disagreements to measure what it MISSED — the question corpus (§14.2)"
+          },
+          {
+            "name": "staleness detection",
+            "status": "blocked",
+            "reason": "supersedes edges now exist (see staleness separation), but detection needs a corpus with known-stale sources to measure what was missed (§14.2)"
+          },
+          {
+            "name": "citation accuracy",
+            "status": "blocked",
+            "reason": "not requested; re-reads every cited source, so pass --citations (free and deterministic under MOLE_RECORD=replay)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "bitcoin-energy",
+      "question": "how much electricity does the bitcoin network consume per year?",
+      "tags": [
+        "disputed",
+        "energy",
+        "numeric"
+      ],
+      "session_id": "s_06FZ39XPM1Y1R7MR",
+      "status": "done",
+      "claims": 46,
+      "scorecard": {
+        "session_id": "s_06FZ39XPM1Y1R7MR",
+        "metrics": [
+          {
+            "name": "budget overshoot",
+            "status": "measured",
+            "unit": "%",
+            "detail": "spent $0.0172 of $0.4000, no overshoot"
+          },
+          {
+            "name": "ledger consistency",
+            "status": "measured",
+            "value": 1,
+            "unit": "ok",
+            "detail": "46 call(s) reconcile"
+          },
+          {
+            "name": "holds released",
+            "status": "measured",
+            "unit": "held",
+            "detail": "no reservations left held"
+          },
+          {
+            "name": "claim integrity",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "46 of 46 claims well-formed"
+          },
+          {
+            "name": "source concentration",
+            "status": "measured",
+            "value": 17.391304347826086,
+            "unit": "%",
+            "detail": "6 distinct source(s); the largest contributed 8 of 46 claims (https://ccaf.io/cbnsi/cbeci/methodology)"
+          },
+          {
+            "name": "cost per claim",
+            "status": "measured",
+            "value": 0.000374,
+            "unit": "usd",
+            "detail": "$0.0172 over 46 claims = $0.0003 each"
+          },
+          {
+            "name": "tool calls",
+            "status": "measured",
+            "value": 46,
+            "unit": "calls",
+            "detail": "llm 45 · search 1"
+          },
+          {
+            "name": "verification coverage",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "46 of 46 claim(s) verified"
+          },
+          {
+            "name": "duplicate collapse",
+            "status": "measured",
+            "value": 30.434782608695652,
+            "unit": "%",
+            "detail": "46 claim(s) render as 32 finding(s)"
+          },
+          {
+            "name": "disagreement rate",
+            "status": "measured",
+            "value": 43.47826086956522,
+            "unit": "%",
+            "detail": "21 contradiction(s) involving 20 of 46 claim(s)"
+          },
+          {
+            "name": "staleness separation",
+            "status": "measured",
+            "unit": "edges",
+            "detail": "0 of 21 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+          },
+          {
+            "name": "grounding rate",
+            "status": "blocked",
+            "reason": "no claim was re-read: §11.5.2's grounding pass needs escrow left over and a fetcher configured"
+          },
+          {
+            "name": "exfil regression",
+            "status": "blocked",
+            "reason": "this session crossed no local data; the assertion is enforced at the gate on every envelope (internal/compute/gate, §14.3) and is scored here only for a session that used a connector"
+          },
+          {
+            "name": "claim precision",
+            "status": "blocked",
+            "reason": "needs labelled answers; the question corpus (§14.2) is not built yet"
+          },
+          {
+            "name": "contradiction recall",
+            "status": "blocked",
+            "reason": "the Verifier now finds contradictions (see disagreement rate), but recall needs planted disagreements to measure what it MISSED — the question corpus (§14.2)"
+          },
+          {
+            "name": "staleness detection",
+            "status": "blocked",
+            "reason": "supersedes edges now exist (see staleness separation), but detection needs a corpus with known-stale sources to measure what was missed (§14.2)"
+          },
+          {
+            "name": "citation accuracy",
+            "status": "blocked",
+            "reason": "not requested; re-reads every cited source, so pass --citations (free and deterministic under MOLE_RECORD=replay)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "psych-replication",
+      "question": "what fraction of psychology studies replicate?",
+      "tags": [
+        "disputed",
+        "metascience",
+        "numeric"
+      ],
+      "session_id": "s_06FZ3AH69EKTBW1Z",
+      "status": "done",
+      "claims": 41,
+      "scorecard": {
+        "session_id": "s_06FZ3AH69EKTBW1Z",
+        "metrics": [
+          {
+            "name": "budget overshoot",
+            "status": "measured",
+            "unit": "%",
+            "detail": "spent $0.0156 of $0.4000, no overshoot"
+          },
+          {
+            "name": "ledger consistency",
+            "status": "measured",
+            "value": 1,
+            "unit": "ok",
+            "detail": "39 call(s) reconcile"
+          },
+          {
+            "name": "holds released",
+            "status": "measured",
+            "unit": "held",
+            "detail": "no reservations left held"
+          },
+          {
+            "name": "claim integrity",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "41 of 41 claims well-formed"
+          },
+          {
+            "name": "source concentration",
+            "status": "measured",
+            "value": 19.51219512195122,
+            "unit": "%",
+            "detail": "6 distinct source(s); the largest contributed 8 of 41 claims (https://replicationindex.com/tag/osf-reproducibility-project/feed)"
+          },
+          {
+            "name": "cost per claim",
+            "status": "measured",
+            "value": 0.000381,
+            "unit": "usd",
+            "detail": "$0.0156 over 41 claims = $0.0003 each"
+          },
+          {
+            "name": "tool calls",
+            "status": "measured",
+            "value": 39,
+            "unit": "calls",
+            "detail": "llm 38 · search 1"
+          },
+          {
+            "name": "verification coverage",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "41 of 41 claim(s) verified"
+          },
+          {
+            "name": "duplicate collapse",
+            "status": "measured",
+            "value": 29.26829268292683,
+            "unit": "%",
+            "detail": "41 claim(s) render as 29 finding(s)"
+          },
+          {
+            "name": "disagreement rate",
+            "status": "measured",
+            "value": 29.26829268292683,
+            "unit": "%",
+            "detail": "7 contradiction(s) involving 12 of 41 claim(s)"
+          },
+          {
+            "name": "staleness separation",
+            "status": "measured",
+            "unit": "edges",
+            "detail": "0 of 7 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+          },
+          {
+            "name": "grounding rate",
+            "status": "blocked",
+            "reason": "no claim was re-read: §11.5.2's grounding pass needs escrow left over and a fetcher configured"
+          },
+          {
+            "name": "exfil regression",
+            "status": "blocked",
+            "reason": "this session crossed no local data; the assertion is enforced at the gate on every envelope (internal/compute/gate, §14.3) and is scored here only for a session that used a connector"
+          },
+          {
+            "name": "claim precision",
+            "status": "blocked",
+            "reason": "needs labelled answers; the question corpus (§14.2) is not built yet"
+          },
+          {
+            "name": "contradiction recall",
+            "status": "blocked",
+            "reason": "the Verifier now finds contradictions (see disagreement rate), but recall needs planted disagreements to measure what it MISSED — the question corpus (§14.2)"
+          },
+          {
+            "name": "staleness detection",
+            "status": "blocked",
+            "reason": "supersedes edges now exist (see staleness separation), but detection needs a corpus with known-stale sources to measure what was missed (§14.2)"
+          },
+          {
+            "name": "citation accuracy",
+            "status": "blocked",
+            "reason": "not requested; re-reads every cited source, so pass --citations (free and deterministic under MOLE_RECORD=replay)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "nuclear-vs-solar-lcoe",
+      "question": "is nuclear power cost-competitive with utility-scale solar?",
+      "tags": [
+        "disputed",
+        "energy",
+        "policy"
+      ],
+      "session_id": "s_06FZ3B121KJ9SNS0",
+      "status": "done",
+      "claims": 42,
+      "scorecard": {
+        "session_id": "s_06FZ3B121KJ9SNS0",
+        "metrics": [
+          {
+            "name": "budget overshoot",
+            "status": "measured",
+            "unit": "%",
+            "detail": "spent $0.0122 of $0.4000, no overshoot"
+          },
+          {
+            "name": "ledger consistency",
+            "status": "measured",
+            "value": 1,
+            "unit": "ok",
+            "detail": "38 call(s) reconcile"
+          },
+          {
+            "name": "holds released",
+            "status": "measured",
+            "unit": "held",
+            "detail": "no reservations left held"
+          },
+          {
+            "name": "claim integrity",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "42 of 42 claims well-formed"
+          },
+          {
+            "name": "source concentration",
+            "status": "measured",
+            "value": 19.047619047619047,
+            "unit": "%",
+            "detail": "6 distinct source(s); the largest contributed 8 of 42 claims (https://w3.windfair.net/wind-energy/news/46789-study-levelized-cost-of-electricity-for-renewable-energy-and-conventional-power-plants-wind-and-pv-clearly-advantageous)"
+          },
+          {
+            "name": "cost per claim",
+            "status": "measured",
+            "value": 0.000291,
+            "unit": "usd",
+            "detail": "$0.0122 over 42 claims = $0.0002 each"
+          },
+          {
+            "name": "tool calls",
+            "status": "measured",
+            "value": 38,
+            "unit": "calls",
+            "detail": "llm 37 · search 1"
+          },
+          {
+            "name": "verification coverage",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "42 of 42 claim(s) verified"
+          },
+          {
+            "name": "duplicate collapse",
+            "status": "measured",
+            "value": 11.904761904761905,
+            "unit": "%",
+            "detail": "42 claim(s) render as 37 finding(s)"
+          },
+          {
+            "name": "disagreement rate",
+            "status": "measured",
+            "value": 9.523809523809524,
+            "unit": "%",
+            "detail": "2 contradiction(s) involving 4 of 42 claim(s)"
+          },
+          {
+            "name": "staleness separation",
+            "status": "measured",
+            "unit": "edges",
+            "detail": "0 of 2 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+          },
+          {
+            "name": "grounding rate",
+            "status": "blocked",
+            "reason": "no claim was re-read: §11.5.2's grounding pass needs escrow left over and a fetcher configured"
+          },
+          {
+            "name": "exfil regression",
+            "status": "blocked",
+            "reason": "this session crossed no local data; the assertion is enforced at the gate on every envelope (internal/compute/gate, §14.3) and is scored here only for a session that used a connector"
+          },
+          {
+            "name": "claim precision",
+            "status": "blocked",
+            "reason": "needs labelled answers; the question corpus (§14.2) is not built yet"
+          },
+          {
+            "name": "contradiction recall",
+            "status": "blocked",
+            "reason": "the Verifier now finds contradictions (see disagreement rate), but recall needs planted disagreements to measure what it MISSED — the question corpus (§14.2)"
+          },
+          {
+            "name": "staleness detection",
+            "status": "blocked",
+            "reason": "supersedes edges now exist (see staleness separation), but detection needs a corpus with known-stale sources to measure what was missed (§14.2)"
+          },
+          {
+            "name": "citation accuracy",
+            "status": "blocked",
+            "reason": "not requested; re-reads every cited source, so pass --citations (free and deterministic under MOLE_RECORD=replay)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gpt4-mmlu",
+      "question": "what score does GPT-4 achieve on MMLU?",
+      "tags": [
+        "disputed",
+        "ml-benchmarks",
+        "numeric"
+      ],
+      "session_id": "s_06FZ3BGADSVT8BPJ",
+      "status": "done",
+      "claims": 18,
+      "scorecard": {
+        "session_id": "s_06FZ3BGADSVT8BPJ",
+        "metrics": [
+          {
+            "name": "budget overshoot",
+            "status": "measured",
+            "unit": "%",
+            "detail": "spent $0.0111 of $0.4000, no overshoot"
+          },
+          {
+            "name": "ledger consistency",
+            "status": "measured",
+            "value": 1,
+            "unit": "ok",
+            "detail": "23 call(s) reconcile"
+          },
+          {
+            "name": "holds released",
+            "status": "measured",
+            "unit": "held",
+            "detail": "no reservations left held"
+          },
+          {
+            "name": "claim integrity",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "18 of 18 claims well-formed"
+          },
+          {
+            "name": "source concentration",
+            "status": "measured",
+            "value": 33.333333333333336,
+            "unit": "%",
+            "detail": "5 distinct source(s); the largest contributed 6 of 18 claims (https://www.libertify.com/interactive-library/gpt-4-technical-report)"
+          },
+          {
+            "name": "cost per claim",
+            "status": "measured",
+            "value": 0.000619,
+            "unit": "usd",
+            "detail": "$0.0111 over 18 claims = $0.0006 each"
+          },
+          {
+            "name": "tool calls",
+            "status": "measured",
+            "value": 23,
+            "unit": "calls",
+            "detail": "llm 22 · search 1"
+          },
+          {
+            "name": "verification coverage",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "18 of 18 claim(s) verified"
+          },
+          {
+            "name": "duplicate collapse",
+            "status": "measured",
+            "value": 22.22222222222222,
+            "unit": "%",
+            "detail": "18 claim(s) render as 14 finding(s)"
+          },
+          {
+            "name": "disagreement rate",
+            "status": "measured",
+            "value": 22.22222222222222,
+            "unit": "%",
+            "detail": "2 contradiction(s) involving 4 of 18 claim(s)"
+          },
+          {
+            "name": "staleness separation",
+            "status": "measured",
+            "unit": "edges",
+            "detail": "0 of 2 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+          },
+          {
+            "name": "grounding rate",
+            "status": "blocked",
+            "reason": "no claim was re-read: §11.5.2's grounding pass needs escrow left over and a fetcher configured"
+          },
+          {
+            "name": "exfil regression",
+            "status": "blocked",
+            "reason": "this session crossed no local data; the assertion is enforced at the gate on every envelope (internal/compute/gate, §14.3) and is scored here only for a session that used a connector"
+          },
+          {
+            "name": "claim precision",
+            "status": "blocked",
+            "reason": "needs labelled answers; the question corpus (§14.2) is not built yet"
+          },
+          {
+            "name": "contradiction recall",
+            "status": "blocked",
+            "reason": "the Verifier now finds contradictions (see disagreement rate), but recall needs planted disagreements to measure what it MISSED — the question corpus (§14.2)"
+          },
+          {
+            "name": "staleness detection",
+            "status": "blocked",
+            "reason": "supersedes edges now exist (see staleness separation), but detection needs a corpus with known-stale sources to measure what was missed (§14.2)"
+          },
+          {
+            "name": "citation accuracy",
+            "status": "blocked",
+            "reason": "not requested; re-reads every cited source, so pass --citations (free and deterministic under MOLE_RECORD=replay)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "red-meat-mortality",
+      "question": "does eating red meat increase all-cause mortality?",
+      "tags": [
+        "disputed",
+        "nutrition"
+      ],
+      "session_id": "s_06FZ3BQAP3SFXNBK",
+      "status": "done",
+      "claims": 41,
+      "scorecard": {
+        "session_id": "s_06FZ3BQAP3SFXNBK",
+        "metrics": [
+          {
+            "name": "budget overshoot",
+            "status": "measured",
+            "unit": "%",
+            "detail": "spent $0.0150 of $0.4000, no overshoot"
+          },
+          {
+            "name": "ledger consistency",
+            "status": "measured",
+            "value": 1,
+            "unit": "ok",
+            "detail": "39 call(s) reconcile"
+          },
+          {
+            "name": "holds released",
+            "status": "measured",
+            "unit": "held",
+            "detail": "no reservations left held"
+          },
+          {
+            "name": "claim integrity",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "41 of 41 claims well-formed"
+          },
+          {
+            "name": "source concentration",
+            "status": "measured",
+            "value": 19.51219512195122,
+            "unit": "%",
+            "detail": "6 distinct source(s); the largest contributed 8 of 41 claims (https://pmc.ncbi.nlm.nih.gov/articles/PMC3712342)"
+          },
+          {
+            "name": "cost per claim",
+            "status": "measured",
+            "value": 0.000367,
+            "unit": "usd",
+            "detail": "$0.0150 over 41 claims = $0.0003 each"
+          },
+          {
+            "name": "tool calls",
+            "status": "measured",
+            "value": 39,
+            "unit": "calls",
+            "detail": "fetch 1 · llm 37 · search 1 · 1 errored"
+          },
+          {
+            "name": "verification coverage",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "41 of 41 claim(s) verified"
+          },
+          {
+            "name": "duplicate collapse",
+            "status": "measured",
+            "value": 39.02439024390244,
+            "unit": "%",
+            "detail": "41 claim(s) render as 25 finding(s)"
+          },
+          {
+            "name": "disagreement rate",
+            "status": "measured",
+            "value": 14.634146341463415,
+            "unit": "%",
+            "detail": "3 contradiction(s) involving 6 of 41 claim(s)"
+          },
+          {
+            "name": "staleness separation",
+            "status": "measured",
+            "unit": "edges",
+            "detail": "0 of 3 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+          },
+          {
+            "name": "grounding rate",
+            "status": "blocked",
+            "reason": "no claim was re-read: §11.5.2's grounding pass needs escrow left over and a fetcher configured"
+          },
+          {
+            "name": "exfil regression",
+            "status": "blocked",
+            "reason": "this session crossed no local data; the assertion is enforced at the gate on every envelope (internal/compute/gate, §14.3) and is scored here only for a session that used a connector"
+          },
+          {
+            "name": "claim precision",
+            "status": "blocked",
+            "reason": "needs labelled answers; the question corpus (§14.2) is not built yet"
+          },
+          {
+            "name": "contradiction recall",
+            "status": "blocked",
+            "reason": "the Verifier now finds contradictions (see disagreement rate), but recall needs planted disagreements to measure what it MISSED — the question corpus (§14.2)"
+          },
+          {
+            "name": "staleness detection",
+            "status": "blocked",
+            "reason": "supersedes edges now exist (see staleness separation), but detection needs a corpus with known-stale sources to measure what was missed (§14.2)"
+          },
+          {
+            "name": "citation accuracy",
+            "status": "blocked",
+            "reason": "not requested; re-reads every cited source, so pass --citations (free and deterministic under MOLE_RECORD=replay)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "intermittent-fasting",
+      "question": "is intermittent fasting more effective than continuous calorie restriction for weight loss?",
+      "tags": [
+        "disputed",
+        "nutrition"
+      ],
+      "session_id": "s_06FZ3C6YC95B0WYA",
+      "status": "done",
+      "claims": 40,
+      "scorecard": {
+        "session_id": "s_06FZ3C6YC95B0WYA",
+        "metrics": [
+          {
+            "name": "budget overshoot",
+            "status": "measured",
+            "unit": "%",
+            "detail": "spent $0.0235 of $0.4000, no overshoot"
+          },
+          {
+            "name": "ledger consistency",
+            "status": "measured",
+            "value": 1,
+            "unit": "ok",
+            "detail": "51 call(s) reconcile"
+          },
+          {
+            "name": "holds released",
+            "status": "measured",
+            "unit": "held",
+            "detail": "no reservations left held"
+          },
+          {
+            "name": "claim integrity",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "40 of 40 claims well-formed"
+          },
+          {
+            "name": "source concentration",
+            "status": "measured",
+            "value": 20,
+            "unit": "%",
+            "detail": "5 distinct source(s); the largest contributed 8 of 40 claims (https://nutritionsource.hsph.harvard.edu/healthy-weight/diet-reviews/intermittent-fasting)"
+          },
+          {
+            "name": "cost per claim",
+            "status": "measured",
+            "value": 0.000587,
+            "unit": "usd",
+            "detail": "$0.0235 over 40 claims = $0.0005 each"
+          },
+          {
+            "name": "tool calls",
+            "status": "measured",
+            "value": 51,
+            "unit": "calls",
+            "detail": "fetch 12 · llm 37 · search 2 · 12 errored"
+          },
+          {
+            "name": "verification coverage",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "40 of 40 claim(s) verified"
+          },
+          {
+            "name": "duplicate collapse",
+            "status": "measured",
+            "value": 42.5,
+            "unit": "%",
+            "detail": "40 claim(s) render as 23 finding(s)"
+          },
+          {
+            "name": "disagreement rate",
+            "status": "measured",
+            "value": 57.5,
+            "unit": "%",
+            "detail": "26 contradiction(s) involving 23 of 40 claim(s)"
+          },
+          {
+            "name": "staleness separation",
+            "status": "measured",
+            "unit": "edges",
+            "detail": "0 of 26 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+          },
+          {
+            "name": "grounding rate",
+            "status": "blocked",
+            "reason": "no claim was re-read: §11.5.2's grounding pass needs escrow left over and a fetcher configured"
+          },
+          {
+            "name": "exfil regression",
+            "status": "blocked",
+            "reason": "this session crossed no local data; the assertion is enforced at the gate on every envelope (internal/compute/gate, §14.3) and is scored here only for a session that used a connector"
+          },
+          {
+            "name": "claim precision",
+            "status": "blocked",
+            "reason": "needs labelled answers; the question corpus (§14.2) is not built yet"
+          },
+          {
+            "name": "contradiction recall",
+            "status": "blocked",
+            "reason": "the Verifier now finds contradictions (see disagreement rate), but recall needs planted disagreements to measure what it MISSED — the question corpus (§14.2)"
+          },
+          {
+            "name": "staleness detection",
+            "status": "blocked",
+            "reason": "supersedes edges now exist (see staleness separation), but detection needs a corpus with known-stale sources to measure what was missed (§14.2)"
+          },
+          {
+            "name": "citation accuracy",
+            "status": "blocked",
+            "reason": "not requested; re-reads every cited source, so pass --citations (free and deterministic under MOLE_RECORD=replay)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "predimed-cvd",
+      "question": "does the Mediterranean diet reduce cardiovascular events?",
+      "tags": [
+        "disputed",
+        "stale",
+        "nutrition"
+      ],
+      "session_id": "s_06FZ3CR7MH4FB3H5",
+      "status": "done",
+      "claims": 43,
+      "scorecard": {
+        "session_id": "s_06FZ3CR7MH4FB3H5",
+        "metrics": [
+          {
+            "name": "budget overshoot",
+            "status": "measured",
+            "unit": "%",
+            "detail": "spent $0.0254 of $0.4000, no overshoot"
+          },
+          {
+            "name": "ledger consistency",
+            "status": "measured",
+            "value": 1,
+            "unit": "ok",
+            "detail": "49 call(s) reconcile"
+          },
+          {
+            "name": "holds released",
+            "status": "measured",
+            "unit": "held",
+            "detail": "no reservations left held"
+          },
+          {
+            "name": "claim integrity",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "43 of 43 claims well-formed"
+          },
+          {
+            "name": "source concentration",
+            "status": "measured",
+            "value": 18.6046511627907,
+            "unit": "%",
+            "detail": "6 distinct source(s); the largest contributed 8 of 43 claims (https://pmc.ncbi.nlm.nih.gov/articles/PMC4339461)"
+          },
+          {
+            "name": "cost per claim",
+            "status": "measured",
+            "value": 0.000591,
+            "unit": "usd",
+            "detail": "$0.0254 over 43 claims = $0.0005 each"
+          },
+          {
+            "name": "tool calls",
+            "status": "measured",
+            "value": 49,
+            "unit": "calls",
+            "detail": "llm 48 · search 1"
+          },
+          {
+            "name": "verification coverage",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "43 of 43 claim(s) verified"
+          },
+          {
+            "name": "duplicate collapse",
+            "status": "measured",
+            "value": 13.953488372093023,
+            "unit": "%",
+            "detail": "43 claim(s) render as 37 finding(s)"
+          },
+          {
+            "name": "disagreement rate",
+            "status": "measured",
+            "value": 13.953488372093023,
+            "unit": "%",
+            "detail": "4 contradiction(s) involving 6 of 43 claim(s)"
+          },
+          {
+            "name": "staleness separation",
+            "status": "measured",
+            "unit": "edges",
+            "detail": "0 of 4 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+          },
+          {
+            "name": "grounding rate",
+            "status": "blocked",
+            "reason": "no claim was re-read: §11.5.2's grounding pass needs escrow left over and a fetcher configured"
+          },
+          {
+            "name": "exfil regression",
+            "status": "blocked",
+            "reason": "this session crossed no local data; the assertion is enforced at the gate on every envelope (internal/compute/gate, §14.3) and is scored here only for a session that used a connector"
+          },
+          {
+            "name": "claim precision",
+            "status": "blocked",
+            "reason": "needs labelled answers; the question corpus (§14.2) is not built yet"
+          },
+          {
+            "name": "contradiction recall",
+            "status": "blocked",
+            "reason": "the Verifier now finds contradictions (see disagreement rate), but recall needs planted disagreements to measure what it MISSED — the question corpus (§14.2)"
+          },
+          {
+            "name": "staleness detection",
+            "status": "blocked",
+            "reason": "supersedes edges now exist (see staleness separation), but detection needs a corpus with known-stale sources to measure what was missed (§14.2)"
+          },
+          {
+            "name": "citation accuracy",
+            "status": "blocked",
+            "reason": "not requested; re-reads every cited source, so pass --citations (free and deterministic under MOLE_RECORD=replay)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "minimum-wage-employment",
+      "question": "does raising the minimum wage reduce employment?",
+      "tags": [
+        "disputed",
+        "economics"
+      ],
+      "session_id": "s_06FZ3DC3Q1JR0N80",
+      "status": "done",
+      "claims": 41,
+      "scorecard": {
+        "session_id": "s_06FZ3DC3Q1JR0N80",
+        "metrics": [
+          {
+            "name": "budget overshoot",
+            "status": "measured",
+            "unit": "%",
+            "detail": "spent $0.0156 of $0.4000, no overshoot"
+          },
+          {
+            "name": "ledger consistency",
+            "status": "measured",
+            "value": 1,
+            "unit": "ok",
+            "detail": "46 call(s) reconcile"
+          },
+          {
+            "name": "holds released",
+            "status": "measured",
+            "unit": "held",
+            "detail": "no reservations left held"
+          },
+          {
+            "name": "claim integrity",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "41 of 41 claims well-formed"
+          },
+          {
+            "name": "source concentration",
+            "status": "measured",
+            "value": 19.51219512195122,
+            "unit": "%",
+            "detail": "6 distinct source(s); the largest contributed 8 of 41 claims (https://pmc.ncbi.nlm.nih.gov/articles/PMC5966045)"
+          },
+          {
+            "name": "cost per claim",
+            "status": "measured",
+            "value": 0.000382,
+            "unit": "usd",
+            "detail": "$0.0156 over 41 claims = $0.0003 each"
+          },
+          {
+            "name": "tool calls",
+            "status": "measured",
+            "value": 46,
+            "unit": "calls",
+            "detail": "fetch 2 · llm 43 · search 1"
+          },
+          {
+            "name": "verification coverage",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "41 of 41 claim(s) verified"
+          },
+          {
+            "name": "duplicate collapse",
+            "status": "measured",
+            "value": 9.75609756097561,
+            "unit": "%",
+            "detail": "41 claim(s) render as 37 finding(s)"
+          },
+          {
+            "name": "disagreement rate",
+            "status": "measured",
+            "value": 21.951219512195124,
+            "unit": "%",
+            "detail": "6 contradiction(s) involving 9 of 41 claim(s)"
+          },
+          {
+            "name": "staleness separation",
+            "status": "measured",
+            "unit": "edges",
+            "detail": "0 of 6 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+          },
+          {
+            "name": "grounding rate",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "5 of 5 re-read claim(s) confirmed by their own source"
+          },
+          {
+            "name": "exfil regression",
+            "status": "blocked",
+            "reason": "this session crossed no local data; the assertion is enforced at the gate on every envelope (internal/compute/gate, §14.3) and is scored here only for a session that used a connector"
+          },
+          {
+            "name": "claim precision",
+            "status": "blocked",
+            "reason": "needs labelled answers; the question corpus (§14.2) is not built yet"
+          },
+          {
+            "name": "contradiction recall",
+            "status": "blocked",
+            "reason": "the Verifier now finds contradictions (see disagreement rate), but recall needs planted disagreements to measure what it MISSED — the question corpus (§14.2)"
+          },
+          {
+            "name": "staleness detection",
+            "status": "blocked",
+            "reason": "supersedes edges now exist (see staleness separation), but detection needs a corpus with known-stale sources to measure what was missed (§14.2)"
+          },
+          {
+            "name": "citation accuracy",
+            "status": "blocked",
+            "reason": "not requested; re-reads every cited source, so pass --citations (free and deterministic under MOLE_RECORD=replay)"
+          }
+        ]
+      }
+    }
+  ],
+  "aggregate": [
+    {
+      "name": "budget overshoot",
+      "status": "measured",
+      "unit": "%",
+      "detail": "mean of 10 question(s)"
+    },
+    {
+      "name": "ledger consistency",
+      "status": "measured",
+      "value": 1,
+      "unit": "ok",
+      "detail": "mean of 10 question(s)"
+    },
+    {
+      "name": "holds released",
+      "status": "measured",
+      "unit": "held",
+      "detail": "mean of 10 question(s)"
+    },
+    {
+      "name": "claim integrity",
+      "status": "measured",
+      "value": 100,
+      "unit": "%",
+      "detail": "mean of 10 question(s)"
+    },
+    {
+      "name": "source concentration",
+      "status": "measured",
+      "value": 22.613427247820205,
+      "unit": "%",
+      "detail": "mean of 10 question(s)"
+    },
+    {
+      "name": "cost per claim",
+      "status": "measured",
+      "value": 0.0004569000000000001,
+      "unit": "usd",
+      "detail": "mean of 10 question(s)"
+    },
+    {
+      "name": "tool calls",
+      "status": "measured",
+      "value": 39.3,
+      "unit": "calls",
+      "detail": "mean of 10 question(s)"
+    },
+    {
+      "name": "verification coverage",
+      "status": "measured",
+      "value": 100,
+      "unit": "%",
+      "detail": "mean of 10 question(s)"
+    },
+    {
+      "name": "duplicate collapse",
+      "status": "measured",
+      "value": 29.64666329981751,
+      "unit": "%",
+      "detail": "mean of 10 question(s)"
+    },
+    {
+      "name": "disagreement rate",
+      "status": "measured",
+      "value": 32.35704005632364,
+      "unit": "%",
+      "detail": "mean of 10 question(s)"
+    },
+    {
+      "name": "staleness separation",
+      "status": "measured",
+      "unit": "edges",
+      "detail": "mean of 10 question(s)"
+    },
+    {
+      "name": "grounding rate",
+      "status": "measured",
+      "value": 100,
+      "unit": "%",
+      "detail": "mean of 1 question(s); 9 blocked"
+    },
+    {
+      "name": "exfil regression",
+      "status": "blocked",
+      "reason": "this session crossed no local data; the assertion is enforced at the gate on every envelope (internal/compute/gate, §14.3) and is scored here only for a session that used a connector"
+    },
+    {
+      "name": "claim precision",
+      "status": "blocked",
+      "reason": "needs labelled answers; the question corpus (§14.2) is not built yet"
+    },
+    {
+      "name": "contradiction recall",
+      "status": "blocked",
+      "reason": "the Verifier now finds contradictions (see disagreement rate), but recall needs planted disagreements to measure what it MISSED — the question corpus (§14.2)"
+    },
+    {
+      "name": "staleness detection",
+      "status": "blocked",
+      "reason": "supersedes edges now exist (see staleness separation), but detection needs a corpus with known-stale sources to measure what was missed (§14.2)"
+    },
+    {
+      "name": "citation accuracy",
+      "status": "blocked",
+      "reason": "not requested; re-reads every cited source, so pass --citations (free and deterministic under MOLE_RECORD=replay)"
+    }
+  ]
+}
