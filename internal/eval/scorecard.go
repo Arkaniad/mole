@@ -164,6 +164,11 @@ func Score(ctx context.Context, st store.Store, sessionID string, opts Options) 
 		})
 	}
 
+	// Dataset mode's own numbers (§14.3), and only for a session that has them: a
+	// report session has no rows, and a metric reading 0% would be
+	// indistinguishable from a dataset session whose extraction failed entirely.
+	card.Metrics = append(card.Metrics, datasetMetrics(ctx, st, sessionID)...)
+
 	card.Metrics = append(card.Metrics, blockedMetrics(opts)...)
 	return card, nil
 }
