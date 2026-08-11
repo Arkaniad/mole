@@ -205,7 +205,10 @@ func TestEmptyContentFromAReasoningModelIsDiagnosed(t *testing.T) {
 		t.Errorf("err = %v, want ErrEmptyOutput", err)
 	}
 	// The message has to name the cause, or it is no better than a parse error.
-	for _, want := range []string{"300", "length", "MaxTokens"} {
+	// The token count is the SUM over attempts now: the provider retries with more
+	// room for the chain of thought, and every attempt spent tokens the caller is
+	// charged for. This fake reports 300 each time regardless of the ceiling.
+	for _, want := range []string{"900", "length", "MaxTokens", "reasoning allowance"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error does not mention %q: %v", want, err)
 		}

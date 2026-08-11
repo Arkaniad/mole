@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,6 +31,16 @@ type openAIProvider struct {
 	cfg    Config
 	client *http.Client
 	source CredentialSource
+
+	// reasoning remembers what a model's chain of thought costs, per model.
+	//
+	// A reasoning model spends the output allowance on thinking before it writes
+	// anything, so a caller asking for 4096 tokens of ANSWER has to be given room
+	// for both. The first call that comes back empty pays for the discovery; every
+	// call after it starts with the room already added, which is the difference
+	// between "supported" and "works if you retry".
+	mu        sync.Mutex
+	reasoning map[string]int64
 }
 
 func newOpenAICompatible(cfg Config, httpClient *http.Client) (*openAIProvider, error) {
@@ -55,7 +66,10 @@ func newOpenAICompatible(cfg Config, httpClient *http.Client) (*openAIProvider, 
 		source = CredentialNotNeeded
 	}
 
-	return &openAIProvider{cfg: cfg, client: httpClient, source: source}, nil
+	return &openAIProvider{
+		cfg: cfg, client: httpClient, source: source,
+		reasoning: map[string]int64{},
+	}, nil
 }
 
 func (p *openAIProvider) Name() string                       { return string(KindOpenAICompatible) }
@@ -76,6 +90,26 @@ type openAIRequest struct {
 	Stream    bool            `json:"stream"`
 }
 
+// Reasoning allowance bounds.
+//
+// MaxReasoningAllowance caps what one model may be given for thinking: a model
+// that has not produced an answer in this many tokens is not about to, and a token
+// budget that grows without a ceiling is not a budget.
+//
+// firstReasoningAllowance is what a first empty response jumps to, and it is
+// measured rather than chosen. qwen3:4b asked for the JSON `{"ok":true}` — the
+// smallest useful prompt there is — spent 1,924 completion tokens on its chain in
+// one run and more than 2,128 in the next, on the same prompt. A model that
+// reasons at all reasons in thousands, and stepping there 512 tokens at a time
+// means paying for four wasted calls to learn what one can.
+//
+// maxReasoningAttempts bounds the paid discovery at three provider calls.
+const (
+	MaxReasoningAllowance   = 16384
+	firstReasoningAllowance = 4096
+	maxReasoningAttempts    = 3
+)
+
 type openAIMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -88,7 +122,12 @@ type openAIResponse struct {
 			Content string `json:"content"`
 			// Reasoning models return their chain separately; it is not part
 			// of the answer and is deliberately not concatenated into Text.
+			//
+			// Two spellings, because two families exist: DeepSeek and vLLM send
+			// `reasoning_content`, Ollama's /v1 sends `reasoning`. Reading only
+			// the first is why mole saw an empty message and no explanation.
 			ReasoningContent string `json:"reasoning_content"`
+			Reasoning        string `json:"reasoning"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -96,6 +135,11 @@ type openAIResponse struct {
 		PromptTokens     int64 `json:"prompt_tokens"`
 		CompletionTokens int64 `json:"completion_tokens"`
 		TotalTokens      int64 `json:"total_tokens"`
+		// OpenAI's o-series reports the split; most local runtimes do not, in
+		// which case an empty answer means the whole completion was reasoning.
+		CompletionTokensDetails struct {
+			ReasoningTokens int64 `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
 		// DeepSeek and some proxies report cache hits under this name.
 		PromptCacheHitTokens  int64 `json:"prompt_cache_hit_tokens"`
 		PromptCacheMissTokens int64 `json:"prompt_cache_miss_tokens"`
@@ -236,6 +280,23 @@ func parseRetryAfter(v string) (time.Duration, bool) {
 	return 0, false
 }
 
+// Complete calls the endpoint, giving a reasoning model room to think.
+//
+// A reasoning model emits its chain of thought against the SAME output allowance
+// as its answer, so `MaxTokens: 4096` can buy 4096 tokens of thinking and an empty
+// message — observed on qwen3 through Ollama's /v1, which is exactly the shape the
+// known gaps described: mole's callers see "no JSON object in the reply" and blame
+// the prompt.
+//
+// Ollama ignored every documented way to switch reasoning off (`think:false`,
+// `/no_think`, `chat_template_kwargs.enable_thinking`), so this budgets for it
+// instead of fighting it. MaxTokens becomes the ANSWER allowance and the provider
+// adds a reasoning allowance on top: learned per model, paid for once by the first
+// call that comes back empty, and applied up front from then on.
+//
+// Every attempt's usage is summed into the returned Response. The tokens were
+// spent whether or not the answer arrived, and a ledger that charged for one of
+// two calls could not enforce a ceiling.
 func (p *openAIProvider) Complete(ctx context.Context, req Request) (*Response, error) {
 	start := time.Now()
 
@@ -244,9 +305,9 @@ func (p *openAIProvider) Complete(ctx context.Context, req Request) (*Response, 
 		model = p.ModelFor(req.Tier)
 	}
 
-	maxTokens := req.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = 8192
+	answerTokens := req.MaxTokens
+	if answerTokens <= 0 {
+		answerTokens = 8192
 	}
 
 	msgs := make([]openAIMessage, 0, len(req.Messages)+1)
@@ -257,47 +318,165 @@ func (p *openAIProvider) Complete(ctx context.Context, req Request) (*Response, 
 		msgs = append(msgs, openAIMessage{Role: string(m.Role), Content: m.Text})
 	}
 
-	payload, err := json.Marshal(openAIRequest{
-		Model:     model,
-		Messages:  msgs,
-		MaxTokens: maxTokens,
-		Stream:    false,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("llm: encode: %w", err)
-	}
-
 	ctx, cancel := context.WithTimeout(ctx, p.cfg.Timeout)
 	defer cancel()
 
-	body, err := p.do(ctx, payload)
-	if err != nil {
-		return nil, err
-	}
-
-	var parsed openAIResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, fmt.Errorf("llm: decode: %w", err)
-	}
-	if len(parsed.Choices) == 0 {
-		return nil, fmt.Errorf("llm: %s returned no choices", p.cfg.BaseURL)
-	}
-
-	choice := parsed.Choices[0]
-
-	// A reasoning model that ran out of room emits nothing usable. Say so
-	// precisely: the alternative symptom is "no JSON object in model response",
-	// which points at the prompt when the problem is the token budget.
-	if strings.TrimSpace(choice.Message.Content) == "" && parsed.Usage.CompletionTokens > 0 {
-		reason := choice.FinishReason
-		if reason == "" {
-			reason = "unknown"
+	var (
+		total     Usage
+		attempts  int
+		allowance = p.reasoningAllowance(model)
+	)
+	for {
+		attempts++
+		payload, err := json.Marshal(openAIRequest{
+			Model:     model,
+			Messages:  msgs,
+			MaxTokens: answerTokens + int(allowance),
+			Stream:    false,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("llm: encode: %w", err)
 		}
-		return nil, fmt.Errorf("%w: %d completion tokens produced no content (finish_reason %q) — "+
-			"a reasoning model can spend the whole output budget on its reasoning; raise MaxTokens",
-			ErrEmptyOutput, parsed.Usage.CompletionTokens, reason)
-	}
 
+		body, err := p.do(ctx, payload)
+		if err != nil {
+			return nil, err
+		}
+
+		var parsed openAIResponse
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return nil, fmt.Errorf("llm: decode: %w", err)
+		}
+		if len(parsed.Choices) == 0 {
+			return nil, fmt.Errorf("llm: %s returned no choices", p.cfg.BaseURL)
+		}
+		choice := parsed.Choices[0]
+		reasoning := choice.Message.ReasoningContent
+		if reasoning == "" {
+			reasoning = choice.Message.Reasoning
+		}
+
+		usage := p.usageOf(parsed)
+		total = total.Add(usage)
+
+		if strings.TrimSpace(choice.Message.Content) != "" || parsed.Usage.CompletionTokens == 0 {
+			out := p.response(model, parsed, choice.Message.Content, reasoning, total, start)
+			out.ReasoningTokens = p.reasoningTokensOf(parsed, choice.Message.Content, reasoning)
+			out.Attempts = attempts
+			if out.Usage.IsZero() && out.Text != "" {
+				// Some local runtimes omit usage entirely. That would charge zero
+				// and make the ceiling unenforceable, so it surfaces rather than
+				// passing.
+				return out, ErrNoUsageReported
+			}
+			// Remembered on SUCCESS too. A model that spent 900 tokens thinking
+			// and then answered will do it again on the next call, and waiting
+			// for a failure to learn that is waiting for a wasted call.
+			p.learnReasoning(model, out.ReasoningTokens)
+			return out, nil
+		}
+
+		// Empty content with tokens spent: the allowance went on reasoning.
+		spent := p.reasoningTokensOf(parsed, "", reasoning)
+		next := p.raiseAllowance(model, allowance, spent)
+		if next <= allowance || attempts >= maxReasoningAttempts {
+			// Either the ceiling is reached or the discovery has been paid for
+			// often enough. Fail with the precise reason rather than letting the
+			// caller see "no JSON object in the reply" and blame the prompt.
+			reason := choice.FinishReason
+			if reason == "" {
+				reason = "unknown"
+			}
+			return nil, fmt.Errorf("%w: %d completion tokens produced no content "+
+				"(finish_reason %q) after %d attempt(s) with a reasoning allowance of "+
+				"%d — this model spends its whole output budget on reasoning; raise "+
+				"MaxTokens or use a non-reasoning model",
+				ErrEmptyOutput, total.OutputTokens, reason, attempts, allowance)
+		}
+		allowance = next
+	}
+}
+
+// reasoningAllowance is the extra room this model has needed before, in tokens.
+func (p *openAIProvider) reasoningAllowance(model string) int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.reasoning[model]
+}
+
+// learnReasoning records what a model's chain cost, keeping the largest seen.
+//
+// The largest rather than an average: the allowance exists to stop the answer
+// being squeezed out, and sizing it to the mean guarantees that half of all calls
+// are squeezed. Capped, because a token budget that grows without a ceiling is not
+// a budget.
+func (p *openAIProvider) learnReasoning(model string, spent int64) {
+	if spent <= 0 {
+		return
+	}
+	// A little over what was seen: a chain that took 900 tokens once will take
+	// 950 on a slightly longer prompt, and being one token short costs a whole
+	// wasted call.
+	want := spent + spent/4
+	if want > MaxReasoningAllowance {
+		want = MaxReasoningAllowance
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if want > p.reasoning[model] {
+		p.reasoning[model] = want
+	}
+}
+
+// raiseAllowance grows the room for a model that produced nothing, and reports the
+// new value. Equal to the old one means the ceiling is reached.
+func (p *openAIProvider) raiseAllowance(model string, current, spent int64) int64 {
+	next := current * 2
+	if next < firstReasoningAllowance {
+		next = firstReasoningAllowance
+	}
+	if spent > next {
+		// The provider told us what it burned; jump past it rather than
+		// stepping there over several paid calls.
+		next = spent + spent/4
+	}
+	if next > MaxReasoningAllowance {
+		next = MaxReasoningAllowance
+	}
+	if next <= current {
+		return current
+	}
+	p.mu.Lock()
+	p.reasoning[model] = next
+	p.mu.Unlock()
+	return next
+}
+
+// reasoningTokensOf attributes the completion between thinking and answering.
+//
+// Where the provider reports the split, that is used. Where it does not — every
+// local runtime seen so far — an empty answer means the whole completion was
+// reasoning, and a non-empty one is estimated from the length of the chain. The
+// estimate is only ever used to size the next allowance, never to charge: Usage
+// carries the provider's own completion count untouched.
+func (p *openAIProvider) reasoningTokensOf(parsed openAIResponse, content, reasoning string) int64 {
+	if n := parsed.Usage.CompletionTokensDetails.ReasoningTokens; n > 0 {
+		return n
+	}
+	if reasoning == "" {
+		return 0
+	}
+	if strings.TrimSpace(content) == "" {
+		return parsed.Usage.CompletionTokens
+	}
+	est := EstimateTokens(len(reasoning))
+	if est > parsed.Usage.CompletionTokens {
+		est = parsed.Usage.CompletionTokens
+	}
+	return est
+}
+
+func (p *openAIProvider) usageOf(parsed openAIResponse) Usage {
 	// Cache accounting varies by vendor. DeepSeek splits hit/miss; the OpenAI
 	// shape nests cached_tokens. Both mean the same thing, and getting it
 	// wrong double-counts cached input as fresh input in the ledger.
@@ -311,26 +490,28 @@ func (p *openAIProvider) Complete(ctx context.Context, req Request) (*Response, 
 		// fields do not overlap when the ledger sums them.
 		inputTokens -= cacheRead
 	}
+	return Usage{
+		InputTokens:     inputTokens,
+		OutputTokens:    parsed.Usage.CompletionTokens,
+		CacheReadTokens: cacheRead,
+	}
+}
 
+// response assembles the result from the final attempt and the summed usage.
+func (p *openAIProvider) response(
+	model string, parsed openAIResponse, content, reasoning string,
+	total Usage, start time.Time,
+) *Response {
 	out := &Response{
-		Text:       choice.Message.Content,
+		Text:       content,
+		Reasoning:  reasoning,
 		Model:      parsed.Model,
-		StopReason: choice.FinishReason,
+		StopReason: parsed.Choices[0].FinishReason,
 		Elapsed:    time.Since(start),
-		Usage: Usage{
-			InputTokens:     inputTokens,
-			OutputTokens:    parsed.Usage.CompletionTokens,
-			CacheReadTokens: cacheRead,
-		},
+		Usage:      total,
 	}
 	if out.Model == "" {
 		out.Model = model
 	}
-
-	if out.Usage.IsZero() && out.Text != "" {
-		// Some local runtimes omit usage entirely. That would charge zero and
-		// make the ceiling unenforceable, so it surfaces rather than passing.
-		return out, ErrNoUsageReported
-	}
-	return out, nil
+	return out
 }

@@ -89,6 +89,20 @@ func (u Usage) Total() int64 {
 
 func (u Usage) IsZero() bool { return u == Usage{} }
 
+// Add sums two usages.
+//
+// Needed because one Complete can now be more than one provider call: a reasoning
+// model whose first answer was squeezed out by its own chain of thought is retried
+// with more room, and both calls spent tokens the ledger has to charge.
+func (u Usage) Add(o Usage) Usage {
+	return Usage{
+		InputTokens:      u.InputTokens + o.InputTokens,
+		OutputTokens:     u.OutputTokens + o.OutputTokens,
+		CacheReadTokens:  u.CacheReadTokens + o.CacheReadTokens,
+		CacheWriteTokens: u.CacheWriteTokens + o.CacheWriteTokens,
+	}
+}
+
 // Response is one completion result.
 type Response struct {
 	Text       string
@@ -96,6 +110,24 @@ type Response struct {
 	StopReason string
 	Usage      Usage
 	Elapsed    time.Duration
+
+	// Reasoning is a reasoning model's chain of thought, kept separate from Text
+	// and never concatenated into it: it is not the answer, it is not quotable
+	// evidence, and §11.5 would let a model cite its own reasoning as a source if
+	// the two were joined.
+	//
+	// Carried rather than discarded so a caller can log what a model spent its
+	// allowance on when the answer came back thin.
+	Reasoning string
+	// ReasoningTokens is what the chain cost, where the provider reports it or it
+	// can be attributed. NOT part of Usage: providers count reasoning inside
+	// completion_tokens, so adding it to the ledger's output count would charge
+	// the same tokens twice.
+	ReasoningTokens int64
+	// Attempts is how many provider calls produced this response. More than one
+	// means the first was spent entirely on reasoning and the ceiling was raised
+	// — Usage covers every attempt, because the tokens were spent either way.
+	Attempts int
 
 	// Refused is set when the provider's safety classifiers declined the
 	// request. It arrives as a successful HTTP response, so code that reads

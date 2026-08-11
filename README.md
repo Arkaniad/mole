@@ -250,6 +250,23 @@ take the writer.
 separate service" is a stated product property; a cgo driver would trade it away
 for marginal speed.
 
+**Reasoning models get their own token allowance.** qwen3, gemma4 and the o-series
+emit a chain of thought against the *same* output allowance as the answer, so
+`MaxTokens: 4096` can buy 4096 tokens of thinking and an empty message — measured
+on qwen3:4b through Ollama, where a request for `{"ok":true}` spent its entire
+budget reasoning and returned `content: ""` with `finish_reason: "length"`. Callers
+then saw "no JSON object in the reply" and blamed the prompt. Ollama ignored every
+documented way to switch reasoning off (`think:false`, `/no_think`,
+`chat_template_kwargs.enable_thinking`), so mole budgets for it instead: `MaxTokens`
+is the *answer* allowance and the provider adds room for the chain on top, learned
+per model and capped. The first empty response jumps straight to 4,096 rather than
+stepping — the same prompt cost 249 reasoning tokens in one measured run and over
+2,128 in the next, so small steps just buy wasted calls. Every attempt's usage is
+summed into the response, because the tokens were spent whether or not an answer
+arrived. The chain itself is carried but never concatenated into the text: §11.5
+would otherwise let a model cite its own reasoning as a source. A live test against
+a real reasoning model is in `internal/llm` and skips unless one is reachable.
+
 **Reservations are predicted from this install's own history.** The estimator
 holds a rolling p75 of settled cost per `(actor type, depth)`, and it used to
 start cold on every session — so what a hundred previous leads actually cost was
@@ -390,16 +407,6 @@ Stated plainly rather than left to be discovered:
   planner now sees how much allowance is left so `done` is at least an informed
   choice. Tapering the fan-out is the obvious next move and is a cost/quality
   tradeoff that cannot be evaluated without the corpus above.
-- **Reasoning models are unusable through the OpenAI-compatible endpoint.** qwen3,
-  gemma4 and others emit their reasoning in a `reasoning` field, which mole does
-  not read, and charge it against the same output allowance — so the whole budget
-  can go to reasoning and `content` comes back empty. `llm.ErrEmptyOutput` names
-  this rather than surfacing it as a JSON parse failure. Ollama's `/v1` endpoint
-  ignored every documented way to disable it (`think:false`, `/no_think`,
-  `chat_template_kwargs.enable_thinking`). Use a non-reasoning model, or the
-  native API. Supporting them properly — reading the `reasoning` field and
-  giving it its own allowance so it cannot eat the output budget — is planned,
-  not merely worked around.
 - **M6's claim extraction is unverified against a capable model.** The academic
   path is confirmed working end to end — it queries both providers, deduplicates
   by DOI, builds openable citation URLs, and reconciles its ledger — but every
@@ -480,9 +487,6 @@ Deliberately deferred, tracked here rather than in a scratch file:
   reasoned about in the open — every non-obvious decision carries its argument.
   Some of that is scaffolding for the build rather than for a reader, and should
   be cut once the shape has stopped moving.
-- **Reasoning-model support.** See the known gap above. Working around it is
-  acceptable while the only local models available reason by default; shipping a
-  research tool that silently spends a whole budget on hidden tokens is not.
 - **Separate the dev commands from the product.** `mole dev`, `corpus`, `pairs`
   and parts of `eval` exist to build and check this thing, not to use it. They
   should be behind a build tag or a hidden group before the CLI is presented as
