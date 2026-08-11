@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -48,7 +49,7 @@ func Ingest(ctx context.Context, name, source, scratchDB string) (Connector, err
 
 	if !info.IsDir() && isSQLiteFile(abs) {
 		c.Kind, c.DBPath = KindSQLite, abs
-		if c.Tables, err = profileDatabase(ctx, c); err != nil {
+		if c.Tables, c.Skipped, err = profileDatabase(ctx, c); err != nil {
 			return Connector{}, err
 		}
 		return c, nil
@@ -59,7 +60,7 @@ func Ingest(ctx context.Context, name, source, scratchDB string) (Connector, err
 		return Connector{}, err
 	}
 	c.Kind, c.DBPath = KindImport, scratchDB
-	if c.Tables, err = importFiles(ctx, c, files); err != nil {
+	if c.Tables, c.Skipped, err = importFiles(ctx, c, files); err != nil {
 		return Connector{}, err
 	}
 	return c, nil
@@ -126,46 +127,78 @@ func discover(root string, isDir bool) ([]string, error) {
 // importFiles builds the scratch database. This is the only place a writable
 // connection to connector data is ever opened, and it is closed before Ingest
 // returns.
-func importFiles(ctx context.Context, c Connector, files []string) ([]Table, error) {
+func importFiles(ctx context.Context, c Connector, files []string) ([]Table, []string, error) {
 	if dir := filepath.Dir(c.DBPath); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("connector: scratch dir: %w", err)
+			return nil, nil, fmt.Errorf("connector: scratch dir: %w", err)
 		}
 	}
 	// Rebuild from scratch. A re-import that merged into a previous one would
 	// report row counts for files that are no longer in the folder.
-	if err := os.Remove(c.DBPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("connector: replace scratch database: %w", err)
+	// Built at a temporary path and moved into place only once every file has
+	// been read.
+	//
+	// It used to delete the destination first and write in place, so a failed
+	// re-import left no scratch database while `connectors.json` still pointed at
+	// one — `mole connect add sales --replace empty.csv` after a good import took
+	// the connector from working to unopenable, and the error blamed an active
+	// writer.
+	building := c.DBPath + ".building"
+	for _, stale := range []string{building, building + "-wal", building + "-shm"} {
+		if err := os.Remove(stale); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, nil, fmt.Errorf("connector: clear %s: %w", stale, err)
+		}
 	}
 
-	db, err := sql.Open("sqlite", "file:"+c.DBPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
+	db, err := sql.Open("sqlite", "file:"+building+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
-		return nil, fmt.Errorf("connector: create scratch database: %w", err)
+		return nil, nil, fmt.Errorf("connector: create scratch database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	defer db.Close()
 
 	taken := map[string]bool{}
 	var tables []Table
+	var skipped []string
 	for i, f := range files {
 		base := strings.TrimSuffix(filepath.Base(f), filepath.Ext(f))
 		tbl := uniqueName(taken, sanitize(base), fmt.Sprintf("table_%d", i+1))
 
-		t, err := importOne(ctx, db, tbl, f)
+		t, dropped, err := importOne(ctx, db, tbl, f)
 		if err != nil {
-			return nil, fmt.Errorf("connector: %s: %w", filepath.Base(f), err)
+			return nil, nil, fmt.Errorf("connector: %s: %w", filepath.Base(f), err)
 		}
+		skipped = append(skipped, dropped...)
 		tables = append(tables, t)
 	}
 	if len(tables) == 0 {
-		return nil, ErrNoData
+		return nil, nil, ErrNoData
 	}
 	for i := range tables {
 		if err := profileTable(ctx, db, &tables[i]); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return tables, nil
+
+	// Every file read and every table profiled: only now does the old database
+	// stop existing.
+	if err := db.Close(); err != nil {
+		return nil, nil, fmt.Errorf("connector: close scratch database: %w", err)
+	}
+	for _, old := range []string{c.DBPath, c.DBPath + "-wal", c.DBPath + "-shm"} {
+		if err := os.Remove(old); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, nil, fmt.Errorf("connector: replace scratch database: %w", err)
+		}
+	}
+	if err := os.Rename(building, c.DBPath); err != nil {
+		return nil, nil, fmt.Errorf("connector: install scratch database: %w", err)
+	}
+	// The WAL is checkpointed by Close, so only the main file needs moving; any
+	// sidecars left behind belong to the discarded build.
+	for _, side := range []string{building + "-wal", building + "-shm"} {
+		_ = os.Remove(side)
+	}
+	return tables, skipped, nil
 }
 
 // importOne reads a file twice: once to infer column types, once to insert.
@@ -174,21 +207,24 @@ func importFiles(ctx context.Context, c Connector, files []string) ([]Table, err
 // memory to decide its types, and the whole appeal of a local connector is that
 // it works on the export someone actually has rather than a small enough one.
 // Reading a local file twice costs nothing worth optimising.
-func importOne(ctx context.Context, db *sql.DB, table, path string) (Table, error) {
+func importOne(ctx context.Context, db *sql.DB, table, path string) (Table, []string, error) {
 	header, types, err := inferFile(ctx, path)
 	if err != nil {
-		return Table{}, err
+		return Table{}, nil, err
 	}
 	if len(header) == 0 {
-		return Table{}, errors.New("no columns")
+		return Table{}, nil, errors.New("no columns")
 	}
 
 	cols := make([]Column, len(header))
 	taken := map[string]bool{}
 	for i, h := range header {
 		cols[i] = Column{
-			Name:  uniqueName(taken, sanitize(h), fmt.Sprintf("col_%d", i+1)),
-			Label: strings.TrimSpace(h),
+			Name: uniqueName(taken, sanitize(h), fmt.Sprintf("col_%d", i+1)),
+			// Capped like every other scalar the profile keeps. A header is
+			// untrusted text of unbounded length that reaches a model prompt, so
+			// one crafted cell could otherwise inflate every planning call.
+			Label: truncateScalar(strings.TrimSpace(h)),
 			Type:  types[i],
 		}
 		// A header that sanitizes to exactly its own text carries no
@@ -199,13 +235,19 @@ func importOne(ctx context.Context, db *sql.DB, table, path string) (Table, erro
 	}
 
 	if err := createTable(ctx, db, table, cols); err != nil {
-		return Table{}, err
+		return Table{}, nil, err
 	}
-	rows, err := insertRows(ctx, db, table, cols, path)
+	rows, ragged, err := insertRows(ctx, db, table, cols, path)
 	if err != nil {
-		return Table{}, err
+		return Table{}, nil, err
 	}
-	return Table{Name: table, Origin: filepath.Base(path), Rows: rows, Columns: cols}, nil
+	var skipped []string
+	if ragged > 0 {
+		skipped = append(skipped, fmt.Sprintf(
+			"%s: %d row(s) had more fields than the header; the extras were dropped",
+			filepath.Base(path), ragged))
+	}
+	return Table{Name: table, Origin: filepath.Base(path), Rows: rows, Columns: cols}, skipped, nil
 }
 
 func createTable(ctx context.Context, db *sql.DB, table string, cols []Column) error {
@@ -241,35 +283,43 @@ func sqlType(t ColumnType) string {
 	}
 }
 
-func insertRows(ctx context.Context, db *sql.DB, table string, cols []Column, path string) (int64, error) {
+// insertRows returns the number of rows written and the number that carried
+// more fields than the header.
+func insertRows(ctx context.Context, db *sql.DB, table string, cols []Column, path string) (int64, int64, error) {
 	qt, err := quoteIdent(table)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	names := make([]string, len(cols))
 	marks := make([]string, len(cols))
 	for i, c := range cols {
 		if names[i], err = quoteIdent(c.Name); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		marks[i] = "?"
 	}
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.PrepareContext(ctx,
 		"INSERT INTO "+qt+" ("+strings.Join(names, ", ")+") VALUES ("+strings.Join(marks, ", ")+")")
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer stmt.Close()
 
-	var n int64
+	var n, ragged int64
 	err = scanFile(ctx, path, func(_ []string, rec []string) error {
+		if len(rec) > len(cols) {
+			// Extra fields past the header are dropped, which is the only thing
+			// that can be done with them — but silently dropping data is how a
+			// misaligned export reads as a clean import.
+			ragged++
+		}
 		args := make([]any, len(cols))
 		for i := range cols {
 			var raw string
@@ -285,12 +335,12 @@ func insertRows(ctx context.Context, db *sql.DB, table string, cols []Column, pa
 		return nil
 	})
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return n, nil
+	return n, ragged, nil
 }
 
 // coerce converts a raw field to the column's storage type, falling back to NULL
@@ -307,7 +357,8 @@ func coerce(raw string, t ColumnType) any {
 			return v
 		}
 	case TypeReal:
-		if v, err := strconv.ParseFloat(s, 64); err == nil {
+		if v, err := strconv.ParseFloat(s, 64); err == nil &&
+			!math.IsInf(v, 0) && !math.IsNaN(v) {
 			return v
 		}
 	case TypeBool:
@@ -353,7 +404,12 @@ func (c *candidate) observe(raw string) {
 		}
 	}
 	if c.real {
-		if _, err := strconv.ParseFloat(s, 64); err != nil {
+		// ParseFloat accepts "inf", "+Inf" and "NaN". A CSV column of
+		// 1.5, inf, 2.5 inferred as real, stored +Inf, and reported max="+Inf"
+		// to the planner — after which every moment computed over it is Inf or
+		// NaN. A cell spelling a non-finite value is text, not a number.
+		if f, err := strconv.ParseFloat(s, 64); err != nil ||
+			math.IsInf(f, 0) || math.IsNaN(f) {
 			c.real = false
 		}
 	}
@@ -555,16 +611,32 @@ func scanJSONL(ctx context.Context, path string, fn func(header, rec []string) e
 
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64<<10), 8<<20)
+	first := true
 	for sc.Scan() {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		line := strings.TrimSpace(sc.Text())
+		if first {
+			// The BOM strip was wired into the CSV path only, so a BOM-prefixed
+			// .jsonl failed with "invalid character 'ï'" while the same bytes in
+			// a .csv imported fine.
+			line, first = strings.TrimPrefix(line, "\ufeff"), false
+		}
 		if line == "" {
 			continue
 		}
+		// UseNumber, so an integer arrives as its own literal text.
+		//
+		// json.Unmarshal into map[string]any decodes every number as float64,
+		// which silently corrupted ids: 1234567890123456789 and
+		// 1234567890123456788 both stored as 1234567890123456800, and the profile
+		// then reported two distinct values over three rows. Snowflake and order
+		// ids are exactly the shape a JSONL export carries.
+		dec := json.NewDecoder(strings.NewReader(line))
+		dec.UseNumber()
 		var obj map[string]any
-		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+		if err := dec.Decode(&obj); err != nil {
 			return fmt.Errorf("parse line: %w", err)
 		}
 		rec := make([]string, len(keys))
@@ -591,11 +663,15 @@ func jsonlKeys(ctx context.Context, path string) ([]string, error) {
 	seen := map[string]bool{}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64<<10), 8<<20)
+	first := true
 	for sc.Scan() {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		line := strings.TrimSpace(sc.Text())
+		if first {
+			line, first = strings.TrimPrefix(line, "\ufeff"), false
+		}
 		if line == "" {
 			continue
 		}
@@ -639,6 +715,10 @@ func jsonScalar(v any) string {
 		return t
 	case bool:
 		return strconv.FormatBool(t)
+	case json.Number:
+		// The literal as written, so nothing is lost between the file and the
+		// column.
+		return t.String()
 	case float64:
 		return strconv.FormatFloat(t, 'f', -1, 64)
 	default:

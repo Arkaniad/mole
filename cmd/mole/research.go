@@ -14,6 +14,7 @@ import (
 	"github.com/lajosdeme/mole/internal/actors"
 	"github.com/lajosdeme/mole/internal/compute/coderunner"
 	"github.com/lajosdeme/mole/internal/compute/connector"
+	"github.com/lajosdeme/mole/internal/compute/gate"
 	"github.com/lajosdeme/mole/internal/compute/sandbox"
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
@@ -221,7 +222,7 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	if err != nil {
 		return err
 	}
-	localActor, err := buildLocalActor(cfg, actorTypes, o, actor)
+	localActor, err := buildLocalActor(ctx, actorTypes, o, actor)
 	if err != nil {
 		return err
 	}
@@ -786,7 +787,7 @@ func parseActorTypes(raw string) ([]core.ActorType, error) {
 // is not a degraded run, it is a misconfiguration, and the executor treats a
 // missing actor as fatal — so the refusal has to happen here.
 func buildLocalActor(
-	cfg *config.Config, types []core.ActorType, o researchOpts, web *actors.WebActor,
+	ctx context.Context, types []core.ActorType, o researchOpts, web *actors.WebActor,
 ) (*actors.LocalComputeActor, error) {
 	if !slices.Contains(types, core.ActorLocalCompute) {
 		return nil, nil
@@ -805,16 +806,32 @@ func buildLocalActor(
 		Pricing:    web.Pricing,
 		Log:        web.Log,
 		Budget:     web.Budget,
+		// §12.1: "Every crossing is logged, so a user can audit exactly what
+		// left their machine." That was written at Info while the actor's logger
+		// is built at Warn, so the audit trail emitted NOTHING in the shipped
+		// path — the one requirement whose whole purpose is to be readable
+		// afterwards. Its own sink, at its own level, so raising or lowering
+		// research logging cannot silence it again.
+		Gate: gate.Options{Log: auditLogger()},
 	}
 
 	// The sandbox is optional and its absence is not an error (§12.2: it "is not
 	// the control here"). A nil Code means code hypotheses are never offered to
 	// the model, so the run loses the analyses SQL cannot express and nothing
 	// else. `mole doctor` is where somebody finds out.
-	if rep := sandbox.Detect(context.Background()); rep.Usable {
+	if rep := sandbox.Detect(ctx); rep.Usable {
 		local.Code = coderunner.Sandboxed{Report: rep}
 	}
 	return local, nil
+}
+
+// auditLogger is the sink for §12.1's crossing records.
+//
+// Separate from the research logger on purpose. Those two have different
+// audiences: research logging is diagnostics somebody turns down when it gets
+// noisy, and this is the record of what left the machine.
+func auditLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 }
 
 // buildAcademicActor constructs the academic providers, or refuses.

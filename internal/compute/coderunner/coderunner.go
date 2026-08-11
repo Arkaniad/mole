@@ -196,6 +196,15 @@ func Parse(raw string, c Contract) (Output, error) {
 			out.Dropped = append(out.Dropped, t.Name+" (n below 2)")
 			continue
 		}
+		if p < 0 || p > 1 {
+			// The verdict is derived from the script's own p and n, so "the
+			// verdict is not the script's to decide" only holds while its inputs
+			// are checked. They were not: p = -1 produced "statistically
+			// significant (p = <0.001)" and p = 7 produced a p-value of 7.000 in
+			// a sentence a claim would quote.
+			out.Dropped = append(out.Dropped, t.Name+" (p is not a probability)")
+			continue
+		}
 		out.Findings = append(out.Findings, Finding{
 			Name: t.Name, N: t.N, Statistic: stat, P: p, EffectSize: effect,
 			// §4's thresholds, applied here rather than taken from the script.
@@ -259,12 +268,29 @@ func finiteNumber(raw json.RawMessage) (float64, bool) {
 // told to print JSON prints a sentence and then JSON often enough that refusing
 // would be a fight rather than a boundary. The CONTENT is not treated leniently.
 func extractObject(raw string) string {
-	start := strings.Index(raw, "{")
-	end := strings.LastIndex(raw, "}")
-	if start < 0 || end <= start {
-		return ""
+	// Every `{` as a candidate, longest match first, and the one that PARSES
+	// wins.
+	//
+	// First-brace-to-last-brace looked lenient and was not: a Python warning
+	// mentioning a dict, or a `print(dict)` before the result, or a trailing
+	// "all done (ok}" each made the whole run unparseable — and Python prints
+	// exactly those. The doc claimed leniency about surroundings; this delivers
+	// it, while the CONTENT stays as strict as it was.
+	for start := 0; start < len(raw); start++ {
+		if raw[start] != '{' {
+			continue
+		}
+		for end := len(raw) - 1; end > start; end-- {
+			if raw[end] != '}' {
+				continue
+			}
+			candidate := raw[start : end+1]
+			if json.Valid([]byte(candidate)) {
+				return candidate
+			}
+		}
 	}
-	return raw[start : end+1]
+	return ""
 }
 
 // -----------------------------------------------------------------------------
@@ -410,17 +436,22 @@ func (s Sandboxed) Analyze(ctx context.Context, req Request) (Output, error) {
 	}
 
 	switch {
+	case res.Cancelled:
+		return Output{}, fmt.Errorf("coderunner: the analysis was cancelled before it finished")
 	case res.TimedOut:
 		return Output{}, fmt.Errorf("coderunner: the analysis exceeded its wallclock limit")
+	case res.ExitCode != 0:
+		// Before Truncated, and the order matters: a script that crashed after
+		// printing a lot reported "printed more than the output limit" and its
+		// traceback was never shown, so the model could not fix what it broke.
+		return Output{}, fmt.Errorf("coderunner: the analysis failed (exit %d): %s",
+			res.ExitCode, lastLines(res.Stderr))
 	case res.Truncated:
 		// Refused rather than parsed. A script that printed more than the cap
 		// was not producing a handful of statistics, and parsing the prefix of
 		// whatever it was doing is not a safe way to find out what.
 		return Output{}, fmt.Errorf("coderunner: the analysis printed more than the " +
 			"output limit; it was not producing a summary")
-	case res.ExitCode != 0:
-		return Output{}, fmt.Errorf("coderunner: the analysis failed (exit %d): %s",
-			res.ExitCode, firstLines(res.Stderr))
 	}
 
 	out, err := Parse(res.Stdout, req.Contract)
@@ -430,7 +461,10 @@ func (s Sandboxed) Analyze(ctx context.Context, req Request) (Output, error) {
 	return out, nil
 }
 
-func firstLines(s string) string {
+// lastLines is the tail of stderr, which is where a traceback's cause is. It was
+// called firstLines and returned the last three, which is the more useful
+// behaviour and the wrong name.
+func lastLines(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return "(no output)"

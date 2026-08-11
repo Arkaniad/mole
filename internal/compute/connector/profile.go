@@ -183,10 +183,10 @@ func truncateScalar(s string) string {
 // read-only handle. Views are included: a user who has already shaped their
 // data into a view has done the analyst's first job, and reading it costs
 // nothing extra. Internal `sqlite_%` tables are not.
-func profileDatabase(ctx context.Context, c Connector) ([]Table, error) {
+func profileDatabase(ctx context.Context, c Connector) ([]Table, []string, error) {
 	db, err := c.Open()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer db.Close()
 
@@ -195,23 +195,23 @@ func profileDatabase(ctx context.Context, c Connector) ([]Table, error) {
 		  WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'
 		  ORDER BY name`)
 	if err != nil {
-		return nil, fmt.Errorf("connector: read schema: %w", err)
+		return nil, nil, fmt.Errorf("connector: read schema: %w", err)
 	}
 	var names []string
 	for rows.Next() {
 		var n string
 		if err := rows.Scan(&n); err != nil {
 			rows.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		names = append(names, n)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(names) == 0 {
-		return nil, fmt.Errorf("%w: %s has no tables", ErrNoData, c.DBPath)
+		return nil, nil, fmt.Errorf("%w: %s has no tables", ErrNoData, c.DBPath)
 	}
 
 	var tables []Table
@@ -221,52 +221,62 @@ func profileDatabase(ctx context.Context, c Connector) ([]Table, error) {
 		// quoted around, because every query built later interpolates the name
 		// and the safety of that rests on this check.
 		if !safeIdent(name) {
-			skipped = append(skipped, name)
+			skipped = append(skipped, "table "+name+" (name is not a usable identifier)")
 			continue
 		}
-		cols, err := describeTable(ctx, db, name)
+		cols, dropped, err := describeTable(ctx, db, name)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
+		}
+		for _, d := range dropped {
+			skipped = append(skipped, "column "+name+"."+d+" (name is not a usable identifier)")
 		}
 		if len(cols) == 0 {
+			skipped = append(skipped, "table "+name+" (no usable columns)")
 			continue
 		}
 		t := Table{Name: name, Columns: cols}
 		if err := profileTable(ctx, db, &t); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		tables = append(tables, t)
 	}
 	if len(tables) == 0 {
-		return nil, fmt.Errorf("%w: no table in %s has a usable name (skipped: %s)",
+		return nil, nil, fmt.Errorf("%w: no table in %s has a usable name (skipped: %s)",
 			ErrNoData, c.DBPath, strings.Join(skipped, ", "))
 	}
-	return tables, nil
+	return tables, skipped, nil
 }
 
-func describeTable(ctx context.Context, db *sql.DB, table string) ([]Column, error) {
+// describeTable returns the usable columns and the names of any it skipped.
+//
+// A skipped column used to leave no record at all, which is how a CamelCase
+// database produced a profile of one table with one column and no warning.
+func describeTable(ctx context.Context, db *sql.DB, table string) ([]Column, []string, error) {
 	qt, err := quoteIdent(table)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	rows, err := db.QueryContext(ctx, "SELECT name, type FROM pragma_table_info("+sqlString(table)+")")
 	if err != nil {
-		return nil, fmt.Errorf("connector: describe %s: %w", qt, err)
+		return nil, nil, fmt.Errorf("connector: describe %s: %w", qt, err)
 	}
 	defer rows.Close()
 
 	var cols []Column
+	var skipped []string
 	for rows.Next() {
 		var name, declared string
 		if err := rows.Scan(&name, &declared); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !safeIdent(name) {
+			skipped = append(skipped, name)
 			continue
 		}
 		cols = append(cols, Column{Name: name, Type: affinity(declared)})
 	}
-	return cols, rows.Err()
+	return cols, skipped, rows.Err()
 }
 
 // sqlString quotes a literal for the one place a name is passed as a value

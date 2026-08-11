@@ -312,17 +312,26 @@ func satisfies(col connector.Column, role Role) error {
 // refusal instead of as a quoted string spliced into a statement.
 //
 // The character class matches the connector's own rule rather than being
-// stricter than it. It was stricter — no leading underscore — which meant a
-// table legitimately named `_staging` in someone's database passed
-// registration and then could not be queried, with the refusal blaming the
-// identifier rather than the disagreement between two rules.
-var identPattern = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,63}$`)
+// stricter than it, and has now drifted from it twice: first over a leading
+// underscore, then over uppercase. Both times a name that passed registration
+// could not be queried, and both times the refusal blamed the identifier rather
+// than the disagreement between two packages. That is what finally moved the
+// quoting itself to connector.QuoteIdent — this pattern is only a last check
+// that the two have not drifted again.
+var identPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
 
 func ident(name string) (string, error) {
+	// Last check that this package and the connector still agree, then the
+	// connector does the quoting. Keeping a second implementation here is what
+	// let the two drift twice.
 	if !identPattern.MatchString(name) {
 		return "", invalid("refusing to render %q as an identifier", name)
 	}
-	return `"` + name + `"`, nil
+	quoted, err := connector.QuoteIdent(name)
+	if err != nil {
+		return "", invalid("connector refuses %q as an identifier: %s", name, err)
+	}
+	return quoted, nil
 }
 
 func kinds() []string {

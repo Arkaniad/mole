@@ -72,6 +72,10 @@ type Spec struct {
 	MaxOutputBytes int64
 }
 
+// ErrMountPath is returned for a path the runtime cannot express in a mount
+// spec.
+var ErrMountPath = errors.New("sandbox: unusable mount path")
+
 // DefaultMaxOutputBytes bounds stdout.
 //
 // Generous for a set of statistics and far too small for a data dump, which is
@@ -88,6 +92,10 @@ type Result struct {
 
 	// TimedOut means the wallclock limit killed it.
 	TimedOut bool
+	// Cancelled means the CALLER gave up — Ctrl-C, a session deadline, a batch
+	// abandoned. Distinct from TimedOut because they mean opposite things about
+	// the script: one ran too long, the other never got the chance.
+	Cancelled bool
 	// Truncated means the script printed more than MaxOutputBytes.
 	Truncated bool
 }
@@ -125,6 +133,19 @@ func (r Report) Run(ctx context.Context, spec Spec) (Result, error) {
 	args := []string{"run", "--rm", "--name", name, "--interactive"}
 	args = append(args, limits.Flags()...)
 	for _, m := range spec.Mounts {
+		// A colon cannot appear in either half: the spec is
+		// host:container:options, so a data folder named `2024:Q1` produced
+		//
+		//	docker: invalid spec: /…/2024:Q1/connector.sqlite:/data/…:ro: too many colons
+		//
+		// The runtime refuses rather than mounting the wrong path, so this was
+		// never a hole — but the failure reached the user as a raw runtime error
+		// nobody could act on. Refused here, with the fix in the message.
+		if strings.ContainsAny(m.HostPath, ":") || strings.ContainsAny(m.ContainerPath, ":") {
+			return Result{}, fmt.Errorf("%w: %q contains a colon, which a container "+
+				"mount specification cannot express; move or rename it",
+				ErrMountPath, m.HostPath)
+		}
 		// Always :ro. Not a default that a caller can override — the struct has
 		// no field for it.
 		args = append(args, "--volume", m.HostPath+":"+m.ContainerPath+":ro")
@@ -142,6 +163,10 @@ func (r Report) Run(ctx context.Context, spec Spec) (Result, error) {
 
 	cmd := exec.CommandContext(runCtx, string(r.Runtime), args...)
 	cmd.Stdin = strings.NewReader(spec.Script)
+	// Without this, killing the CLI leaves Run blocked until every pipe holder
+	// closes — measured at 30 seconds on a cancelled run, before a further 10 in
+	// killContainer. With a worker pool each cancelled lead paid it.
+	cmd.WaitDelay = 2 * time.Second
 
 	var out, errBuf cappedBuffer
 	out.limit, errBuf.limit = maxOut, 8<<10
@@ -158,12 +183,17 @@ func (r Report) Run(ctx context.Context, spec Spec) (Result, error) {
 	}
 
 	if runCtx.Err() != nil {
-		res.TimedOut = true
+		// The wallclock limit and the caller giving up are different outcomes and
+		// were reported as the same one, so Ctrl-C surfaced to the user as "the
+		// analysis exceeded its wallclock limit".
+		res.TimedOut = errors.Is(runCtx.Err(), context.DeadlineExceeded)
+		res.Cancelled = !res.TimedOut
+
 		// Killing the CLI does not stop the container: `docker run --rm` leaves
-		// it running when its client goes away, so the name exists to be able
-		// to reach it. Best effort and detached from the expired context, which
-		// would cancel this too.
-		killContainer(string(r.Runtime), name)
+		// it running when its client goes away, so the name exists to be able to
+		// reach it. Detached, because a cancelled caller must not then wait on a
+		// ten-second cleanup — with a worker pool that cost is paid per lead.
+		go killContainer(string(r.Runtime), name)
 	}
 
 	var ee *exec.ExitError

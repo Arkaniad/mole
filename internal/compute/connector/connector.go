@@ -59,6 +59,15 @@ type Connector struct {
 	DBPath     string    `json:"db_path"`
 	Tables     []Table   `json:"tables"`
 	ImportedAt time.Time `json:"imported_at"`
+
+	// Skipped names everything registration could not use: a table or column
+	// whose name is not a usable identifier, a ragged row's extra fields.
+	//
+	// Reported rather than dropped. Uppercase identifiers used to be rejected,
+	// so an ordinary CamelCase database registered with no error and a profile
+	// of one table with one column — the model then planned over a schema that
+	// was not the user's data, and nothing anywhere said so.
+	Skipped []string `json:"skipped,omitempty"`
 }
 
 // Table is one relation and its profile.
@@ -298,13 +307,38 @@ func safeIdent(s string) bool {
 	}
 	for _, r := range s {
 		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
+		// Uppercase is accepted, and excluding it was a serious bug rather than
+		// a strict-but-safe choice. Registering an ordinary CamelCase database —
+		//
+		//	CREATE TABLE Orders (OrderID INTEGER, Amount REAL, region TEXT);
+		//	CREATE TABLE parts  (partId INTEGER, qty INTEGER);
+		//
+		// returned no error and produced a profile of ONE table with ONE column,
+		// parts.qty. Everything else was skipped: tables silently, columns with
+		// no record at all, and the `skipped` list only surfaces when zero tables
+		// survive. The model then planned over a schema that was not the user's
+		// data.
+		//
+		// Case is not a safety property. Every identifier is double-quoted at the
+		// point of use, and SQLite identifiers are case-insensitive but
+		// case-preserving, so quoting the name the schema reports is correct.
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
 		default:
 			return false
 		}
 	}
 	return true
 }
+
+// QuoteIdent double-quotes an identifier, refusing anything that is not one.
+//
+// Exported because internal/compute/hypothesis renders the same identifiers into
+// the same statements and kept its own copy of this rule, which drifted twice —
+// once over a leading underscore, once over uppercase. Both times a name that
+// passed registration could not be queried, and both times the refusal blamed
+// the identifier rather than the disagreement. One implementation, for the same
+// reason IsFreeText has one.
+func QuoteIdent(s string) (string, error) { return quoteIdent(s) }
 
 // quoteIdent double-quotes a checked identifier.
 func quoteIdent(s string) (string, error) {

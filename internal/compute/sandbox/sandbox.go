@@ -283,10 +283,32 @@ func DefaultLimits() Limits {
 // that claims "netns disabled, seccomp default" while the runner forgot
 // --network=none is worse than no line at all: it is a check that reports a
 // property nothing enforces.
-func (l Limits) Flags() []string {
-	if l.CPUs <= 0 || l.MemoryMB <= 0 || l.Pids <= 0 {
-		l = DefaultLimits()
+// withDefaults fills in only the fields that were left unset.
+//
+// Per field, and one implementation. Flags replaced the WHOLE struct when any
+// single field was zero — so Limits{CPUs: 4} silently ran at one cpu — and
+// Summary tested a different set of fields, so `doctor` could print a summary
+// that did not match the flags. That is exactly the failure Flags's own comment
+// warns about.
+func (l Limits) withDefaults() Limits {
+	d := DefaultLimits()
+	if l.CPUs <= 0 {
+		l.CPUs = d.CPUs
 	}
+	if l.MemoryMB <= 0 {
+		l.MemoryMB = d.MemoryMB
+	}
+	if l.Pids <= 0 {
+		l.Pids = d.Pids
+	}
+	if l.Wallclock <= 0 {
+		l.Wallclock = d.Wallclock
+	}
+	return l
+}
+
+func (l Limits) Flags() []string {
+	l = l.withDefaults()
 	return []string{
 		// §12.2's fourth defense, and the one that matters most here: code that
 		// cannot open a socket cannot exfiltrate whatever it was given.
@@ -294,6 +316,17 @@ func (l Limits) Flags() []string {
 		"--read-only",
 		"--tmpfs=/tmp:rw,noexec,nosuid,size=64m",
 		"--cap-drop=ALL",
+		// No seccomp flag. Both runtimes apply their default profile when none is
+		// given, and naming one is a portability risk on a runtime this could not
+		// be tested against — `seccomp=builtin` is docker's spelling.
+		//
+		// What was missing was never the flag: it was the CHECK. Usable is
+		// decided by rep.Seccomp, which reports availability, and a daemon
+		// configured `seccomp-profile: unconfined` still reports
+		// `name=seccomp` — so detection cannot tell whether a filter is
+		// actually installed. TestSeccompIsActuallyEnforced reads
+		// /proc/self/status inside a real container instead, which is the only
+		// place the answer exists.
 		"--security-opt=no-new-privileges",
 		"--user=65534:65534",
 		fmt.Sprintf("--cpus=%g", l.CPUs),
@@ -304,9 +337,9 @@ func (l Limits) Flags() []string {
 
 // Summary describes the configuration in one line, for `doctor`.
 func (l Limits) Summary() string {
-	if l.CPUs <= 0 || l.MemoryMB <= 0 || l.Pids <= 0 || l.Wallclock <= 0 {
-		l = DefaultLimits()
-	}
-	return fmt.Sprintf("no network, read-only rootfs, all capabilities dropped, uid 65534, "+
-		"%g cpu, %dMB, %d pids, %s wallclock", l.CPUs, l.MemoryMB, l.Pids, l.Wallclock)
+	l = l.withDefaults()
+	return fmt.Sprintf("no network, read-only rootfs, all capabilities dropped, "+
+		"the runtime's default seccomp profile, uid 65534, "+
+		"%g cpu, %dMB, %d pids, %s wallclock",
+		l.CPUs, l.MemoryMB, l.Pids, l.Wallclock)
 }

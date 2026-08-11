@@ -286,6 +286,14 @@ func TestTheFlagsActuallyHoldRunsARealContainer(t *testing.T) {
 			"NOEXEC"},
 		{"holds no capabilities",
 			`grep CapEff /proc/self/status`, "0000000000000000"},
+		// Seccomp, which decides Usable and was asserted by nothing.
+		//
+		// The detection reports AVAILABILITY: a docker daemon configured
+		// `seccomp-profile: unconfined` still answers `name=seccomp`, so the
+		// only place the real answer exists is inside the container. Kernel
+		// values: 0 disabled, 1 strict, 2 filter.
+		{"runs under a seccomp filter",
+			`grep Seccomp: /proc/self/status`, "2"},
 	} {
 		t.Run(tc.why, func(t *testing.T) {
 			out := run(t, tc.script)

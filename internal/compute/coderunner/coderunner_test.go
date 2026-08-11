@@ -518,3 +518,144 @@ func itoa(n int64) string {
 }
 
 func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
+
+// -----------------------------------------------------------------------------
+// M8 review regressions
+// -----------------------------------------------------------------------------
+
+// TestPythonNoiseAroundTheJSONIsTolerated.
+//
+// extractObject took the first `{` to the last `}`, which looked lenient and was
+// not: a warning mentioning a dict, a print(dict) before the result, or a
+// trailing "all done (ok}" each made the whole run unparseable. Python prints
+// exactly those.
+func TestPythonNoiseAroundTheJSONIsTolerated(t *testing.T) {
+	for _, tc := range []struct{ why, raw string }{
+		{"a brace in a preamble", "note {see below}\n" + `{"metrics":{"ok":1}}`},
+		{"a brace after the result", `{"metrics":{"ok":1}}` + "\nall done (ok}"},
+		{"a printed dict", "warning: dict {'a': 1} is deprecated\n" + `{"metrics":{"ok":1}}`},
+		{"nothing around it", `{"metrics":{"ok":1}}`},
+	} {
+		t.Run(tc.why, func(t *testing.T) {
+			out, err := coderunner.Parse(tc.raw, coderunner.Contract{Metrics: []string{"ok"}})
+			if err != nil {
+				t.Fatalf("the whole run was discarded: %v", err)
+			}
+			if out.Metrics["ok"] != 1 {
+				t.Errorf("metrics = %v, want ok=1", out.Metrics)
+			}
+		})
+	}
+}
+
+// TestAPValueMustBeAProbability.
+//
+// "The verdict is derived here rather than by the script" only holds while its
+// inputs are checked, and they were not: p = -1 produced "statistically
+// significant (p = <0.001)" and p = 7 produced a p-value of 7.000 in a sentence a
+// claim would quote.
+func TestAPValueMustBeAProbability(t *testing.T) {
+	for _, p := range []string{"-1", "7", "-0.0001", "1.5"} {
+		out, err := coderunner.Parse(
+			`{"tests":[{"name":"s","n":50,"statistic":1,"p":`+p+`,"effect_size":0.1}]}`,
+			coderunner.Contract{Tests: []string{"s"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Findings) != 0 {
+			t.Errorf("p = %s was accepted: %+v", p, out.Findings)
+		}
+		if !strings.Contains(strings.Join(out.Dropped, " "), "not a probability") {
+			t.Errorf("p = %s: the refusal does not say why: %v", p, out.Dropped)
+		}
+	}
+}
+
+// TestAFailingScriptShowsItsErrorEvenWhenItPrintedTooMuch.
+//
+// Truncated was checked before ExitCode, so a script that crashed after printing
+// a lot reported "printed more than the output limit" and its traceback was never
+// shown — leaving the model to make the same attempt again.
+func TestAFailingScriptShowsItsErrorEvenWhenItPrintedTooMuch(t *testing.T) {
+	runner, ok := shellRunner(t)
+	if !ok {
+		return
+	}
+	_, err := runner.Analyze(context.Background(), coderunner.Request{
+		DBPath: connectorDB(t),
+		Script: `i=0; while [ $i -lt 4000 ]; do printf '%0128d\n' $i; i=$((i+1)); done
+		         echo "column spend does not exist" >&2; exit 3`,
+		Contract: coderunner.Contract{Metrics: []string{"x"}},
+	})
+	if err == nil {
+		t.Fatal("accepted")
+	}
+	if !strings.Contains(err.Error(), "column spend does not exist") {
+		t.Errorf("the script's own message is missing: %v", err)
+	}
+}
+
+// TestACancelledAnalysisIsNotReportedAsATimeout, because they mean opposite
+// things about the script: one ran too long, the other never got the chance.
+func TestACancelledAnalysisIsNotReportedAsATimeout(t *testing.T) {
+	runner, ok := shellRunner(t)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err := runner.Analyze(ctx, coderunner.Request{
+		DBPath:   connectorDB(t),
+		Script:   `while true; do :; done`,
+		Contract: coderunner.Contract{Metrics: []string{"x"}},
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("accepted")
+	}
+	if strings.Contains(err.Error(), "wallclock") {
+		t.Errorf("cancellation was reported as a timeout: %v", err)
+	}
+	if !strings.Contains(err.Error(), "cancelled") {
+		t.Errorf("err = %v, want it to say the run was cancelled", err)
+	}
+	// The caller must not wait on the container's cleanup. It used to block for
+	// thirty seconds on pipe holders plus ten in killContainer.
+	if elapsed > 15*time.Second {
+		t.Errorf("a cancelled caller waited %v", elapsed)
+	}
+}
+
+// TestAColonInTheMountPathIsRefusedWithTheFix. A data folder named 2024:Q1 used
+// to fail with a raw `too many colons` runtime error.
+func TestAColonInTheMountPathIsRefusedWithTheFix(t *testing.T) {
+	rep := sandbox.Detect(context.Background())
+	if !rep.Usable {
+		t.Skipf("no usable runtime: %s", rep.Detail)
+	}
+	dir := filepath.Join(t.TempDir(), "2024:Q1")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := coderunner.Sandboxed{Report: rep, Image: "alpine", Command: []string{"sh"}}
+	_, err := runner.Analyze(context.Background(), coderunner.Request{
+		DBPath:   filepath.Join(dir, "connector.sqlite"),
+		Script:   `echo '{"metrics":{"x":1}}'`,
+		Contract: coderunner.Contract{Metrics: []string{"x"}},
+	})
+	if err == nil {
+		t.Fatal("accepted a path a mount spec cannot express")
+	}
+	if !strings.Contains(err.Error(), "colon") {
+		t.Errorf("the error does not name the problem: %v", err)
+	}
+	if !strings.Contains(err.Error(), "rename") {
+		t.Errorf("the error does not say what to do: %v", err)
+	}
+}

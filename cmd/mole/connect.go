@@ -108,6 +108,13 @@ func cmdConnectAdd(cmd *cobra.Command, name, path string, replace bool) error {
 		rows += t.Rows
 	}
 	fmt.Fprintf(out, "registered %s — %d table(s), %d row(s)\n", c.Name, len(c.Tables), rows)
+	// Anything registration could not use, said out loud. Uppercase identifiers
+	// were once rejected, so a CamelCase database registered with no error and a
+	// profile of one table with one column — and the model then planned over a
+	// schema that was not the user's data.
+	for _, note := range c.Skipped {
+		fmt.Fprintf(out, "  ! %s\n", note)
+	}
 	if c.Kind == connector.KindImport {
 		fmt.Fprintf(out, "  imported into %s\n", c.DBPath)
 	} else {
