@@ -428,3 +428,77 @@ func TestAPipeInAValueDoesNotBreakTheTable(t *testing.T) {
 		t.Errorf("the pipe is not escaped: %q", got)
 	}
 }
+
+// TestACountryQualifierDoesNotSplitAnEntity.
+//
+// From a live run over real supermarket data: "Aldi" and "Aldi UK" became two rows
+// with half the figures each, as did "Lidl" and "Lidl GB" — three of eleven rows
+// split on a country qualifier. The constructed ground-truth set contained no case
+// like it, which is why the measure read 1.000 while real data was 27% duplicated.
+func TestACountryQualifierDoesNotSplitAnEntity(t *testing.T) {
+	s, err := dataset.ParseSpec("company:text!,revenue:number")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := dataset.Merge(s, []dataset.Row{
+		{Values: map[string]string{"company": "Aldi"}, Source: "https://a.example",
+			Quote: "Aldi operates over 1,000 stores in the UK"},
+		{Values: map[string]string{"company": "Aldi UK", "revenue": "17900000000"},
+			Source: "https://b.example", Quote: "Aldi UK reported revenue of £17.9bn"},
+		{Values: map[string]string{"company": "Lidl GB", "revenue": "11000000000"},
+			Source: "https://c.example", Quote: "Lidl GB reported revenue of £11bn"},
+		{Values: map[string]string{"company": "Lidl"}, Source: "https://d.example",
+			Quote: "Lidl continues to expand its British estate"},
+	}, dataset.Options{})
+
+	if len(d.Rows) != 2 {
+		var names []string
+		for _, r := range d.Rows {
+			names = append(names, r.Get("company"))
+		}
+		t.Fatalf("%d rows (%v), want 2 — a country qualifier split an entity",
+			len(d.Rows), names)
+	}
+	// And the figure lands on the merged row rather than being stranded on the
+	// qualified spelling, which is what made the live output useless: the
+	// corroborated row was the one with no revenue in it.
+	for _, r := range d.Rows {
+		if r.Get("revenue") == "" {
+			t.Errorf("row %q has no revenue; the value was stranded on the other spelling",
+				r.Get("company"))
+		}
+	}
+}
+
+// TestTwoDifferentCountriesStillDoNotMerge. The family rule is what makes the
+// qualifier safe to strip: "Aldi UK" and "Aldi US" are different entities.
+func TestTwoDifferentCountriesStillDoNotMerge(t *testing.T) {
+	s, err := dataset.ParseSpec("company:text!")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := dataset.Merge(s, []dataset.Row{
+		{Values: map[string]string{"company": "Aldi UK"}, Source: "https://a.example",
+			Quote: "Aldi UK reported revenue of £17.9bn"},
+		{Values: map[string]string{"company": "Aldi US"}, Source: "https://b.example",
+			Quote: "Aldi US operates in 38 states of America"},
+	}, dataset.Options{})
+	if len(d.Rows) != 2 {
+		t.Errorf("%d row(s), want 2 — two countries are two entities", len(d.Rows))
+	}
+}
+
+// TestALeadingCountryWordIsNotAQualifier. "US Foods" and "UK Power Networks" are
+// companies whose name STARTS with the token, and splitSuffixes is trailing-only —
+// but the table grew, so the property is pinned rather than assumed.
+func TestALeadingCountryWordIsNotAQualifier(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"US Foods", "us foods"},
+		{"UK Power Networks", "uk power networks"},
+		{"India Cements", "india cements"},
+	} {
+		if got := dataset.Normalise(tc.in); got != tc.want {
+			t.Errorf("Normalise(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

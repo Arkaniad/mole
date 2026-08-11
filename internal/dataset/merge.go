@@ -228,6 +228,36 @@ var corporateSuffixes = map[string]string{
 	"ab": "ab", "as": "as", "oy": "oy", "aps": "aps",
 	"pty": "pty", "pte": "pte",
 	"kk": "kk", "kg": "kg", "se": "se",
+
+	// Country and region qualifiers, added after a live run split three of eleven
+	// rows on them: "Aldi" and "Aldi UK" became two entities, as did "Lidl" and
+	// "Lidl GB", each with half the figures. The constructed ground-truth set had
+	// no case like it, so the measure said 1.000 while real data was 27%
+	// duplicated — which is the difference between a fixture and the world.
+	//
+	// They belong in this table rather than in a second mechanism because they
+	// behave identically: a trailing qualifier that names the same entity, where
+	// two DIFFERENT ones ("Aldi UK" against "Aldi US") should not merge. The family
+	// rule already does exactly that.
+	//
+	// Deliberately narrow. Unambiguous country codes and words only — no "group",
+	// no "international", no "holdings" beyond what is already above, because
+	// "Acme Group" and "Acme International" are routinely different legal entities
+	// and merging them is the precision failure this package holds hardest.
+	"uk": "uk", "gb": "uk", "britain": "uk",
+	"us": "us", "usa": "us", "america": "us",
+	"ie": "ie", "ireland": "ie",
+	"de": "de", "germany": "de",
+	"fr": "fr", "france": "fr",
+	"es": "es", "spain": "es",
+	"it": "it", "italy": "it",
+	"nl": "nl", "netherlands": "nl",
+	"ca": "ca", "canada": "ca",
+	"au": "au", "australia": "au",
+	"nz": "nz",
+	"jp": "jp", "japan": "jp",
+	"cn": "cn", "china": "cn",
+	"in": "in", "india": "in",
 }
 
 // Normalise reduces a key value to what should be compared.

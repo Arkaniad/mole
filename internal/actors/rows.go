@@ -195,6 +195,14 @@ func (m *RowMiner) accept(ctx context.Context, in RowInput, cand minedRow) (data
 	}, coerced, true
 }
 
+// CoerceNumberForTest exposes the number coercion.
+//
+// Exported for the tests that pin scaled figures exactly. The rule they check —
+// "£32.7 billion" is 32700000000 and not 32700000000.000004 — is arithmetic that
+// a live run got wrong, and testing it through Mine would need a model reply per
+// case for no extra coverage.
+func CoerceNumberForTest(v string) (string, bool) { return coerceNumber(v) }
+
 // coerceField normalises a value to its declared type.
 //
 // Normalising here rather than at merge time is deliberate: the merge compares
@@ -234,6 +242,26 @@ func coerceField(f dataset.Field, raw string) (string, bool) {
 // moment computed over it afterwards.
 func coerceNumber(v string) (string, bool) {
 	v = strings.TrimSpace(v)
+
+	// A magnitude spelled out in WORDS counts whether or not it is attached.
+	//
+	// The attached-only rule below exists because "5 m" might be metres or minutes,
+	// and that ambiguity is real for a single letter. It does not exist for a word:
+	// nobody writes "32.7 billion" meaning metres. Refusing them cost real data —
+	// "£32.7 billion" is how a page states a revenue, and a live run dropped the
+	// value rather than reading it.
+	var spelled int
+	lowerV := strings.ToLower(v)
+	for word, places := range map[string]int{
+		"trillion": 12, "billion": 9, "million": 6, "thousand": 3,
+	} {
+		if rest, ok := strings.CutSuffix(lowerV, word); ok {
+			spelled = places
+			v = strings.TrimSpace(v[:len(rest)])
+			break
+		}
+	}
+
 	// Attached or not, decided before any whitespace is touched.
 	attached := !strings.ContainsAny(v, " \u00a0")
 
@@ -245,18 +273,27 @@ func coerceNumber(v string) (string, bool) {
 		clean = "-" + strings.Trim(clean, "()")
 	}
 
-	mult := 1.0
-	if attached {
+	// The magnitude is a count of DECIMAL PLACES to shift, not a float to multiply
+	// by.
+	//
+	// Multiplying was the obvious version and it is wrong for the commonest input
+	// there is. "£32.7 billion" became 32.7 × 1e9, which in float64 is
+	// 32700000000.000004 — not equal to its own truncation, so the integer path
+	// below was skipped and a live run put `32700000000.000004` in a revenue column
+	// somebody was going to sum. Shifting the digits is exact for every input a page
+	// states, because a page states decimal digits.
+	shift := spelled
+	if attached && shift == 0 {
 		lower := strings.ToLower(clean)
 		switch {
 		case strings.HasSuffix(lower, "bn"):
-			clean, mult = clean[:len(clean)-2], 1e9
+			clean, shift = clean[:len(clean)-2], 9
 		case strings.HasSuffix(lower, "m"):
-			clean, mult = clean[:len(clean)-1], 1e6
+			clean, shift = clean[:len(clean)-1], 6
 		case strings.HasSuffix(lower, "k"):
-			clean, mult = clean[:len(clean)-1], 1e3
+			clean, shift = clean[:len(clean)-1], 3
 		case strings.HasSuffix(lower, "b"):
-			clean, mult = clean[:len(clean)-1], 1e9
+			clean, shift = clean[:len(clean)-1], 9
 		}
 	}
 
@@ -274,11 +311,68 @@ func coerceNumber(v string) (string, bool) {
 	if strings.ContainsAny(clean, "xX") {
 		return "", false
 	}
-	n *= mult
+	if shift > 0 {
+		if scaled, ok := shiftDecimal(clean, shift); ok {
+			return scaled, true
+		}
+		// Unshiftable shapes (an exponent, say) fall back to the float path, which
+		// is imprecise but better than dropping a stated figure.
+		n *= math.Pow(10, float64(shift))
+	}
 	if n == math.Trunc(n) && math.Abs(n) < 1e15 {
 		return strconv.FormatInt(int64(n), 10), true
 	}
 	return strconv.FormatFloat(n, 'f', -1, 64), true
+}
+
+// shiftDecimal moves a decimal point right by n places, exactly.
+//
+// String arithmetic on purpose: "32.7" shifted 9 places is 32700000000 and no
+// float is involved, so no rounding error can reach a cell somebody sums. Reports
+// false for anything that is not a plain signed decimal — an exponent, a stray
+// letter — which the caller then handles as before.
+func shiftDecimal(s string, n int) (string, bool) {
+	sign := ""
+	if rest, ok := strings.CutPrefix(s, "-"); ok {
+		sign, s = "-", rest
+	} else if rest, ok := strings.CutPrefix(s, "+"); ok {
+		s = rest
+	}
+
+	whole, frac, _ := strings.Cut(s, ".")
+	if whole == "" && frac == "" {
+		return "", false
+	}
+	for _, part := range []string{whole, frac} {
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return "", false
+			}
+		}
+	}
+
+	if len(frac) <= n {
+		// The point moves past the fraction: pad with zeros.
+		whole += frac + strings.Repeat("0", n-len(frac))
+		frac = ""
+	} else {
+		whole += frac[:n]
+		frac = frac[n:]
+	}
+
+	whole = strings.TrimLeft(whole, "0")
+	if whole == "" {
+		whole = "0"
+	}
+	frac = strings.TrimRight(frac, "0")
+	if frac != "" {
+		return sign + whole + "." + frac, true
+	}
+	if whole == "0" {
+		// Never "-0".
+		return "0", true
+	}
+	return sign + whole, true
 }
 
 // normaliseSeparators decides what a comma and a period mean in one number.

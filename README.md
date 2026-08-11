@@ -395,14 +395,14 @@ Stated plainly rather than left to be discovered:
   none on the machine this was written on, so the podman branch is tested only
   against a recorded reply. The docker branch is verified end to end, including
   the container.
-- **Dataset extraction is unverified against a capable model.** The write path is
-  verified end to end against fakes — search, fetch, chunk, extract, persist,
-  merge, render — and the merge has real precision and recall numbers on
-  constructed ground truth. What has never run is a capable model filling a schema
-  from a real page. A local model can now be reached (see the reasoning allowance),
-  but a 3B/4B model filling a twenty-column schema from a web page measures the
-  model rather than the pipeline, so the honest state is unchanged: the pipeline is
-  verified and the extraction quality is not.
+- ~~**Dataset extraction is unverified against a capable model.**~~ **Closed.** One
+  DeepSeek run over "the largest UK supermarket chains and their annual revenue":
+  27 extractions from 3 sources became 9 merged rows, 8 corroborated by more than
+  one source, for $0.0339. Real revenue figures, correctly scaled, each traceable to
+  a quote. It found three defects, all fixed and all described under "What live runs
+  found" below — including the one that matters most for a fuzzy merge: the
+  constructed ground truth scored 1.000/1.000 while real data came back 27%
+  duplicated, because no fixture contained a country qualifier.
 - **Schema inference is not built.** §13 says "user-defined or inferred schema",
   and only the first half exists. A dataset session with no schema is refused
   rather than inferred, deliberately: inference costs a model call, and a session

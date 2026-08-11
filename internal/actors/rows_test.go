@@ -3,6 +3,7 @@ package actors_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -438,5 +439,101 @@ func TestCoercionIsCountedEvenForARowThatIsThenRejected(t *testing.T) {
 	}
 	if out.Rejected != 1 {
 		t.Errorf("rejected = %d, want 1", out.Rejected)
+	}
+}
+
+// TestAScaledFigureIsExact.
+//
+// Found in a live DeepSeek dataset run: "£32.7 billion" reached the CSV as
+// 32700000000.000004. The multiplier was a float, 32.7 × 1e9 is not representable,
+// so the value was not equal to its own truncation and the integer path was skipped
+// — putting a number with a floating-point tail in a revenue column somebody was
+// about to sum.
+func TestAScaledFigureIsExact(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"£32.7 billion", "32700000000"},
+		{"£32.7bn", "32700000000"},
+		{"32.7bn", "32700000000"},
+		{"1.1bn", "1100000000"},
+		{"17.9bn", "17900000000"},
+		{"8.2m", "8200000"},
+		{"1.15m", "1150000"},
+		{"4.7k", "4700"},
+		{"0.5bn", "500000000"},
+		// A fraction longer than the shift keeps its remainder rather than
+		// rounding: 1.2345k is 1234.5, not 1234 and not 1235.
+		{"1.2345k", "1234.5"},
+		// A bracketed loss keeps its sign through the shift.
+		{"(1.2bn)", "-1200000000"},
+		// Whole numbers and unscaled values are unaffected.
+		{"61470000000", "61470000000"},
+		{"12", "12"},
+	} {
+		got, ok := actors.CoerceNumberForTest(tc.in)
+		if !ok {
+			t.Errorf("%q was refused", tc.in)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%q → %q, want %q", tc.in, got, tc.want)
+		}
+		if strings.Contains(got, "e") || strings.Contains(got, "E") {
+			t.Errorf("%q → %q, which is not a figure a spreadsheet sums", tc.in, got)
+		}
+	}
+}
+
+// TestNoScaledFigureCarriesAFloatingPointTail, over every magnitude and one decimal
+// place — the shape the live bug had.
+func TestNoScaledFigureCarriesAFloatingPointTail(t *testing.T) {
+	for _, suffix := range []string{"k", "m", "b", "bn"} {
+		for d := 1; d <= 9; d++ {
+			in := fmt.Sprintf("%d.%dbn", 10+d, d)
+			in = strings.Replace(in, "bn", suffix, 1)
+			got, ok := actors.CoerceNumberForTest(in)
+			if !ok {
+				t.Fatalf("%q was refused", in)
+			}
+			if strings.Contains(got, ".") {
+				t.Errorf("%q → %q; a one-decimal figure scaled by a power of ten "+
+					"is a whole number", in, got)
+			}
+		}
+	}
+}
+
+// TestASpelledOutMagnitudeIsRead.
+//
+// "£32.7 billion" is how a page states a revenue, and the attached-only rule
+// refused it — dropping the value rather than reading it. The rule exists because
+// "5 m" might be metres; that ambiguity does not exist for a word.
+func TestASpelledOutMagnitudeIsRead(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"£32.7 billion", "32700000000"},
+		{"32.7 Billion", "32700000000"},
+		{"1.2 million", "1200000"},
+		{"450 thousand", "450000"},
+		{"2 trillion", "2000000000000"},
+		{"$8.5 billion", "8500000000"},
+	} {
+		got, ok := actors.CoerceNumberForTest(tc.in)
+		if !ok {
+			t.Errorf("%q was refused", tc.in)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%q → %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestASpacedLetterIsStillAmbiguousAndRefused. The reason the attached rule exists:
+// "5 m" is meters as often as millions.
+func TestASpacedLetterIsStillAmbiguousAndRefused(t *testing.T) {
+	for _, in := range []string{"5 m", "5 k", "5 b"} {
+		if got, ok := actors.CoerceNumberForTest(in); ok && got != "5" {
+			t.Errorf("%q → %q; a spaced single letter must not be read as a magnitude",
+				in, got)
+		}
 	}
 }
