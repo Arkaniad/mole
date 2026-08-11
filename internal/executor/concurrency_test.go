@@ -445,18 +445,46 @@ func TestAFatalStopsTheSessionWithinOneBatch(t *testing.T) {
 }
 
 // cancelProbe blocks until its context is cancelled, and records that it was.
+//
+// The fatal lead waits for its siblings to be IN FLIGHT before failing. Without
+// that the test was a race: dispatch is sequential, so "a" could fail and cancel
+// the batch before "b" and "c" ever started, and the assertion "some sibling
+// observed cancellation" then failed on a run where the behaviour was correct.
+// Seen once under full-suite load, which is exactly when a timing assumption
+// stops holding.
 type cancelProbe struct {
 	mu        sync.Mutex
 	cancelled int
-	fatalOn   string // the query whose lead fails fatally, immediately
+	started   int
+	fatalOn   string // the query whose lead fails fatally, once its siblings are running
+	siblings  int    // how many siblings must be in flight first
 }
 
 func (p *cancelProbe) Type() core.ActorType { return core.ActorWeb }
 
+func (p *cancelProbe) startedCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.started
+}
+
 func (p *cancelProbe) Run(ctx context.Context, lead core.Lead) (*actors.Result, error) {
 	if lead.Query == p.fatalOn {
+		// Wait for the siblings, but never forever: a bounded wait that expires
+		// fails the assertion below rather than hanging the suite.
+		deadline := time.Now().Add(5 * time.Second)
+		for p.startedCount() < p.siblings && time.Now().Before(deadline) {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Millisecond):
+			}
+		}
 		return okResult(0, 1_000), llm.ErrUnauthorized
 	}
+	p.mu.Lock()
+	p.started++
+	p.mu.Unlock()
 	select {
 	case <-ctx.Done():
 		p.mu.Lock()
@@ -482,7 +510,7 @@ func (p *cancelProbe) cancelledCount() int {
 // a model call each; the batch test cannot see it, because instant fakes finish
 // before any cancellation could matter.
 func TestAFatalCancelsItsSiblings(t *testing.T) {
-	probe := &cancelProbe{fatalOn: "a"}
+	probe := &cancelProbe{fatalOn: "a", siblings: 2}
 	r := newRig(t, 50*core.MicrosPerUSD, []string{planJSON("a", "b", "c")}, nil)
 	r.exec.Actors[core.ActorWeb] = probe
 	r.exec.Workers = 3
@@ -500,6 +528,10 @@ func TestAFatalCancelsItsSiblings(t *testing.T) {
 			"so they are still waiting out their 30s timer")
 	}
 
+	if probe.startedCount() < 2 {
+		t.Fatalf("only %d sibling(s) ever started; the fixture did not put them in "+
+			"flight, so it cannot observe cancellation", probe.startedCount())
+	}
 	if got := probe.cancelledCount(); got == 0 {
 		t.Fatal("no sibling observed cancellation after a fatal outcome")
 	}

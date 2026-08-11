@@ -346,10 +346,10 @@ The suites that carry weight:
 | M3 | Planner loop, rolling digest, error policy | **done** |
 | M4 | Claim graph + Verifier | **done**, contradiction recall unmeasured |
 | M5 | Executor pool | **done**, real-run speedup unmeasured |
-| M6 | AcademicActor | **done**, claim extraction unverified on a real model |
+| M6 | AcademicActor | **done**, claim extraction unverified on a capable model |
 | M7 | MCP daemon + stdio shim | **done** |
-| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | **done** + reviewed; planning unverified on a capable model |
-| M9 | Dataset mode | **done**; extraction unverified on a capable model |
+| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | **done** + reviewed; the model's half now verified live on a local model |
+| M9 | Dataset mode | **done** + reviewed; extraction unverified on a capable model |
 
 ---
 
@@ -357,12 +357,16 @@ The suites that carry weight:
 
 Stated plainly rather than left to be discovered:
 
-- **M8's hypothesis planning is unverified against a capable model.** The actor
-  runs end to end — a live local-only session planned, queued three local leads,
-  called the model for each and reconciled its ledger — but every planning call
-  failed to parse, because the only reachable model is the same 3B local one
-  that blocks M6. It returned a doubly-wrapped JSON array. So the pipeline is
-  verified and the model's half of §12.3 is not. Same blocker, same fix: credit.
+- **M8's hypothesis planning works on a small local model; its QUALITY is
+  unmeasured.** This was blocked on "the only reachable model is a 3B local one
+  whose planning calls all fail to parse" — which the reasoning allowance above
+  unblocked, because the model that could do it was a reasoning model mole could
+  not talk to. Three live local-only sessions since: qwen3:4b chose templates and
+  columns that rendered, the gate answered, §4's holdout statement ran, and claims
+  were mined from the envelopes. What is NOT established is whether a small model
+  chooses *good* hypotheses — the claims a 3B miner wrote were mostly restatements
+  of the column statistics rather than assertions. That needs a capable model, and
+  the blocker there is still credit.
 - **The channel out of the sandbox is bounded, not zero.** Only names the plan
   declared come back, and only as finite numbers, so a script cannot return rows
   or labels. A determined model could still encode a value in the digits of a
@@ -376,8 +380,10 @@ Stated plainly rather than left to be discovered:
   verified end to end against fakes — search, fetch, chunk, extract, persist,
   merge, render — and the merge has real precision and recall numbers on
   constructed ground truth. What has never run is a capable model filling a schema
-  from a real page: the only reachable model is the same 3B one that blocks M6 and
-  M8. So the pipeline is verified and the extraction quality is not.
+  from a real page. A local model can now be reached (see the reasoning allowance),
+  but a 3B/4B model filling a twenty-column schema from a web page measures the
+  model rather than the pipeline, so the honest state is unchanged: the pipeline is
+  verified and the extraction quality is not.
 - **Schema inference is not built.** §13 says "user-defined or inferred schema",
   and only the first half exists. A dataset session with no schema is refused
   rather than inferred, deliberately: inference costs a model call, and a session
@@ -993,6 +999,37 @@ Three details that are the point rather than the implementation:
 
 A test pins the property the old restriction existed for: a result that is
 significant on its own stops being significant as one of fifteen.
+
+### What a live local run found
+
+Three sessions against real data (400 rows, four regions) with qwen3:4b planning
+and qwen2.5:3b mining, on this machine, over ollama. They cost nothing and found
+two bugs that every test in the repository had missed.
+
+**Local claims were never persisted.** `WebActor` and `AcademicActor` each write
+their own claims; `LocalComputeActor` returned them in `Result` and wrote nothing,
+and the executor only carries `Result.Claims` in memory for the planner's digest.
+The report, `mole eval` and `mole ask` are all built from the *store*. So the run
+printed "1 claim(s)" as it went past and then produced a report saying *"No
+verifiable evidence was found"*, with the scorecard agreeing there were no claims.
+Every local claim mole had ever mined was discarded after being paid for.
+
+**A local claim's citation was scored as malformed.** `claim integrity` parsed
+every source with `url.Parse` and required a host — and §4 defines two citation
+shapes: a URL for web and academic claims, and `connector:<name>#<query hash>` for
+a local one, because the data never left the machine. Five well-formed claims
+scored 0% on the one metric whose entire purpose is to catch claims the pipeline
+should have rejected.
+
+Both are the same lesson the M8 review wrote down and this milestone had to learn
+again: falsification tests the rules you wrote. Neither bug is a rule anyone wrote
+down — they are what happens between two components that were each tested alone.
+
+What the runs *did* confirm, having been unverifiable before: a model choosing a
+template and columns that render, the aggregation gate answering, §4's holdout
+statement running against real data, the audit trail recording four crossings with
+no refusals, and §14.3's exfil number reading `0 of 4 envelope(s) withheld` — the
+first time that metric has been measured on a session rather than named as blocked.
 
 ### The audit trail: a table, not a log line
 
