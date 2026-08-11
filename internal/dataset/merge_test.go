@@ -96,8 +96,8 @@ func score(t *testing.T, d dataset.Dataset, owner map[string]int) (precision, re
 		// wrong one here would score an empty cluster for every merged row.
 		var names []string
 		names = append(names, row.Cells["company"].Text)
-		names = append(names, row.Cells["company"].Variants...)
-		names = append(names, row.Cells["company"].Others...)
+		names = append(names, dataset.AltTexts(row.Cells["company"].Variants)...)
+		names = append(names, dataset.AltTexts(row.Cells["company"].Others)...)
 		for i := 0; i < len(names); i++ {
 			for j := i + 1; j < len(names); j++ {
 				predicted[pair(names[i], names[j])] = true
@@ -222,7 +222,8 @@ func TestCompleteLinkageStopsAChain(t *testing.T) {
 
 	d := dataset.Merge(mergeSchema(t), rows, dataset.Options{})
 	for _, row := range d.Rows {
-		names := append([]string{row.Cells["company"].Text}, row.Cells["company"].Variants...)
+		names := append([]string{row.Cells["company"].Text},
+			dataset.AltTexts(row.Cells["company"].Variants)...)
 		joined := strings.Join(names, " | ")
 		// The two ends must never share a row.
 		var hasA, hasC bool

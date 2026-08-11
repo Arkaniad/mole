@@ -71,6 +71,17 @@ type RunStats struct {
 	// appear in the source. A rising rate here is the signal that a model or
 	// prompt has started fabricating.
 	ClaimsRejected int
+
+	// ValuesCoerced counts dataset values dropped because the schema's declared
+	// type could not hold them (M9): a `number` field given "roughly $1.2m".
+	//
+	// Its own counter rather than folded into ClaimsRejected, because it means
+	// something different and has a different fix. A rejected row means the model
+	// invented; a coerced-away value usually means the SCHEMA is wrong for what
+	// the sources write, and the user is the only one who can change that. Rows
+	// that lost every non-key value still counted as accepted, so without this
+	// the run reported a clean extraction and delivered empty cells.
+	ValuesCoerced int
 }
 
 // Actor executes a lead.

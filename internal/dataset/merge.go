@@ -1,6 +1,8 @@
 package dataset
 
 import (
+	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"unicode"
@@ -81,6 +83,16 @@ func (o Options) withDefaults() Options {
 // bodies and a report is generated from this, so an order-dependent merge would
 // make a replay a coin toss.
 func Merge(schema Schema, rows []Row, opts Options) Dataset {
+	return MergeContext(context.Background(), schema, rows, opts)
+}
+
+// MergeContext is Merge, interruptible.
+//
+// Clustering is quadratic within a block and a block can be large, so a big row
+// set is minutes of uninterruptible work — measured at 66 seconds for 20,000 keys
+// sharing a prefix. It runs at session finish, on every `mole dataset` read and
+// inside `mole eval`, so a caller that has given up needs to be able to say so.
+func MergeContext(ctx context.Context, schema Schema, rows []Row, opts Options) Dataset {
 	opts = opts.withDefaults()
 	out := Dataset{Schema: schema, Extracted: len(rows)}
 
@@ -91,6 +103,14 @@ func Merge(schema Schema, rows []Row, opts Options) Dataset {
 
 	keyed := make([]keyedRow, 0, len(rows))
 	for _, r := range rows {
+		// Counted here because this is the only place that sees every extracted
+		// row: after folding, a row's evidence is a per-source quote and the
+		// count of inputs that had none is unrecoverable. §14.3's row-integrity
+		// metric is a hard regression, so it needs the number rather than an
+		// approximation of it.
+		if r.Quote == "" || r.Source == "" {
+			out.Unquoted++
+		}
 		k := schema.keyOf(r)
 		if k.normalised == "" {
 			// No usable key. Extraction already refuses these, so reaching here
@@ -113,31 +133,24 @@ func Merge(schema Schema, rows []Row, opts Options) Dataset {
 		return keyed[i].row.Source < keyed[j].row.Source
 	})
 
-	for _, cluster := range cluster(keyed, opts.Threshold) {
-		out.Rows = append(out.Rows, schema.fold(cluster))
+	clusters, interrupted := cluster(ctx, keyed, opts.Threshold)
+	if interrupted {
+		out.Notes = append(out.Notes, "the merge was interrupted; the rows below are "+
+			"what it had grouped, and duplicates may remain")
+	}
+	for _, c := range clusters {
+		out.Rows = append(out.Rows, schema.fold(c))
 	}
 	return out
 }
 
 func describeTruncation(got, limit int) string {
-	return "the merge was given more rows than it will compare (" +
-		itoa(got) + " against a limit of " + itoa(limit) + "); the excess was dropped"
+	return fmt.Sprintf("the merge was given more rows than it will compare "+
+		"(%d against a limit of %d); the excess was dropped", got, limit)
 }
 
 func describeUnkeyed(n int) string {
-	return itoa(n) + " row(s) had no usable key value and could not be merged"
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b []byte
-	for n > 0 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-		n /= 10
-	}
-	return string(b)
+	return fmt.Sprintf("%d row(s) had no usable key value and could not be merged", n)
 }
 
 // -----------------------------------------------------------------------------
@@ -145,10 +158,13 @@ func itoa(n int) string {
 // -----------------------------------------------------------------------------
 
 type key struct {
-	// raw is the key fields joined, as the sources wrote them.
-	raw string
-	// normalised is what similarity is computed on.
+	// normalised is what similarity is computed on: lower-cased, folded,
+	// punctuation removed, trailing legal-form words taken off.
 	normalised string
+	// families are the legal forms that were taken off, canonicalised — {"ltd"}
+	// for both "Ltd" and "Limited". Two names that are identical once stripped
+	// but carry DIFFERENT forms are usually different entities.
+	families map[string]bool
 	// blocks are the cheap signatures used to decide which pairs to compare.
 	blocks []string
 }
@@ -158,6 +174,13 @@ type keyedRow struct {
 	key key
 }
 
+// MaxKeyCompareLen bounds what similarity is computed on.
+//
+// jaro is O(len_a × len_b) and nothing caps an extracted value's length, so forty
+// rows carrying an 8,000-character key took nine seconds. No entity name is this
+// long; a value that is, is a page's paragraph in a key field.
+const MaxKeyCompareLen = 200
+
 func (s Schema) keyOf(r Row) key {
 	var parts []string
 	for _, name := range s.Keys() {
@@ -165,24 +188,46 @@ func (s Schema) keyOf(r Row) key {
 			parts = append(parts, v)
 		}
 	}
-	raw := strings.Join(parts, " ")
-	norm := Normalise(raw)
-	return key{raw: raw, normalised: norm, blocks: blocksFor(norm)}
+	kept, families := splitSuffixes(strings.Fields(foldForCompare(strings.Join(parts, " "))))
+	norm := strings.Join(kept, " ")
+	if len(norm) > MaxKeyCompareLen {
+		norm = norm[:MaxKeyCompareLen]
+	}
+	return key{normalised: norm, families: families, blocks: blocksFor(norm)}
 }
 
-// corporateSuffixes are dropped before comparing.
+// corporateSuffixes maps a legal-form word to its FAMILY.
 //
-// "Acme Ltd" and "Acme Limited" are one company, and a similarity score computed
-// on the full strings puts them further apart than "Acme Ltd" and "Acme Foods" —
-// which is the wrong way round and the single biggest source of both false
-// positives and false negatives on company names.
-var corporateSuffixes = map[string]bool{
-	"ltd": true, "limited": true, "plc": true, "llp": true, "lp": true,
-	"inc": true, "incorporated": true, "llc": true, "corp": true, "corporation": true,
-	"co": true, "company": true, "group": true, "holdings": true, "holding": true,
-	"gmbh": true, "ag": true, "sa": true, "sas": true, "srl": true, "spa": true,
-	"bv": true, "nv": true, "ab": true, "as": true, "oy": true, "aps": true,
-	"pty": true, "pte": true, "kk": true, "kg": true, "ug": true, "se": true,
+// "Acme Ltd" and "Acme Limited" are one company, and a similarity computed on the
+// full strings puts them further apart than "Acme Ltd" and "Acme Foods" — which is
+// the wrong way round and the single biggest source of both false positives and
+// false negatives on company names.
+//
+// A family rather than a set, because stripping alone over-merges. Measured:
+// "Acme Holdings" and "Acme Group" both reduced to "acme" and merged into one row.
+// They are usually different legal entities, and merging two companies is the
+// precision failure this package says is the one to hold. The family lets the
+// comparison ask a sharper question — do these differ ONLY by their legal form,
+// and is that form the same form written differently — so "ltd"/"limited" still
+// merge while "holdings"/"group" do not.
+var corporateSuffixes = map[string]string{
+	"ltd": "ltd", "limited": "ltd",
+	"plc": "plc",
+	"llp": "llp", "lp": "llp",
+	"inc": "inc", "incorporated": "inc",
+	"llc":  "llc",
+	"corp": "corp", "corporation": "corp",
+	"co": "co", "company": "co",
+	"group":    "group",
+	"holdings": "holdings", "holding": "holdings",
+	"gmbh": "gmbh", "ug": "gmbh",
+	"ag": "ag",
+	"sa": "sa", "sas": "sa",
+	"srl": "srl", "spa": "spa",
+	"bv": "bv", "nv": "nv",
+	"ab": "ab", "as": "as", "oy": "oy", "aps": "aps",
+	"pty": "pty", "pte": "pte",
+	"kk": "kk", "kg": "kg", "se": "se",
 }
 
 // Normalise reduces a key value to what should be compared.
@@ -191,6 +236,13 @@ var corporateSuffixes = map[string]bool{
 // and a scorer using a different rule from the merge would be measuring something
 // else.
 func Normalise(s string) string {
+	kept, _ := splitSuffixes(strings.Fields(foldForCompare(s)))
+	return strings.Join(kept, " ")
+}
+
+// foldForCompare lower-cases, folds accents and removes punctuation, leaving the
+// tokens for splitSuffixes.
+func foldForCompare(s string) string {
 	// Case and accents first: "Nestlé" and "Nestle" are the same company, and a
 	// source that lost the accent should not become a second entity.
 	var b strings.Builder
@@ -206,20 +258,35 @@ func Normalise(s string) string {
 		}
 	}
 
-	var kept []string
-	for _, tok := range strings.Fields(b.String()) {
-		if corporateSuffixes[tok] {
-			continue
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// splitSuffixes removes a TRAILING run of legal-form words and returns them as
+// canonical families.
+//
+// Trailing only. Stripping them wherever they appeared was positionally blind, so
+// "AS Bank" became "bank" and "The Company" became "the" — the table contains
+// short words (as, se, co, ab, lp, kk) that are ordinary leading words in other
+// names.
+//
+// When everything is a suffix the original tokens are kept: "Ltd" as a whole key
+// value is not a company, but dropping it silently would lose the row rather than
+// report it.
+func splitSuffixes(tokens []string) (kept []string, families map[string]bool) {
+	families = map[string]bool{}
+	end := len(tokens)
+	for end > 0 {
+		fam, ok := corporateSuffixes[tokens[end-1]]
+		if !ok {
+			break
 		}
-		kept = append(kept, tok)
+		families[fam] = true
+		end--
 	}
-	if len(kept) == 0 {
-		// Everything was a suffix. Better a comparable string than an empty one:
-		// "Ltd" as a whole key value is not a company, but dropping it silently
-		// would lose the row rather than report it.
-		return strings.Join(strings.Fields(b.String()), " ")
+	if end == 0 {
+		return tokens, map[string]bool{}
 	}
-	return strings.Join(kept, " ")
+	return tokens[:end], families
 }
 
 // foldTable maps the accented Latin letters that appear in entity names onto
@@ -283,10 +350,26 @@ func blocksFor(norm string) []string {
 
 	flat := strings.ReplaceAll(norm, " ", "")
 	add(prefix(flat, blockPrefix))
+	add(suffix(flat, blockPrefix))
 	for _, tok := range strings.Fields(norm) {
 		add(prefix(tok, blockPrefix))
+		// The last four characters as well as the first. A prefix block silently
+		// cancelled the typo rule for a typo in position 0-3: "Softbank Corp" and
+		// "Sofbank Corp" score 1.000 as strings and were never compared, because
+		// "soft" and "sofb" are disjoint blocks. tokenMatch exists precisely to
+		// absorb that typo, so blocking must not decide the answer before the
+		// measure is consulted.
+		add(suffix(tok, blockPrefix))
 	}
 	return out
+}
+
+func suffix(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return string(r)
+	}
+	return string(r[len(r)-n:])
 }
 
 func prefix(s string, n int) string {
@@ -302,7 +385,7 @@ func prefix(s string, n int) string {
 // -----------------------------------------------------------------------------
 
 // cluster groups rows by key similarity, under complete linkage.
-func cluster(rows []keyedRow, threshold float64) [][]keyedRow {
+func cluster(ctx context.Context, rows []keyedRow, threshold float64) ([][]keyedRow, bool) {
 	// Which rows share a block with which. Only these pairs are ever scored.
 	byBlock := map[string][]int{}
 	for i, r := range rows {
@@ -319,6 +402,18 @@ func cluster(rows []keyedRow, threshold float64) [][]keyedRow {
 	var members [][]int
 
 	for i := range rows {
+		if ctx.Err() != nil {
+			// Everything not yet assigned becomes its own cluster, so the result
+			// is under-merged rather than short: losing rows would be worse than
+			// leaving duplicates.
+			for j := range rows {
+				if assigned[j] < 0 {
+					clusters = append(clusters, []keyedRow{rows[j]})
+					assigned[j] = len(clusters) - 1
+				}
+			}
+			return clusters, true
+		}
 		if assigned[i] >= 0 {
 			continue
 		}
@@ -328,7 +423,13 @@ func cluster(rows []keyedRow, threshold float64) [][]keyedRow {
 		ci := len(clusters) - 1
 		assigned[i] = ci
 
-		for _, j := range candidates(byBlock, rows[i].key.blocks) {
+		// Best first. Admitting candidates in index order let a partial match
+		// arriving earlier raise the complete-linkage bar and lock out a later
+		// EXACT one: "JP Morgan", "JP Morgan Chase" and "JPMorgan" put the first
+		// two together and left the third alone, even though the code scores
+		// "JP Morgan" and "JPMorgan" as identical. Adding an unrelated third row
+		// must not un-merge two keys.
+		for _, j := range candidatesByScore(rows, byBlock, i) {
 			if j <= i || assigned[j] >= 0 {
 				continue
 			}
@@ -339,13 +440,16 @@ func cluster(rows []keyedRow, threshold float64) [][]keyedRow {
 			}
 		}
 	}
-	return clusters
+	return clusters, false
 }
 
-func candidates(byBlock map[string][]int, blocks []string) []int {
+// candidatesByScore returns the rows sharing a block with seed, most similar
+// first. Ties break on index, so the order is total and the merge stays
+// deterministic.
+func candidatesByScore(rows []keyedRow, byBlock map[string][]int, seed int) []int {
 	seen := map[int]bool{}
 	var out []int
-	for _, b := range blocks {
+	for _, b := range rows[seed].key.blocks {
 		for _, j := range byBlock[b] {
 			if !seen[j] {
 				seen[j] = true
@@ -353,7 +457,16 @@ func candidates(byBlock map[string][]int, blocks []string) []int {
 			}
 		}
 	}
-	sort.Ints(out)
+	score := make(map[int]float64, len(out))
+	for _, j := range out {
+		score[j] = Similarity(rows[seed].key.normalised, rows[j].key.normalised)
+	}
+	sort.Slice(out, func(a, b int) bool {
+		if score[out[a]] != score[out[b]] {
+			return score[out[a]] > score[out[b]]
+		}
+		return out[a] < out[b]
+	})
 	return out
 }
 
@@ -365,11 +478,37 @@ func candidates(byBlock map[string][]int, blocks []string) []int {
 // quietly merged two companies.
 func matchesAll(rows []keyedRow, members []int, j int, threshold float64) bool {
 	for _, m := range members {
-		if Similarity(rows[m].key.normalised, rows[j].key.normalised) < threshold {
+		if !keysMatch(rows[m].key, rows[j].key, threshold) {
 			return false
 		}
 	}
 	return true
+}
+
+// keysMatch is Similarity plus the legal-form rule.
+//
+// Two names identical once stripped but carrying DIFFERENT legal forms are
+// usually different entities: "Acme Holdings" and "Acme Group" both reduce to
+// "acme" and were merging into one row, which is the precision failure this
+// package holds hardest. One side carrying no form at all is the case stripping
+// exists for — "Vodafone Group" and "Vodafone" are one company — so it still
+// matches.
+func keysMatch(a, b key, threshold float64) bool {
+	if Similarity(a.normalised, b.normalised) < threshold {
+		return false
+	}
+	if len(a.families) == 0 || len(b.families) == 0 {
+		return true
+	}
+	for fam := range a.families {
+		if b.families[fam] {
+			return true
+		}
+	}
+	// Both named a legal form and no form is shared. Only a distinction when the
+	// rest of the name is otherwise the same — "Acme Ltd" against "Beta GmbH"
+	// never reaches here, having failed the similarity test above.
+	return false
 }
 
 // -----------------------------------------------------------------------------
@@ -414,6 +553,7 @@ func Similarity(a, b string) float64 {
 	if strings.ReplaceAll(a, " ", "") == strings.ReplaceAll(b, " ", "") {
 		return 1
 	}
+
 	return fuzzyJaccard(a, b)
 }
 
@@ -445,7 +585,7 @@ func fuzzyJaccard(a, b string) float64 {
 			}
 			s := 1.0
 			if x != y {
-				s = jaroWinkler(x, y)
+				s = fuzzyToken(x, y)
 			}
 			if s > bestScore {
 				bestScore, bestIdx = s, j
@@ -462,6 +602,33 @@ func fuzzyJaccard(a, b string) float64 {
 	// The union counts each side's unmatched tokens once plus the shared ones.
 	union := shared + (len(ta) - shared) + (len(tb) - shared)
 	return float64(shared) / float64(union)
+}
+
+// fuzzyToken scores two tokens, refusing to be fuzzy about identifiers.
+//
+// tokenMatch is calibrated on words: "bank" against "bnak" is 0.925, which is
+// what absorbs a typo. On a long token one substitution barely moves the score at
+// all, so two ISINs differing in their last digit came out at 1.000 and merged —
+// and because the key field's alternatives are filed as SPELLINGS, nothing in the
+// CSV or the JSON flagged that two securities had been fused into one row.
+//
+// A digit is the signal. A typo in a word is common and means nothing; a changed
+// character in a ticker, ISIN, CIK, SKU or catalogue number changes which thing
+// is being identified. So a token containing a digit must match exactly.
+func fuzzyToken(a, b string) float64 {
+	if hasDigit(a) || hasDigit(b) {
+		return 0
+	}
+	return jaroWinkler(a, b)
+}
+
+func hasDigit(s string) bool {
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			return true
+		}
+	}
+	return false
 }
 
 // jaroWinkler is the standard measure, with the standard prefix boost.
@@ -543,13 +710,13 @@ func jaro(a, b string) float64 {
 
 // fold assembles one Merged from the rows that matched.
 func (s Schema) fold(cluster []keyedRow) Merged {
-	out := Merged{Cells: map[string]Cell{}, Members: len(cluster), Quotes: map[string]string{}}
+	out := Merged{Cells: map[string]Cell{}, Members: len(cluster), Quotes: map[string]Quote{}}
 
 	sources := map[string]bool{}
 	for _, kr := range cluster {
 		sources[kr.row.Source] = true
 		if _, seen := out.Quotes[kr.row.Source]; !seen && kr.row.Quote != "" {
-			out.Quotes[kr.row.Source] = kr.row.Quote
+			out.Quotes[kr.row.Source] = Quote{Text: kr.row.Quote, Offset: kr.row.QuoteOffset}
 		}
 	}
 	for src := range sources {
@@ -588,15 +755,19 @@ func (s Schema) fold(cluster []keyedRow) Merged {
 		})
 
 		cell := Cell{Text: order[0], Sources: dedupe(srcOf[order[0]])}
+		alts := make([]Alt, 0, len(order)-1)
+		for _, v := range order[1:] {
+			alts = append(alts, Alt{Text: v, Sources: dedupe(srcOf[v])})
+		}
 		if len(order) > 1 {
 			// A key field's alternatives are SPELLINGS, not disagreements: the
 			// merge grouped these rows because it judged the key values to name
 			// one entity, so calling them a conflict would contradict its own
 			// decision. Everything else is a genuine disagreement.
 			if f.Key {
-				cell.Variants = order[1:]
+				cell.Variants = alts
 			} else {
-				cell.Others = order[1:]
+				cell.Others = alts
 			}
 		}
 		out.Cells[f.Name] = cell

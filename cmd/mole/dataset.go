@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -70,39 +71,26 @@ func cmdDataset(ctx context.Context, cmd *cobra.Command, sessionID string, o dat
 	}
 	defer db.Close()
 
-	var (
-		schema dataset.Schema
-		rows   []dataset.Row
-	)
-	err = db.Read(ctx, func(ctx context.Context, q store.Queries) error {
-		s, ok, err := q.DatasetSchema(ctx, sessionID)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			// A report session has no schema, and saying so beats an empty file:
-			// the user asked the wrong command about the right session.
-			return fmt.Errorf("session %s is not a dataset session "+
-				"(run with --mode dataset --schema ...)", sessionID)
-		}
-		schema = s
-		rows, err = q.ListRows(ctx, sessionID)
-		return err
-	})
+	d, err := store.LoadDataset(ctx, db, sessionID, dataset.Options{Threshold: o.threshold})
+	if errors.Is(err, store.ErrNotDataset) {
+		// A report session has no schema, and saying so beats an empty file: the
+		// user asked the wrong command about the right session.
+		return fmt.Errorf("session %s is not a dataset session "+
+			"(run with --mode dataset --schema ...)", sessionID)
+	}
 	if err != nil {
 		return err
 	}
 
-	d := dataset.Merge(schema, rows, dataset.Options{Threshold: o.threshold})
-
 	w := cmd.OutOrStdout()
+	var file *os.File
 	if o.out != "" {
 		f, err := os.Create(o.out)
 		if err != nil {
 			return err
 		}
 		defer f.Close()
-		w = f
+		file, w = f, f
 	}
 
 	if o.format == "json" {
@@ -112,14 +100,23 @@ func cmdDataset(ctx context.Context, cmd *cobra.Command, sessionID string, o dat
 	} else if err := d.WriteCSV(w, o.provenance); err != nil {
 		return err
 	}
+	// Closed explicitly as well as deferred, and only for a file this command
+	// opened: a deferred Close's error is discarded, and a failed flush would
+	// leave a truncated file that looks complete. Type-asserting on w instead
+	// would close the process's stdout, which is a *os.File too.
+	if file != nil {
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("write %s: %w", o.out, err)
+		}
+	}
 
 	// The summary goes to stderr so a piped `> out.csv` gets only the data. What
 	// qualifies a dataset — how much was corroborated, how much is contested — is
 	// the part a reader most needs and the part a redirect would silently discard.
-	if o.out != "" || w != cmd.OutOrStdout() {
-		fmt.Fprintln(cmd.ErrOrStderr(), d.Summary())
-	} else {
-		fmt.Fprintln(cmd.ErrOrStderr(), strings.TrimSpace(d.Summary()))
-	}
+	//
+	// Unconditional. It used to branch on `o.out != "" || w != cmd.OutOrStdout()`,
+	// whose two halves are the same condition, and both arms printed the same
+	// thing to the same place.
+	fmt.Fprintln(cmd.ErrOrStderr(), strings.TrimSpace(d.Summary()))
 	return nil
 }

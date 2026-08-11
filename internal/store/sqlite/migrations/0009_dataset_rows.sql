@@ -19,10 +19,21 @@ CREATE TABLE dataset_rows (
     seq           INTEGER NOT NULL,
 
     values_json   TEXT NOT NULL,
-    source        TEXT NOT NULL,
-    quote         TEXT NOT NULL,
+    source        TEXT NOT NULL CHECK (length(source) > 0),
+
+    -- NOT NULL is not the constraint that matters here. §11.5 makes the quote
+    -- mandatory, and `NOT NULL` admits '' — so the one shape this column exists to
+    -- forbid, a row with no evidence behind it, was the one it allowed. The check
+    -- is the schema stating the project's own rule instead of trusting every
+    -- present and future writer to remember it.
+    quote         TEXT NOT NULL CHECK (length(quote) > 0),
     quote_offset  INTEGER NOT NULL DEFAULT 0,
-    retrieved_at  TIMESTAMP NOT NULL
+
+    -- Unix microseconds, per 0001_init's first invariant ("Timestamps are INTEGER
+    -- unix microseconds (UTC). Sortable, no parsing."). This said TIMESTAMP and
+    -- stored driver-formatted text, which is the one table in the database whose
+    -- times neither sort nor compare against any other table's.
+    retrieved_at  INTEGER NOT NULL
 );
 
 -- Read back per session in insertion order. seq exists for the same reason

@@ -241,7 +241,7 @@ func (r *Runner) Create(ctx context.Context, spec Spec) (*core.Session, error) {
 		sources = 1
 	}
 
-	return r.ledger().CreateSession(ctx, budget.SessionSpec{
+	sess, err := r.ledger().CreateSession(ctx, budget.SessionSpec{
 		Prompt:     spec.Question,
 		Mode:       spec.Mode,
 		ActorTypes: actorTypesOf(spec),
@@ -255,6 +255,29 @@ func (r *Runner) Create(ctx context.Context, spec Spec) (*core.Session, error) {
 		MaxLeads:     int64(maxLeads),
 		MaxWallClock: spec.Timeout,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	// The dataset schema is written NOW, not at the end of the run.
+	//
+	// Rows are persisted per lead on an uncancellable context specifically so a
+	// killed session keeps what it paid for — and the schema was written only in
+	// finishDataset, so killing the process after the first lead left rows nobody
+	// could read: `mole dataset` refuses a session with no stored schema, and its
+	// message tells the user the wrong thing ("not a dataset session"). The
+	// uncancellable write was defeated by a missing four hundred bytes.
+	//
+	// It is safe to write here: the schema is validated before the run starts and
+	// is the one part of a session that cannot change while it runs.
+	if spec.Schema != nil {
+		if err := r.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+			return tx.SetDatasetSchema(ctx, sess.ID, *spec.Schema)
+		}); err != nil {
+			return nil, fmt.Errorf("session: store the dataset schema: %w", err)
+		}
+	}
+	return sess, nil
 }
 
 // Run drives the loop for an already-created session, then writes the report and
@@ -525,34 +548,33 @@ func (r *Runner) finish(
 // `mole dataset` can assemble them later; losing the session because the summary
 // could not be written would discard nothing but be reported as everything.
 func (r *Runner) finishDataset(ctx context.Context, sessionID string, schema dataset.Schema) *output.Report {
-	var rows []dataset.Row
-	if err := r.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
-		var err error
-		rows, err = q.ListRows(ctx, sessionID)
-		return err
-	}); err != nil {
+	d, err := store.MergeStoredRows(ctx, r.Store, sessionID, schema, dataset.Options{})
+	if err != nil {
 		r.notice("could not read the extracted rows: %v", err)
 		return nil
 	}
-
-	d := dataset.Merge(schema, rows, dataset.Options{})
 	markdown := dataset.Markdown(d)
+
+	var degraded string
+	if len(d.Rows) == 0 {
+		degraded = "no row survived extraction: every candidate either failed the " +
+			"quote check or filled no key field"
+	}
 
 	if err := r.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
 		if err := tx.SetDatasetSchema(ctx, sessionID, schema); err != nil {
 			return err
-		}
-		var degraded string
-		if len(d.Rows) == 0 {
-			degraded = "no row survived extraction: every candidate either failed the " +
-				"quote check or filled no key field"
 		}
 		return tx.SetSessionReport(ctx, sessionID, markdown, degraded)
 	}); err != nil {
 		r.notice("could not store the dataset: %v", err)
 	}
 
-	return &output.Report{SessionID: sessionID, Body: markdown}
+	// Degraded travels on the RETURNED report, not only into the row written
+	// above: Run re-writes the same row from res.Report afterwards, so a reason
+	// set only here was overwritten with an empty string and the session reported
+	// a clean empty dataset. An MCP caller saw success.
+	return &output.Report{SessionID: sessionID, Body: markdown, Degraded: degraded}
 }
 
 // ground runs §11.5.2's re-read within a bounded share of the released escrow.

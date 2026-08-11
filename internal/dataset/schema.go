@@ -79,7 +79,8 @@ type Field struct {
 
 // Schema is the shape of the dataset.
 type Schema struct {
-	// Name is used in the output filename and nowhere else.
+	// Name is carried through a schema file so one can be labelled, and is used
+	// by nothing. It used to claim it named the output file, which no code did.
 	Name   string  `json:"name,omitempty"`
 	Fields []Field `json:"fields"`
 }
@@ -112,6 +113,11 @@ func (s Schema) Validate() error {
 		if seen[f.Name] {
 			return schemaErr("two fields named %q", f.Name)
 		}
+		if reservedColumn(f.Name) {
+			return schemaErr("field %q collides with a column the CSV output adds "+
+				"(%s); a reader keyed by header name would silently take the wrong one",
+				f.Name, strings.Join(ReservedColumns[:], ", "))
+		}
 		seen[f.Name] = true
 		if !f.Type.valid() {
 			return schemaErr("field %q has type %q; want text, number or date",
@@ -127,6 +133,15 @@ func (s Schema) Validate() error {
 			"merged and the result is a list of quotes rather than a dataset")
 	}
 	return nil
+}
+
+func reservedColumn(name string) bool {
+	for _, r := range ReservedColumns {
+		if name == r {
+			return true
+		}
+	}
+	return false
 }
 
 // MaxFields bounds the schema.
@@ -183,7 +198,7 @@ func (s Schema) Names() []string {
 // three-column question, and the file form is still there for anything longer.
 func ParseSpec(spec string) (Schema, error) {
 	var s Schema
-	for _, part := range strings.Split(spec, ",") {
+	for _, part := range splitFields(spec) {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
@@ -198,6 +213,39 @@ func ParseSpec(spec string) (Schema, error) {
 		return Schema{}, err
 	}
 	return s, nil
+}
+
+// splitFields splits on commas that separate FIELDS rather than commas inside a
+// description.
+//
+// A description is free text after `=`, and "revenue:number=annual revenue, in
+// USD" was being split into a second field called "in USD" — advertising free
+// text and then refusing the commonest thing free text contains. A comma after an
+// `=` belongs to the description until the next `name:type` looks like one.
+func splitFields(spec string) []string {
+	var out []string
+	var cur strings.Builder
+	inDescription := false
+	for _, part := range strings.Split(spec, ",") {
+		looksLikeField := strings.Contains(part, ":") &&
+			!strings.Contains(strings.SplitN(part, ":", 2)[0], " ")
+		switch {
+		case !inDescription || looksLikeField:
+			if cur.Len() > 0 {
+				out = append(out, cur.String())
+				cur.Reset()
+			}
+			cur.WriteString(part)
+			inDescription = strings.Contains(part, "=")
+		default:
+			cur.WriteString(",")
+			cur.WriteString(part)
+		}
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
 }
 
 func parseField(part string) (Field, error) {

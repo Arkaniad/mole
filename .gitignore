@@ -13,3 +13,9 @@
 # deliberate policy; a 1.8MB dump of third-party page HTML recorded during
 # development is not that, and git history is hard to undo.
 /testdata/cassettes/
+
+# Scratch left by the falsification sweeps: a mutation is applied to a file, the
+# suite is run, and the original is restored from a copy. `git add -A` swept two
+# of those copies into a commit before this line existed.
+*.bak
+zz_*_test.go

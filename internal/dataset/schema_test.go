@@ -150,13 +150,18 @@ func sampleDataset(t *testing.T) dataset.Dataset {
 				Cells: map[string]dataset.Cell{
 					"company": {Text: "Acme Ltd", Sources: []string{"https://a.example"}},
 					// Two sources, two revenues, both kept.
-					"revenue": {Text: "1200000", Others: []string{"1350000"},
+					"revenue": {Text: "1200000",
+						Others: []dataset.Alt{{Text: "1350000",
+							Sources: []string{"https://b.example"}}},
 						Sources: []string{"https://a.example"}},
 				},
 				Sources: []string{"https://a.example", "https://b.example"},
 				Members: 2,
-				Quotes: map[string]string{
-					"https://a.example": "Acme Ltd reported revenue of $1.2m in 2024",
+				Quotes: map[string]dataset.Quote{
+					"https://a.example": {
+						Text:   "Acme Ltd reported revenue of $1.2m in 2024",
+						Offset: 120,
+					},
 				},
 			},
 			{
@@ -240,13 +245,13 @@ func TestJSONIsTheCompleteForm(t *testing.T) {
 	if !cell.Contested() {
 		t.Fatal("the disagreement did not survive the round trip")
 	}
-	if len(cell.Others) != 1 || cell.Others[0] != "1350000" {
+	if len(cell.Others) != 1 || cell.Others[0].Text != "1350000" {
 		t.Errorf("others = %v, want the second source's figure", cell.Others)
 	}
 	// Provenance has to survive too: a table nobody can trace to a sentence is
 	// what §11.5 exists to prevent, and a CSV is not an exception.
-	if back.Rows[0].Quotes["https://a.example"] == "" {
-		t.Error("the quote is missing from the complete form")
+	if q := back.Rows[0].Quotes["https://a.example"]; q.Text == "" || q.Offset != 120 {
+		t.Errorf("quote = %+v, want the text and the offset it was found at", q)
 	}
 }
 

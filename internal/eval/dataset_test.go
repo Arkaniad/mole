@@ -111,30 +111,29 @@ func TestDatasetMetricsQualifyTheResult(t *testing.T) {
 	}
 }
 
-// TestARowWithoutAQuoteIsAHardRegression. Extraction already refuses those, so a
-// stored row without one means something bypassed §11.5 rather than that a page
-// was thin.
-func TestARowWithoutAQuoteIsAHardRegression(t *testing.T) {
+// TestTheStoreRefusesARowWithNoQuote.
+//
+// This test used to insert one and check the scorecard flagged it. It cannot any
+// more: `quote TEXT NOT NULL` admitted ”, so the column that exists to enforce
+// §11.5 permitted the one shape it forbids, and migration 0009 now carries
+// CHECK (length(quote) > 0). The insert fails, which is the better outcome — a
+// quoteless row never reaches a dataset to be scored — so the test asserts the
+// refusal, and the metric it used to reach is asserted directly below.
+func TestTheStoreRefusesARowWithNoQuote(t *testing.T) {
 	rows := []dataset.Row{
 		{Values: map[string]string{"company": "Acme Ltd"}, Source: "https://a.example",
 			Quote: "Acme Ltd exists"},
 		{Values: map[string]string{"company": "Beta GmbH"}, Source: "https://b.example"},
 	}
-	db, id := datasetSession(t, rows, true)
-
-	card, err := eval.Score(context.Background(), db, id, eval.Options{})
-	if err != nil {
-		t.Fatal(err)
+	db, id := datasetSession(t, nil, true)
+	err := db.WithTx(context.Background(), func(ctx context.Context, tx store.Tx) error {
+		return tx.InsertRows(ctx, id, rows)
+	})
+	if err == nil {
+		t.Fatal("the store accepted a row with no quote; §11.5's floor is not enforced")
 	}
-	m := datasetMetric(t, card, "dataset row integrity")
-	if !m.Regression {
-		t.Error("a row with no quote is not a hard regression")
-	}
-	if m.Value != 50 {
-		t.Errorf("integrity = %v, want 50", m.Value)
-	}
-	if !card.Failed() {
-		t.Error("the scorecard does not fail")
+	if !strings.Contains(err.Error(), "quote") {
+		t.Errorf("error = %v, want it to name the quote constraint", err)
 	}
 }
 

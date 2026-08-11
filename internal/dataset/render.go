@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -22,17 +23,17 @@ import (
 
 // WriteCSV renders the dataset as CSV.
 //
-// Lossy on purpose, and it says so in three ways: a `sources` count, a
-// `contested` column naming the fields the sources disagreed about, and a first
-// line of comments... no. Comments are not CSV. The columns are the mechanism,
-// and the JSON form is the one to use when a disagreement matters.
+// Lossy on purpose, and it says so with columns rather than with prose, because
+// a CSV has nowhere to put prose: a `sources` count and a `contested` column
+// naming the fields the sources disagreed about. The JSON form is the one to use
+// when a disagreement matters.
 func (d Dataset) WriteCSV(w io.Writer, provenance bool) error {
 	cw := csv.NewWriter(w)
 
 	header := append([]string{}, d.Schema.Names()...)
-	header = append(header, "sources", "contested")
+	header = append(header, ReservedColumns[:2]...)
 	if provenance {
-		header = append(header, "source_urls", "quote")
+		header = append(header, ReservedColumns[2:]...)
 	}
 	if err := cw.Write(header); err != nil {
 		return err
@@ -48,8 +49,9 @@ func (d Dataset) WriteCSV(w io.Writer, provenance bool) error {
 			strings.Join(row.ContestedFields(), " "))
 		if provenance {
 			rec = append(rec,
-				strings.Join(row.Sources, " "),
-				cleanCell(firstQuote(row)))
+				cleanCell(strings.Join(row.Sources, " ")),
+				cleanCell(row.SupportingQuote()),
+				cleanCell(row.Disagreements()))
 		}
 		if err := cw.Write(rec); err != nil {
 			return err
@@ -58,6 +60,15 @@ func (d Dataset) WriteCSV(w io.Writer, provenance bool) error {
 	cw.Flush()
 	return cw.Error()
 }
+
+// ReservedColumns are the names WriteCSV appends after the schema's own.
+//
+// Schema.Validate refuses a field with one of these names. It did not, and
+// `--schema 'company:text!,sources:text,quote:text'` produced a header with two
+// columns called `sources` and two called `quote` — any reader keyed by name
+// silently takes one of them, which is a misparse rather than an error.
+// The first two are always written; the rest are added by --provenance.
+var ReservedColumns = [...]string{"sources", "contested", "source_urls", "quote", "disagreements"}
 
 // cleanCell removes what a spreadsheet would misread, and defuses what it would
 // EXECUTE.
@@ -83,36 +94,39 @@ func (d Dataset) WriteCSV(w io.Writer, provenance bool) error {
 // programmatically sees as one harmless character. Escaping the formula instead
 // would change the value; refusing the row would lose data over a rendering
 // concern.
+// The whitespace half is one call, not five: strings.Fields splits on every
+// unicode space, so the four ReplaceAll lines that preceded it were replacing
+// characters it was about to split on anyway. Kept as a note because the
+// replacements read like they were doing something.
 func cleanCell(s string) string {
-	s = strings.ReplaceAll(s, "\r\n", " ")
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\r", " ")
-	s = strings.ReplaceAll(s, "\t", " ")
-	s = strings.TrimSpace(strings.Join(strings.Fields(s), " "))
-	return defuseFormula(s)
+	return defuseFormula(strings.Join(strings.Fields(s), " "))
 }
 
 // formulaLeaders are the characters a spreadsheet reads as "evaluate this".
-const formulaLeaders = "=+-@\t\r"
+//
+// Tab and carriage return belong on this list in principle and are not on it:
+// cleanCell has already replaced both, three lines above every call.
+const formulaLeaders = "=+-@"
 
 // defuseFormula prefixes an apostrophe to a value a spreadsheet would evaluate.
+//
+// A NUMBER is never defused, and the first version of this did defuse them —
+// `-` is both a formula leader and a minus sign, so every loss, decline and
+// negative delta in a dataset became `'-1200000`, which a spreadsheet reads as
+// text: no sum, no sort, no chart. coerceNumber produces exactly that string for
+// a bracketed loss, so it was the common case rather than a corner.
+//
+// Parsing the value is the test rather than special-casing the type, because a
+// text column can legitimately hold a negative number and the rendering does not
+// know which column it is in.
 func defuseFormula(s string) string {
-	if s == "" {
+	if s == "" || !strings.ContainsRune(formulaLeaders, rune(s[0])) {
 		return s
 	}
-	if strings.ContainsRune(formulaLeaders, rune(s[0])) {
-		return "'" + s
+	if _, err := strconv.ParseFloat(s, 64); err == nil {
+		return s
 	}
-	return s
-}
-
-func firstQuote(m Merged) string {
-	for _, src := range m.Sources {
-		if q := m.Quotes[src]; q != "" {
-			return q
-		}
-	}
-	return ""
+	return "'" + s
 }
 
 // WriteJSON renders the complete form.
@@ -140,6 +154,13 @@ func (d Dataset) Summary() string {
 	}
 	if c := d.Contested(); c > 0 {
 		fmt.Fprintf(&b, "; %d with sources that disagree", c)
+	}
+	if v := d.WithVariants(); v > 0 {
+		// Reported because it is the merge showing its work. A row assembled from
+		// "Acme Ltd" and "Acme Limited" was a JUDGEMENT, and a summary that
+		// mentioned only the disagreements would hide every decision the merge
+		// made on its own — which are the ones a reader would want to spot-check.
+		fmt.Fprintf(&b, "; %d merged sources that named the entity differently", v)
 	}
 	b.WriteString(".")
 
@@ -227,7 +248,7 @@ func Markdown(d Dataset) string {
 	}
 	if d.Contested() > 0 {
 		b.WriteString("\n⚠ marks a value the sources disagree about. Every value is kept; " +
-			"the JSON output carries all of them.\n")
+			"the JSON output carries all of them, each with the sources that gave it.\n")
 	}
 	return b.String()
 }

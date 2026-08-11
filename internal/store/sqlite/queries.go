@@ -1350,7 +1350,7 @@ func (t *queries) InsertRows(ctx context.Context, sessionID string, rows []datas
 		}
 		if _, err := t.q.ExecContext(ctx, insert, core.NewRowID(), sessionID,
 			nullStr(optional(r.LeadID)), base+int64(i), string(values),
-			r.Source, r.Quote, r.QuoteOffset, at); err != nil {
+			r.Source, r.Quote, r.QuoteOffset, toMicros(at)); err != nil {
 			return err
 		}
 	}
@@ -1372,12 +1372,14 @@ func (t *queries) ListRows(ctx context.Context, sessionID string) ([]dataset.Row
 		var (
 			leadID sql.NullString
 			values string
+			at     int64
 			r      dataset.Row
 		)
 		if err := rows.Scan(&leadID, &values, &r.Source, &r.Quote,
-			&r.QuoteOffset, &r.RetrievedAt); err != nil {
+			&r.QuoteOffset, &at); err != nil {
 			return nil, err
 		}
+		r.RetrievedAt = fromMicros(at)
 		if err := json.Unmarshal([]byte(values), &r.Values); err != nil {
 			return nil, fmt.Errorf("store: decode row values: %w", err)
 		}

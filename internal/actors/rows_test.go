@@ -335,3 +335,108 @@ func TestTheActorInDatasetModeStoresRowsAndNoClaims(t *testing.T) {
 			len(d.Rows), d.Extracted)
 	}
 }
+
+// -----------------------------------------------------------------------------
+// M9 review, second pass
+// -----------------------------------------------------------------------------
+
+// TestATruncatedRowReplyKeepsTheRowsThatCompleted.
+//
+// The claim path was given a salvage step after a live 3B model lost three mining
+// calls in four to output truncation; the row path was written without one, and a
+// row is BIGGER than a claim — one quote plus a value per field — so asking for
+// twenty-five makes truncation the normal case rather than a corner. Every
+// complete row in the reply below was being discarded along with the cut-off one.
+//
+// Safe for the §11.5 reason: a salvaged row still has to carry a quote that is in
+// the passage and still has to fill a key.
+func TestATruncatedRowReplyKeepsTheRowsThatCompleted(t *testing.T) {
+	out := mineRows(t, `{"rows":[
+	  {"values":{"company":"Acme Ltd","revenue":"1200000"},
+	   "quote":"Acme Ltd, incorporated on 3 March 1998, reported revenue of"},
+	  {"values":{"company":"Beta GmbH","revenue":"900000"},
+	   "quote":"Beta GmbH was founded in 2004 and had revenue of 900,000 euros"},
+	  {"values":{"company":"Gamma Inc"},"quote":"Gamma Inc did not disc`)
+
+	if len(out.Rows) != 2 {
+		t.Fatalf("rows = %d, want the two that completed: %+v", len(out.Rows), out.Rows)
+	}
+	if out.Rows[0].Values["company"] != "Acme Ltd" || out.Rows[1].Values["company"] != "Beta GmbH" {
+		t.Errorf("wrong rows salvaged: %+v", out.Rows)
+	}
+}
+
+// TestATruncatedRowKeepsFailingTheQuoteCheck. Salvage must not become a way in.
+func TestATruncatedRowKeepsFailingTheQuoteCheck(t *testing.T) {
+	out := mineRows(t, `{"rows":[
+	  {"values":{"company":"Delta SA","revenue":"5000000"},
+	   "quote":"Delta SA reported revenue of five million"},
+	  {"values":{"company":"Acme Ltd"},"quote":"Acme Ltd, incorporated on 3 March 1998, reported`)
+	for _, r := range out.Rows {
+		if r.Values["company"] == "Delta SA" {
+			t.Error("a fabricated row survived because the reply was truncated")
+		}
+	}
+}
+
+// TestAnEmptyRowSetIsNotAFailedChunk. "No rows here" is a legitimate answer and
+// the prompt asks for it; reporting it as a parse failure turns a correct response
+// into a failed chunk.
+func TestAnEmptyRowSetIsNotAFailedChunk(t *testing.T) {
+	for _, reply := range []string{`{"rows":[]}`, `[]`, "```json\n[]\n```"} {
+		m := &actors.RowMiner{LLM: rowModel(reply), SessionID: "s1", Schema: rowSchema(t)}
+		out, err := m.Mine(context.Background(), actors.RowInput{
+			Lead:      core.Lead{ID: "l1", SessionID: "s1", Query: "company revenues"},
+			SourceURL: "https://example.org/a",
+			Text:      companyPage,
+		})
+		if err != nil {
+			t.Errorf("reply %q: %v", reply, err)
+		}
+		if len(out.Rows) != 0 {
+			t.Errorf("reply %q produced rows: %+v", reply, out.Rows)
+		}
+	}
+}
+
+// TestValuesDroppedByTheirTypeAreCounted.
+//
+// A row could arrive with three fields, lose two to coercion, keep its key and be
+// reported as accepted — so the run said the extraction was clean and delivered
+// empty cells. Rejected rows had a counter; silently emptied ones did not, and the
+// honest reading (the schema's types do not match what these sources write) was
+// invisible.
+func TestValuesDroppedByTheirTypeAreCounted(t *testing.T) {
+	out := mineRows(t, `{"rows":[
+	  {"values":{"company":"Acme Ltd","revenue":"roughly one point two million",
+	             "founded":"some time in the nineties"},
+	   "quote":"Acme Ltd, incorporated on 3 March 1998, reported revenue of"}
+	]}`)
+	if len(out.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(out.Rows))
+	}
+	if out.Coerced != 2 {
+		t.Errorf("coerced = %d, want 2 (the revenue and the date)", out.Coerced)
+	}
+	if out.Rejected != 0 {
+		t.Errorf("rejected = %d; a coerced value is not a rejected row", out.Rejected)
+	}
+}
+
+// TestCoercionIsCountedEvenForARowThatIsThenRejected: the count is about the
+// schema, so a row that also fails the key check must not hide it.
+func TestCoercionIsCountedEvenForARowThatIsThenRejected(t *testing.T) {
+	out := mineRows(t, `{"rows":[
+	  {"values":{"revenue":"roughly one point two million"},
+	   "quote":"Acme Ltd, incorporated on 3 March 1998, reported revenue of"}
+	]}`)
+	if len(out.Rows) != 0 {
+		t.Fatalf("a row with no key was kept: %+v", out.Rows)
+	}
+	if out.Coerced != 1 {
+		t.Errorf("coerced = %d, want 1", out.Coerced)
+	}
+	if out.Rejected != 1 {
+		t.Errorf("rejected = %d, want 1", out.Rejected)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/dataset"
 	"github.com/lajosdeme/mole/internal/llm"
+	"github.com/lajosdeme/mole/internal/llm/jsonish"
 	"github.com/lajosdeme/mole/internal/pricing"
 )
 
@@ -62,6 +64,15 @@ type RowOutput struct {
 	// model has started inventing table contents, which is the failure mode this
 	// output mode makes hardest to notice.
 	Rejected int
+	// Coerced counts VALUES dropped because the field's declared type could not
+	// hold them — a `number` field given "roughly $1.2m".
+	//
+	// Counted because it was not: a row could arrive with four fields, lose three
+	// to coercion, keep its key, and be reported as an accepted row. The dataset
+	// then had empty cells with no number anywhere saying why, and the honest
+	// reading — the schema's types do not match what the sources write — was
+	// invisible. Rejected rows had a counter; silently emptied ones did not.
+	Coerced int
 }
 
 const defaultMaxRows = 25
@@ -111,7 +122,8 @@ func (m *RowMiner) Mine(ctx context.Context, in RowInput) (RowOutput, error) {
 	for _, cand := range proposed {
 		out.Proposed++
 
-		row, ok := m.accept(ctx, in, cand)
+		row, coerced, ok := m.accept(ctx, in, cand)
+		out.Coerced += coerced
 		if !ok {
 			out.Rejected++
 			continue
@@ -126,14 +138,17 @@ func (m *RowMiner) Mine(ctx context.Context, in RowInput) (RowOutput, error) {
 }
 
 // accept applies §11.5 and the schema to one proposed row.
-func (m *RowMiner) accept(ctx context.Context, in RowInput, cand minedRow) (dataset.Row, bool) {
+// The int is how many values the field types could not hold — dropped, and
+// counted so the caller can report it.
+func (m *RowMiner) accept(ctx context.Context, in RowInput, cand minedRow) (dataset.Row, int, bool) {
 	match, ok := FindQuote(in.Text, cand.Quote)
 	if !ok {
 		m.logger().DebugContext(ctx, "row rejected: quote not found in source",
 			"source", in.SourceURL, "quote", truncateForLog(cand.Quote))
-		return dataset.Row{}, false
+		return dataset.Row{}, 0, false
 	}
 
+	var coerced int
 	values := map[string]string{}
 	for _, f := range m.Schema.Fields {
 		raw, present := cand.Values[f.Name]
@@ -145,6 +160,9 @@ func (m *RowMiner) accept(ctx context.Context, in RowInput, cand minedRow) (data
 			// A value the field's type cannot hold is dropped rather than
 			// carried as text: a number column holding "roughly $1.2m" merges
 			// against nothing and renders as a value somebody will sort.
+			coerced++
+			m.logger().DebugContext(ctx, "value dropped: not a "+string(f.Type),
+				"source", in.SourceURL, "field", f.Name, "value", truncateForLog(raw))
 			continue
 		}
 		if v != "" {
@@ -165,7 +183,7 @@ func (m *RowMiner) accept(ctx context.Context, in RowInput, cand minedRow) (data
 	if !hasKey {
 		m.logger().DebugContext(ctx, "row rejected: no key field",
 			"source", in.SourceURL)
-		return dataset.Row{}, false
+		return dataset.Row{}, coerced, false
 	}
 
 	return dataset.Row{
@@ -174,7 +192,7 @@ func (m *RowMiner) accept(ctx context.Context, in RowInput, cand minedRow) (data
 		Quote:       TruncateQuote(match.Text),
 		QuoteOffset: int64(in.Offset + match.Offset),
 		LeadID:      in.Lead.ID,
-	}, true
+	}, coerced, true
 }
 
 // coerceField normalises a value to its declared type.
@@ -199,36 +217,111 @@ func coerceField(f dataset.Field, raw string) (string, bool) {
 }
 
 // coerceNumber accepts what a page actually writes and returns a bare number.
+//
+// Three rules here are repairs, each measured through the whole accept path.
+//
+// A comma is not always a thousands separator. Stripping every comma turned the
+// German and French "1,5" into 15 — a silent factor of ten, and worse than a
+// drop, because the merge then records the wrong figure as a DISAGREEMENT with
+// the correct source and Cell.Others makes it look adjudicated.
+//
+// A magnitude suffix is only a magnitude when it is attached. "500 m" is five
+// hundred metres and became five hundred million, because the spaces were
+// removed before the suffix was looked for.
+//
+// ParseFloat accepts "NaN", "Infinity", "-Inf" and hexadecimal floats. None of
+// those is a figure a page states, and +Inf in a number column poisons every
+// moment computed over it afterwards.
 func coerceNumber(v string) (string, bool) {
-	clean := strings.NewReplacer(",", "", " ", "", " ", "", "$", "", "£", "", "€", "",
+	v = strings.TrimSpace(v)
+	// Attached or not, decided before any whitespace is touched.
+	attached := !strings.ContainsAny(v, " \u00a0")
+
+	clean := strings.NewReplacer(" ", "", "\u00a0", "", "$", "", "£", "", "€", "",
 		"%", "").Replace(v)
-	// A leading + or a trailing minus for negatives ("1200-") is not worth
-	// supporting; a parenthesised negative is, because accounts write it.
+
+	// A parenthesised negative, which is how accounts write a loss.
 	if strings.HasPrefix(clean, "(") && strings.HasSuffix(clean, ")") {
 		clean = "-" + strings.Trim(clean, "()")
 	}
-	// Magnitude suffixes, because a page writes "$1.2m" far more often than
-	// "1200000" and dropping the row would lose the fact rather than the noise.
+
 	mult := 1.0
-	switch {
-	case strings.HasSuffix(strings.ToLower(clean), "bn"):
-		clean, mult = clean[:len(clean)-2], 1e9
-	case strings.HasSuffix(strings.ToLower(clean), "m"):
-		clean, mult = clean[:len(clean)-1], 1e6
-	case strings.HasSuffix(strings.ToLower(clean), "k"):
-		clean, mult = clean[:len(clean)-1], 1e3
-	case strings.HasSuffix(strings.ToLower(clean), "b"):
-		clean, mult = clean[:len(clean)-1], 1e9
+	if attached {
+		lower := strings.ToLower(clean)
+		switch {
+		case strings.HasSuffix(lower, "bn"):
+			clean, mult = clean[:len(clean)-2], 1e9
+		case strings.HasSuffix(lower, "m"):
+			clean, mult = clean[:len(clean)-1], 1e6
+		case strings.HasSuffix(lower, "k"):
+			clean, mult = clean[:len(clean)-1], 1e3
+		case strings.HasSuffix(lower, "b"):
+			clean, mult = clean[:len(clean)-1], 1e9
+		}
 	}
+
+	clean, ok := normaliseSeparators(clean)
+	if !ok {
+		return "", false
+	}
+
 	n, err := strconv.ParseFloat(clean, 64)
-	if err != nil {
+	if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
+		return "", false
+	}
+	// Hexadecimal float literals ("0x1p10") parse and are not a figure any page
+	// states about a company.
+	if strings.ContainsAny(clean, "xX") {
 		return "", false
 	}
 	n *= mult
-	if n == float64(int64(n)) && n < 1e15 && n > -1e15 {
+	if n == math.Trunc(n) && math.Abs(n) < 1e15 {
 		return strconv.FormatInt(int64(n), 10), true
 	}
 	return strconv.FormatFloat(n, 'f', -1, 64), true
+}
+
+// normaliseSeparators decides what a comma and a period mean in one number.
+//
+// The rules a human reader applies without noticing:
+//
+//	1,234.56   comma groups, period decimal      (English)
+//	1.234,56   period groups, comma decimal      (German, Spanish, Italian)
+//	1,5        one separator, two digits after   -> decimal
+//	1,234      one separator, three digits after -> grouping, and AMBIGUOUS
+//
+// The last line is the honest limit: "1,234" is one thousand two hundred and
+// thirty-four in English and 1.234 in German, and nothing in the string says
+// which. Grouping is chosen because it is the commoner intent on the pages this
+// reads, and the choice is written down here rather than left in the code.
+func normaliseSeparators(s string) (string, bool) {
+	lastComma := strings.LastIndex(s, ",")
+	lastDot := strings.LastIndex(s, ".")
+
+	switch {
+	case lastComma < 0 && lastDot < 0:
+		return s, true
+	case lastComma >= 0 && lastDot >= 0:
+		// Both present: the rightmost is the decimal point.
+		if lastComma > lastDot {
+			return strings.ReplaceAll(strings.ReplaceAll(s, ".", ""), ",", "."), true
+		}
+		return strings.ReplaceAll(s, ",", ""), true
+	case lastComma >= 0:
+		// A comma alone. Exactly two digits after it is a decimal comma;
+		// three is a group.
+		switch len(s) - lastComma - 1 {
+		case 3:
+			return strings.ReplaceAll(s, ",", ""), true
+		case 1, 2:
+			return strings.Replace(s, ",", ".", 1), true
+		default:
+			// Several commas, or an unusual grouping: treat them all as groups.
+			return strings.ReplaceAll(s, ",", ""), true
+		}
+	default:
+		return s, true
+	}
 }
 
 // coerceDate normalises to an ISO date, or to a bare year when that is all the
@@ -237,6 +330,17 @@ func coerceNumber(v string) (string, bool) {
 // A year is a legitimate answer — "founded 1998" is what most pages say — so
 // demanding a full date would drop the commonest form of the commonest date
 // field.
+//
+// AMBIGUITY, stated rather than left to be discovered: "03/04/2024" is read as
+// 3 April, not 4 March. Day-first is tried before month-first, so a US source
+// writing 4 March is recorded as 3 April — and because month-first is still in
+// the list, "04/13/2024" falls through to it and IS read as 13 April. The same
+// column can therefore mix both conventions depending on whether the day exceeds
+// twelve.
+//
+// There is no way to resolve this from the string. It is left day-first because
+// that is the majority convention outside the United States, and a schema that
+// needs certainty should ask for an ISO date in its field description.
 func coerceDate(v string) (string, bool) {
 	for _, layout := range []string{
 		"2006-01-02", "2006/01/02", "02/01/2006", "01/02/2006",
@@ -253,7 +357,8 @@ func coerceDate(v string) (string, bool) {
 		}
 	}
 	if len(v) == 4 {
-		if _, err := strconv.Atoi(v); err == nil {
+		// Digits only: Atoi accepts "+123" and "-123", and neither is a year.
+		if n, err := strconv.Atoi(v); err == nil && n >= 1000 && v[0] != '+' && v[0] != '-' {
 			return v, true
 		}
 	}
@@ -275,38 +380,63 @@ type rowResponse struct {
 
 // parseRows reads the reply, tolerating the wrapping a model adds and nothing
 // about the content.
+//
+// Same three-step shape as parseMined, and for the same measured reason. Rows are
+// mined by the cheap tier, a row is BIGGER than a claim — one quote plus a value
+// per field — and asking for twenty-five of them makes hitting the output ceiling
+// mid-JSON the normal case rather than a corner. The strict path discards every
+// row in a truncated reply, including the twenty that arrived whole; parseMined
+// was given this path after it cost three mining calls in four on a live 3B model,
+// and nothing about that finding was specific to claims.
+//
+// Salvaging is safe for exactly the §11.5 reason: a recovered row still has to
+// carry a quote that appears verbatim in the passage and still has to fill a key,
+// so a half-parsed one dies at accept() regardless.
 func parseRows(raw string) ([]minedRow, error) {
-	body := extractJSONObject(raw)
-	if body == "" {
-		return nil, fmt.Errorf("actors: no row list in the model's reply: %s",
-			truncateForLog(raw))
+	// "no rows here" is a legitimate answer and the prompt asks for it. A model
+	// that says so as a bare `[]` must not be reported as a failed chunk.
+	if empty, ok := emptyRowSet(raw); ok {
+		return empty, nil
 	}
-	var resp rowResponse
-	if err := json.Unmarshal([]byte(body), &resp); err != nil {
-		return nil, fmt.Errorf("actors: parse rows: %w; reply was: %s",
-			err, truncateForLog(body))
+	if body := jsonish.ExtractObject(raw); body != "" {
+		var resp rowResponse
+		if err := json.Unmarshal([]byte(body), &resp); err == nil {
+			return resp.Rows, nil
+		}
 	}
-	return resp.Rows, nil
+	if rows := salvageRows(raw); len(rows) > 0 {
+		return rows, nil
+	}
+	return nil, fmt.Errorf("actors: no usable rows in the model's reply: %s",
+		truncateForLog(raw))
 }
 
-// extractJSONObject finds the outermost object that parses.
+func emptyRowSet(raw string) ([]minedRow, bool) {
+	body := strings.TrimSpace(jsonish.StripFence(raw))
+	var asObject rowResponse
+	if err := json.Unmarshal([]byte(body), &asObject); err == nil && len(asObject.Rows) == 0 {
+		return nil, true
+	}
+	var asArray []minedRow
+	if err := json.Unmarshal([]byte(body), &asArray); err == nil && len(asArray) == 0 {
+		return nil, true
+	}
+	return nil, false
+}
+
+// salvageRows pulls every complete row object out of a possibly-truncated reply.
 //
-// The same lenience the coderunner needed for the same reason: a model told to
-// print JSON prints a sentence and then JSON often enough that refusing would be
-// a fight rather than a boundary.
-func extractJSONObject(raw string) string {
-	for start := 0; start < len(raw); start++ {
-		if raw[start] != '{' {
-			continue
-		}
-		for end := len(raw) - 1; end > start; end-- {
-			if raw[end] != '}' {
-				continue
-			}
-			if candidate := raw[start : end+1]; json.Valid([]byte(candidate)) {
-				return candidate
-			}
+// jsonish.Objects returns nested objects as well as the wrapper, so a row's own
+// `values` object comes back too — and unmarshals into a minedRow with no quote,
+// which the filter here drops and accept() would drop again.
+func salvageRows(raw string) []minedRow {
+	var out []minedRow
+	for _, obj := range jsonish.Objects(raw) {
+		var r minedRow
+		if err := json.Unmarshal([]byte(obj), &r); err == nil &&
+			r.Quote != "" && len(r.Values) > 0 {
+			out = append(out, r)
 		}
 	}
-	return ""
+	return out
 }

@@ -150,7 +150,12 @@ func (a *WebActor) Run(ctx context.Context, lead core.Lead) (*Result, error) {
 			// The cap is per SOURCE, so one verbose page cannot dominate the
 			// graph (§ Budget.MaxClaimsPerSource). Applying it per chunk let a
 			// ten-chunk document contribute ten times the intended share.
-			remainingClaims := budget.MaxClaimsPerSource - len(summary.Claims)
+			// Per SOURCE, counting rows as well as claims. The dataset branch
+			// below appended to summary.Rows and never to summary.Claims, so this
+			// stayed pinned at the full allowance for every chunk — which is
+			// verbatim the failure the comment above says was already fixed once,
+			// reintroduced by the mode that does not use the field it counts.
+			remainingClaims := budget.MaxClaimsPerSource - len(summary.Claims) - summary.Rows
 			if remainingClaims <= 0 {
 				break
 			}
@@ -558,6 +563,16 @@ func (a *WebActor) mineRowChunk(
 	// inventing table contents.
 	res.Stats.ClaimsProposed += out.Proposed
 	res.Stats.ClaimsRejected += out.Rejected
+	res.Stats.ValuesCoerced += out.Coerced
+	if out.Coerced > 0 {
+		// Warn, not debug. A schema whose types do not match what the sources
+		// write produces a dataset full of empty cells and no error anywhere, and
+		// the per-value detail is a debug line inside RowMiner that nobody runs at
+		// debug. The count is the part that has to be visible by default.
+		a.logger().WarnContext(ctx, "values dropped: the field type could not hold them",
+			"lead", lead.ID, "source", src.url, "dropped", out.Coerced,
+			"hint", "the schema's declared types may not match what these sources write")
+	}
 	if err != nil {
 		return nil, out.Usage, err
 	}

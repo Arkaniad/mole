@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/lajosdeme/mole/internal/dataset"
@@ -34,27 +35,20 @@ import (
 // session has no rows, and a metric reading 0% would be indistinguishable from a
 // dataset session whose extraction failed entirely.
 func datasetMetrics(ctx context.Context, st store.Store, sessionID string) []Metric {
-	var (
-		schema dataset.Schema
-		isSet  bool
-		rows   []dataset.Row
-	)
-	err := st.Read(ctx, func(ctx context.Context, q store.Queries) error {
-		var err error
-		schema, isSet, err = q.DatasetSchema(ctx, sessionID)
-		if err != nil || !isSet {
-			return err
-		}
-		rows, err = q.ListRows(ctx, sessionID)
-		return err
-	})
-	if err != nil || !isSet {
+	d, err := store.LoadDataset(ctx, st, sessionID, dataset.Options{})
+	if errors.Is(err, store.ErrNotDataset) {
 		return nil
 	}
-
-	d := dataset.Merge(schema, rows, dataset.Options{})
-
-	metrics := []Metric{rowIntegrity(rows), mergeCollapse(d), corroboration(d), disagreement(d)}
+	if err != nil {
+		// A failed read is not the same fact as "this is a report session", and
+		// returning nil for both made a broken database look like a mode nobody
+		// asked about. Named, so a reader can tell.
+		return []Metric{{
+			Name: "dataset row integrity", Status: Blocked,
+			Reason: "could not read the session's rows: " + err.Error(),
+		}}
+	}
+	metrics := []Metric{rowIntegrity(d), mergeCollapse(d), corroboration(d), disagreement(d)}
 
 	// The merge's accuracy, reported as measured elsewhere. Naming it rather than
 	// omitting it: a scorecard that listed four dataset numbers and not the one
@@ -75,23 +69,18 @@ func datasetMetrics(ctx context.Context, st store.Store, sessionID string) []Met
 // dataset metric that is a hard regression: extraction already refuses those, so a
 // stored row without one means something bypassed the check rather than that a
 // page was thin.
-func rowIntegrity(rows []dataset.Row) Metric {
+func rowIntegrity(d dataset.Dataset) Metric {
 	m := Metric{Name: "dataset row integrity", Status: Measured, Unit: "%"}
-	if len(rows) == 0 {
+	if d.Extracted == 0 {
 		m.Status = NotApplicable
 		m.Detail = "no rows extracted"
 		return m
 	}
-	var quoted int
-	for _, r := range rows {
-		if r.Quote != "" && r.Source != "" {
-			quoted++
-		}
-	}
-	m.Value = 100 * float64(quoted) / float64(len(rows))
-	m.Detail = fmt.Sprintf("%d of %d rows carry a source and a verbatim quote",
-		quoted, len(rows))
-	if quoted != len(rows) {
+	quoted := d.Extracted - d.Unquoted
+	m.Value = 100 * float64(quoted) / float64(d.Extracted)
+	m.Detail = fmt.Sprintf("%d of %d extracted rows carry a source and a verbatim quote",
+		quoted, d.Extracted)
+	if d.Unquoted > 0 {
 		m.Regression = true
 	}
 	return m
