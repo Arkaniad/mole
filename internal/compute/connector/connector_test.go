@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -234,34 +235,60 @@ func TestFreeTextColumnsAreFlaggedAndTheirValuesWithheld(t *testing.T) {
 	dir := t.TempDir()
 	// Every rule needs a column only it can flag, or the rule is untested.
 	//
-	//   resolution   long prose that REPEATS — length rule only
-	//   session_ref  short, unique, unremarkable name — near-unique rule only
+	//   resolution      long prose that REPEATS — length rule only
+	//   session_ref     short, unique, unremarkable name — near-unique rule only
 	//   customer_email  short and unique but under a matching name — name rule only
-	//   order_id     a long unique NUMBER, which every rule above would catch
-	//                if the type guard that exempts numbers were removed
-	write(t, dir, "tickets.csv",
-		"region,order_id,session_ref,customer_email,resolution,status\n"+
-			"north,90210000000000001,sess-8f2a91c40031,ada@example.org,\"Reissued the invoice against the correct billing period and credited the difference\",open\n"+
-			"south,90210000000000002,sess-11b7d3e90a55,bob@example.org,\"Shipped a second replacement unit after the first also failed on arrival\",closed\n"+
-			"north,90210000000000003,sess-6c40aa7b21f8,cy@example.org,\"Reissued the invoice against the correct billing period and credited the difference\",open\n"+
-			"east,90210000000000004,sess-d9e2074fc613,di@example.org,\"Shipped a second replacement unit after the first also failed on arrival\",closed\n")
+	//   ssn             a NUMBER under a matching name, which the type rule used
+	//                   to exempt before the name rule was ever consulted
+	//   order_id        a unique number: not prose, but its extremes are two
+	//                   specific records, so it gets no range
+	//   region, status  categories with enough records per value to name
+	//
+	// Twenty rows, because the range floor needs rows/distinct >= 5 and a
+	// four-row fixture cannot clear it for anything.
+	var body strings.Builder
+	body.WriteString("region,order_id,ssn,session_ref,customer_email,resolution,status\n")
+	regions := []string{
+		"north", "north", "north", "north", "north", "north", "north", "north", "north", "north",
+		"south", "south", "south", "south", "south", "south",
+		"east", "east", "east", "east",
+	}
+	prose := []string{
+		"Reissued the invoice against the correct billing period and credited the difference",
+		"Shipped a second replacement unit after the first also failed on arrival",
+	}
+	for i, region := range regions {
+		status := "open"
+		if i%2 == 1 {
+			status = "closed"
+		}
+		fmt.Fprintf(&body, "%s,9021000000000%04d,%09d,sess-%012x,p%02d@example.org,%q,%s\n",
+			region, i, 100000000+i*7, i*2654435761, i, prose[i%2], status)
+	}
+	write(t, dir, "tickets.csv", body.String())
 
 	tbl, ok := ingest(t, dir).Table("tickets")
 	if !ok {
 		t.Fatal("no tickets table")
 	}
 	for _, tc := range []struct {
-		col      string
-		freeText bool
-		why      string
+		col           string
+		freeText      bool
+		rangeWithheld bool
+		why           string
 	}{
-		{"resolution", true, "prose, flagged on average length alone"},
-		{"session_ref", true, "different in every row — listing it lists the rows"},
-		{"customer_email", true, "flagged by name; listing its top values lists people"},
-		{"order_id", false, "a number has a range, not contents; it is not free text " +
-			"however long or unique it is"},
-		{"region", false, "a category — excluding it would cost real analysis"},
-		{"status", false, "a category"},
+		{"resolution", true, true, "prose, flagged on average length alone"},
+		{"session_ref", true, true, "different in every row — listing it lists the rows"},
+		{"customer_email", true, true, "flagged by name; listing its top values lists people"},
+		// The finding this test missed. A social security number is a personal
+		// identifier whether it is stored as text or as an integer, and the name
+		// rule used to sit behind a type check that exempted every number.
+		{"ssn", true, true, "flagged by name, and its type is the least relevant fact about it"},
+		// Not prose, so not free text — but every value is unique, so its
+		// minimum and maximum are two specific records and no range crosses.
+		{"order_id", false, true, "unique per row: its extremes identify two records"},
+		{"region", false, false, "a category with four or more records per value"},
+		{"status", false, false, "a category"},
 	} {
 		col, ok := tbl.Column(tc.col)
 		if !ok {
@@ -270,12 +297,34 @@ func TestFreeTextColumnsAreFlaggedAndTheirValuesWithheld(t *testing.T) {
 		if col.FreeText != tc.freeText {
 			t.Errorf("%s: FreeText = %v, want %v (%s)", tc.col, col.FreeText, tc.freeText, tc.why)
 		}
-		if col.FreeText && (col.Min != "" || col.Max != "") {
-			t.Errorf("%s is free text but the profile carries values: min=%q max=%q",
-				tc.col, col.Min, col.Max)
+		// The range is a separate decision from the flag, and has to be:
+		// order_id is not prose and still must not have its extremes reported.
+		if withheld := col.Min == "" && col.Max == ""; withheld != tc.rangeWithheld {
+			t.Errorf("%s: range withheld = %v, want %v (%s) — min=%q max=%q",
+				tc.col, withheld, tc.rangeWithheld, tc.why, col.Min, col.Max)
 		}
-		if !col.FreeText && col.Min == "" {
-			t.Errorf("%s: no range recorded, so no template can bound a query on it", tc.col)
+	}
+}
+
+// TestASmallTableGetsNoRangesAtAll. Under a floor of five, a table with fewer
+// than five rows has no value that describes five records — so nothing in it can
+// be named, whatever the column looks like.
+func TestASmallTableGetsNoRangesAtAll(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "tiny.csv",
+		"name,dept,salary\n"+
+			"Ada Lovelace,eng,100\n"+
+			"Jan Kowalski,ops,200\n"+
+			"Grace Hopper,eng,150\n")
+
+	tbl, ok := ingest(t, dir).Table("tiny")
+	if !ok {
+		t.Fatal("no tiny table")
+	}
+	for _, col := range tbl.Columns {
+		if col.Min != "" || col.Max != "" {
+			t.Errorf("%s carries a range from a three-row table: min=%q max=%q — "+
+				"these are individual records", col.Name, col.Min, col.Max)
 		}
 	}
 }

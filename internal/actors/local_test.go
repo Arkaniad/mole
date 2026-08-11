@@ -634,3 +634,80 @@ func TestAMetricAloneCanBeCited(t *testing.T) {
 		t.Errorf("quote = %q, want the metric line", got)
 	}
 }
+
+// -----------------------------------------------------------------------------
+// M8 review regressions
+// -----------------------------------------------------------------------------
+
+// TestTheSchemaPromptCarriesNoRecordValues.
+//
+// The planning prompt is a SECOND path to a model, taken on every local run
+// before any query exists, and nothing on it consulted the k-anonymity floor.
+// A review probe registered a six-column CSV and the prompt carried:
+//
+//	name:  text,      from "Ada Lovelace" to "Jan Kowalski"
+//	ssn:   integer,   from "123456789" to "623456789"
+//	phone: integer,   from "5551230001" to "5551230006"
+//	dob:   timestamp, from "1987-04-02T00:00:00Z" to "1994-05-15T00:00:00Z"
+//
+// Two causes, both fixed: IsFreeText returned false on the TYPE check before the
+// personal-identifier name list was consulted, so no number or timestamp was
+// ever considered; and the profile recorded MIN/MAX for any column that was not
+// prose, with no floor at all.
+func TestTheSchemaPromptCarriesNoRecordValues(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "staff.csv")
+	body := "name,ssn,phone,dob,dept,salary\n"
+	for i := 0; i < 40; i++ {
+		dept := "eng"
+		if i%2 == 1 {
+			dept = "ops"
+		}
+		body += fmt.Sprintf("Person %02d Surname,%09d,555123%04d,19%02d-04-02,%s,%d\n",
+			i, 100000000+i*7, i, 60+i, dept, 100+i)
+	}
+	if err := os.WriteFile(src, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := connector.Ingest(context.Background(), "staff", src, filepath.Join(dir, "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fl := scriptedModel(`[]`, quoteAGroupLine)
+	a := &actors.LocalComputeActor{Connectors: registry{c}, LLM: fl}
+	if _, err := a.Run(context.Background(), localLead()); err != nil {
+		t.Fatal(err)
+	}
+	prompt := fl.calls[0].Messages[0].Text
+
+	// Forty rows with forty distinct values per identifying column: no value
+	// covers five records, so none of them may be named.
+	for _, secret := range []string{
+		"Person 00 Surname", "Person 39 Surname",
+		"100000000", "100000273", // first and last ssn
+		"5551230000", "5551230039",
+		"1960-04-02", "1999-04-02",
+	} {
+		if strings.Contains(prompt, secret) {
+			t.Errorf("a record value reached the prompt: %q", secret)
+		}
+	}
+	// dept has 20 records per value, so it may be named — otherwise the model
+	// cannot tell a category from a continuous column and plans nothing.
+	if !strings.Contains(prompt, "dept") {
+		t.Errorf("the categorical column is missing from the schema entirely:\n%s", prompt)
+	}
+	// And a column named for a personal identifier is flagged whatever its type.
+	for _, col := range []string{"ssn", "phone"} {
+		tbl, _ := c.Table("staff")
+		cc, ok := tbl.Column(col)
+		if !ok {
+			t.Fatalf("column %s missing", col)
+		}
+		if !cc.FreeText {
+			t.Errorf("%s (%s) is not flagged; its type is the least relevant fact about it",
+				col, cc.Type)
+		}
+	}
+}

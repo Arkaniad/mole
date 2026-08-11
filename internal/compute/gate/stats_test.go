@@ -24,13 +24,22 @@ import (
 
 // comparisonQuery is the shape hypothesis.KindGroupCompare renders. Written out
 // rather than imported so a change to the template shows up as a failure here
-// instead of silently removing the tests.
+// instead of silently removing the tests — which is what happened when the
+// template gained COUNT(measure) and a centring offset.
+//
+// Both of those are load-bearing, not decoration. COUNT(measure) is n, because
+// SUM skips NULL and COUNT(*) does not; and the measure is centred on its own
+// global mean so that Σx² does not cancel at large magnitudes.
 func comparisonQuery() string {
+	centre := `(SELECT AVG(spend) FROM samples)`
 	return fmt.Sprintf(
-		`SELECT region AS bucket, COUNT(*) AS n, AVG(spend) AS mean,
-		        SUM(spend) AS %s, SUM(spend * spend) AS %s
+		`SELECT region AS bucket, COUNT(*) AS n, COUNT(spend) AS %s,
+		        AVG(spend) AS mean, MIN(%s) AS %s,
+		        SUM(spend - %s) AS %s,
+		        SUM((spend - %s) * (spend - %s)) AS %s
 		   FROM samples GROUP BY 1 ORDER BY n DESC`,
-		stats.SumColumn, stats.SumSqColumn)
+		stats.CountColumn, centre, stats.OffsetColumn,
+		centre, stats.SumColumn, centre, centre, stats.SumSqColumn)
 }
 
 // samplesDB builds two groups with a known separation. `north` and `south` each
@@ -172,6 +181,15 @@ func TestNoTestWithoutTheSufficientStatistics(t *testing.T) {
 		{"sum without the sum of squares",
 			fmt.Sprintf(`SELECT region AS bucket, COUNT(*) AS n, SUM(spend) AS %s
 			   FROM samples GROUP BY 1 ORDER BY n DESC`, stats.SumColumn)},
+		// The sums without a measure count. COUNT(*) is not n: SUM skips NULL
+		// and COUNT(*) does not, and using the latter reported a large
+		// significant difference between two groups that were identical apart
+		// from where their blanks were.
+		{"sums without a measure count",
+			fmt.Sprintf(`SELECT region AS bucket, COUNT(*) AS n,
+			        SUM(spend) AS %s, SUM(spend * spend) AS %s
+			   FROM samples GROUP BY 1 ORDER BY n DESC`,
+				stats.SumColumn, stats.SumSqColumn)},
 		{"one group", `SELECT region AS bucket, COUNT(*) AS n FROM samples
 			 WHERE region = 'north' GROUP BY 1`},
 		{"no grouping at all", `SELECT COUNT(*) AS n, AVG(spend) AS mean FROM samples`},

@@ -267,8 +267,8 @@ func (a *LocalComputeActor) runCode(
 	}
 	if out.Empty() {
 		return "", "", note, fmt.Errorf(
-			"the analysis produced nothing that may cross (%d output(s) refused)",
-			len(out.Dropped))
+			"the analysis produced nothing that may cross (%d declared and %d undeclared "+
+				"output(s) refused)", len(out.Dropped), out.Undeclared)
 	}
 
 	note.finding = describeCodeFinding(p, out)
@@ -318,8 +318,8 @@ func describeCodeFinding(p hypothesis.Plan, out coderunner.Output) string {
 	}
 	line := fmt.Sprintf("%s — ran in the sandbox, %d metric(s) and %d statistical result(s)",
 		q, len(out.Metrics), len(out.Findings))
-	if len(out.Dropped) > 0 {
-		line += fmt.Sprintf(", %d output(s) refused as undeclared", len(out.Dropped))
+	if n := len(out.Dropped) + out.Undeclared; n > 0 {
+		line += fmt.Sprintf(", %d output(s) refused", n)
 	}
 	for _, f := range out.Findings {
 		line += fmt.Sprintf("; %s %s", f.Name, f.Verdict)

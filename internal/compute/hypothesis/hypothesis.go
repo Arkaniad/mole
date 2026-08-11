@@ -118,18 +118,36 @@ var Templates = []Template{
 			{Name: "key", Role: RoleCategory},
 			{Name: "measure", Role: RoleMeasure},
 		},
-		// The two sums are not decoration. §4 asks for significance and effect
-		// size on a local claim, and a mean per group cannot supply either: a
-		// count, a sum and a sum of squares can, and all three are aggregates
-		// §12.1 already permits. Without them the gate reports two means and a
-		// model calls the larger one a finding.
+		// The sums are not decoration. §4 asks for significance and effect size
+		// on a local claim, and a mean per group supplies neither: a count, a
+		// sum and a sum of squares do, and all three are aggregates §12.1
+		// already permits.
+		//
+		// Two details are repairs rather than choices.
+		//
+		// COUNT(measure) as well as COUNT(*), because SUM skips NULL and
+		// COUNT(*) does not — using the latter as n reported a large significant
+		// difference between two groups that were identical apart from where
+		// their blanks were.
+		//
+		// The measure is CENTRED on its own global mean before being summed.
+		// Variance is shift-invariant, and Σx² over uncentred values around ten
+		// million loses so much precision to cancellation that the computed
+		// variance came out ten times too small — which the test then read as a
+		// significant effect. The offset is carried in its own column so the
+		// envelope can add it back rather than having to be told.
 		render: func(t string, c map[string]string) string {
+			centre := fmt.Sprintf("(SELECT AVG(%s) FROM %s)", c["measure"], t)
 			return fmt.Sprintf(
-				"SELECT %[1]s AS bucket, COUNT(*) AS n, AVG(%[2]s) AS mean, "+
-					"MIN(%[2]s) AS lowest, MAX(%[2]s) AS highest, "+
-					"SUM(%[2]s) AS %[4]s, SUM(%[2]s * %[2]s) AS %[5]s FROM %[3]s "+
-					"GROUP BY 1 ORDER BY n DESC",
-				c["key"], c["measure"], t, stats.SumColumn, stats.SumSqColumn)
+				"SELECT %[1]s AS bucket, COUNT(*) AS n, COUNT(%[2]s) AS %[6]s, "+
+					"AVG(%[2]s) AS mean, MIN(%[2]s) AS lowest, MAX(%[2]s) AS highest, "+
+					"MIN(%[7]s) AS %[8]s, "+
+					"SUM(%[2]s - %[7]s) AS %[4]s, "+
+					"SUM((%[2]s - %[7]s) * (%[2]s - %[7]s)) AS %[5]s "+
+					"FROM %[3]s GROUP BY 1 ORDER BY n DESC",
+				c["key"], c["measure"], t,
+				stats.SumColumn, stats.SumSqColumn, stats.CountColumn,
+				centre, stats.OffsetColumn)
 		},
 	},
 	{

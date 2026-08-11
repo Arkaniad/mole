@@ -62,11 +62,14 @@ func classify(query string) (shape, error) {
 
 	var aggregates int
 	for i, col := range sel.Columns {
-		if col.Star.IsValid() {
-			// Bare `SELECT *`. Not an aggregate under any reading, and in a
-			// grouped statement it expands to columns nothing constrains.
+		if starred(col) {
+			// A star in any spelling. The bare form was the only one checked,
+			// and `SELECT t.*, COUNT(*) FROM t GROUP BY 1` therefore passed
+			// classification with a two-element isKey while the driver returned
+			// one column per expanded column — then panicked with an index out
+			// of range, holding the whole result set in memory.
 			return shape{}, refuse("not an aggregate",
-				"SELECT * returns rows; §12.1 lets only aggregates cross")
+				"a star expands to rows; §12.1 lets only aggregates cross")
 		}
 		if isAggregateCall(col.Expr) {
 			aggregates++
@@ -96,6 +99,14 @@ func classify(query string) (shape, error) {
 						"SQLite answers it from an arbitrary row", i+1))
 			}
 		}
+		if sh.countCol < 0 {
+			// The same requirement as the grouped case, and for the same reason:
+			// without COUNT(*) there is no record count to compare against the
+			// k-anonymity floor, so an aggregate over one record is
+			// indistinguishable from an aggregate over a million.
+			return shape{}, refuse("ungrouped without COUNT(*)",
+				"the reporting floor needs a record count; select COUNT(*)")
+		}
 		return sh, nil
 	}
 
@@ -121,6 +132,18 @@ func classify(query string) (shape, error) {
 			"the k-anonymity floor needs a record count per bucket; select COUNT(*)")
 	}
 	return sh, nil
+}
+
+// starred reports whether a result column is a star in any of its spellings:
+// bare `*`, or qualified `t.*` / `main.t.*`.
+func starred(col *sql.ResultColumn) bool {
+	if col.Star.IsValid() {
+		return true
+	}
+	if ref, ok := col.Expr.(*sql.QualifiedRef); ok && ref.Star.IsValid() {
+		return true
+	}
+	return false
 }
 
 func isAggregateCall(e sql.Expr) bool {

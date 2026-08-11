@@ -50,13 +50,24 @@ const (
 // implementations of this rule would drift, and the one that drifted would be
 // the one deciding whether prose crosses to a model.
 func IsFreeText(name, label string, t ColumnType, rows, distinct int64, avgLen float64) bool {
-	if t != TypeText {
-		// A number or a timestamp has a range, not contents. Whatever it
-		// reveals, it does not reveal it by being listed.
-		return false
-	}
+	// The NAME rule first, and for every type. It used to sit behind a
+	// `t != TypeText` early return, on the reasoning that "a number or a
+	// timestamp has a range, not contents" — which is true about shape and
+	// false about disclosure. A review probe registered a CSV with headers
+	// `ssn,phone,dob` and the profile sent
+	//
+	//	ssn: integer, 3 distinct, from "123456789" to "623456789"
+	//	dob: timestamp, from "1987-04-02T00:00:00Z" to "1994-05-15T00:00:00Z"
+	//
+	// to a hosted API. A social security number is a personal identifier
+	// whether it is stored as text or as an integer, and the type it happens to
+	// parse as is the least relevant fact about it.
 	if freeTextName.MatchString(name) || (label != "" && freeTextName.MatchString(sanitize(label))) {
 		return true
+	}
+	if t != TypeText {
+		// The SHAPE rules below are about prose, which only text can be.
+		return false
 	}
 	if avgLen >= freeTextAvgLen {
 		return true
@@ -115,7 +126,7 @@ func profileColumn(ctx context.Context, db *sql.DB, qt string, c *Column, rows i
 	c.AvgLen = avgLen.Float64
 	c.FreeText = IsFreeText(c.Name, c.Label, c.Type, rows, c.Distinct, c.AvgLen)
 
-	if c.FreeText {
+	if c.FreeText || !rangeIsSafe(rows, c.Distinct) {
 		return nil
 	}
 
@@ -127,6 +138,34 @@ func profileColumn(ctx context.Context, db *sql.DB, qt string, c *Column, rows i
 	c.Min = truncateScalar(min.String)
 	c.Max = truncateScalar(max.String)
 	return nil
+}
+
+// RangeFloor is the number of records a value must describe before the profile
+// will record it.
+//
+// The same number as the aggregation gate's k-anonymity floor, and for the same
+// reason — but this is a SECOND place it has to be applied, which was the whole
+// finding. §12.1's floor guards the envelope; the profile is a different path to
+// a model (it is rendered into the planning prompt on every local run, before
+// any query exists) and nothing on it consulted a floor at all.
+const RangeFloor = 5
+
+// rangeIsSafe reports whether MIN and MAX describe values rather than records.
+//
+// A minimum is one specific record's value. It is safe to report only when
+// every distinct value in the column covers enough records that naming the
+// extremes identifies nobody: with 5 regions over 10,000 rows each value covers
+// 2,000 records, and with 3 names over 3 rows each covers one.
+//
+// The old rule was "report it unless the column is free text", which published
+// a real person's name, their employer's smallest salary, and the earliest date
+// of birth in the table.
+func rangeIsSafe(rows, distinct int64) bool {
+	if rows < RangeFloor || distinct <= 0 {
+		return false
+	}
+	// Each distinct value covers rows/distinct records on average.
+	return rows/distinct >= RangeFloor
 }
 
 func truncateScalar(s string) string {

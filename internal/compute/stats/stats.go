@@ -18,6 +18,7 @@
 package stats
 
 import (
+	"errors"
 	"fmt"
 	"math"
 )
@@ -33,6 +34,19 @@ import (
 const (
 	SumColumn   = "sum_measure"
 	SumSqColumn = "sum_sq_measure"
+	// CountColumn is the count of NON-NULL measure values.
+	//
+	// Required, and separate from COUNT(*). The test used COUNT(*) as n while
+	// Sum and SumSq came from SUM(measure), which skips NULL — so any NULL in
+	// the measure desynchronised them and the mean came out proportionally too
+	// low. Measured: two groups whose every non-null value was 10, one with half
+	// its measure NULL, reported "means 10 and 5 … significant, p<0.001, effect
+	// size 1.41 (large)". Every blank cell in a CSV becomes a NULL, so this was
+	// the default state of a real export.
+	CountColumn = "n_measure"
+	// OffsetColumn is the constant subtracted from the measure before summing.
+	// See Group.Offset — it is what keeps Σx² from cancelling.
+	OffsetColumn = "measure_offset"
 )
 
 // Group is one bucket's summary. n, Σx and Σx² are sufficient statistics for
@@ -42,6 +56,14 @@ type Group struct {
 	N     int64
 	Sum   float64
 	SumSq float64
+	// Offset is a constant subtracted from every value before Sum and SumSq
+	// were accumulated.
+	//
+	// Variance and differences of means are shift-invariant, so a query can
+	// centre its measure and hand over sums that do not cancel — which is the
+	// only real fix for the precision failure documented on Variance. The mean
+	// is recovered by adding it back.
+	Offset float64
 }
 
 // Mean of the group.
@@ -49,7 +71,7 @@ func (g Group) Mean() float64 {
 	if g.N == 0 {
 		return 0
 	}
-	return g.Sum / float64(g.N)
+	return g.Sum/float64(g.N) + g.Offset
 }
 
 // Variance is the SAMPLE variance (n−1).
@@ -59,18 +81,52 @@ func (g Group) Mean() float64 {
 // is of it, while this treats a group as a sample drawn from a process. A
 // t-test on a population variance overstates its own confidence.
 func (g Group) Variance() float64 {
+	v, _ := g.variance()
+	return v
+}
+
+// RelativeErrorLimit is how much of the variance may be lost to cancellation
+// before the result is treated as unresolvable.
+//
+// One percent. Σx² − (Σx)²/n subtracts two nearly equal large numbers, and the
+// first-order relative error is about eps·Σx²/ss — so the accuracy depends on
+// how large the values are compared to how much they vary, not on n.
+const RelativeErrorLimit = 0.01
+
+// variance reports the SAMPLE variance (n−1) and whether float64 could resolve
+// it.
+//
+// Not the population variance the envelope's column summaries use: those
+// describe the result set, which is all there is of it, while this treats a
+// group as a sample drawn from a process. A t-test on a population variance
+// overstates its own confidence.
+//
+// The second return exists because the old guard — clamp a negative result to
+// zero — caught only the end state and missed the regime that matters. Measured,
+// on 1000-row groups with true variance 0.667 and a true p of 0.171:
+//
+//	mean 1e6   variance 0.667668   not significant, p = 0.177   correct
+//	mean 1e7   variance 0.064064   SIGNIFICANT,     p = 6.2e-10  fabricated
+//	mean 3e7   variance 0          not significant, p = 0.83
+//	mean 1e8   variance 0          refused
+//
+// At values around ten million — revenue in cents, populations, byte counts —
+// the gate reported a large significant effect for data with none. Unresolvable
+// and zero are different facts and are now reported as different facts.
+func (g Group) variance() (float64, bool) {
 	if g.N < 2 {
-		return 0
+		return 0, false
 	}
 	n := float64(g.N)
-	// Σx² − (Σx)²/n, over n−1.
 	ss := g.SumSq - (g.Sum*g.Sum)/n
-	if ss < 0 {
-		// Cancellation. Real, for large values with small spread, and it means
-		// the variance is too small to resolve at float64 rather than negative.
-		return 0
+	if ss <= 0 {
+		return 0, ss == 0 && g.SumSq == 0
 	}
-	return ss / (n - 1)
+	// eps·Σx²/ss estimates how much of ss is rounding rather than signal.
+	if g.SumSq > 0 && (math.Nextafter(1, 2)-1)*g.SumSq/ss > RelativeErrorLimit {
+		return 0, false
+	}
+	return ss / (n - 1), true
 }
 
 // Verdict is what the test supports.
@@ -144,10 +200,31 @@ type Test struct {
 // Reports false when the groups cannot support a test at all — fewer than two
 // records, or no variation in either.
 func Welch(measure string, a, b Group) (Test, bool) {
+	t, err := WelchOrReason(measure, a, b)
+	return t, err == nil
+}
+
+// ErrNoTest is returned by WelchOrReason when the groups cannot support a test.
+var ErrNoTest = errors.New("stats: no test")
+
+// WelchOrReason is Welch with the reason it could not run.
+//
+// "No test" with no reason is the sort of silence this codebase exists to avoid:
+// a caller cannot tell "both groups are constant" from "the values are too large
+// for float64 to resolve their spread", and those lead to opposite actions —
+// one says there is nothing to find, the other says the query should centre its
+// measure.
+func WelchOrReason(measure string, a, b Group) (Test, error) {
 	if a.N < 2 || b.N < 2 {
-		return Test{}, false
+		return Test{}, fmt.Errorf("%w: a group has fewer than two records", ErrNoTest)
 	}
-	va, vb := a.Variance(), b.Variance()
+	va, okA := a.variance()
+	vb, okB := b.variance()
+	if !okA || !okB {
+		return Test{}, fmt.Errorf("%w: the spread of %q could not be resolved at this "+
+			"magnitude; the query should subtract a constant from the measure before "+
+			"summing it", ErrNoTest, measure)
+	}
 	na, nb := float64(a.N), float64(b.N)
 
 	se2 := va/na + vb/nb
@@ -161,7 +238,7 @@ func Welch(measure string, a, b Group) (Test, bool) {
 		// Welch–Satterthwaite denominator zero, so removing either guard alone
 		// changes nothing. Both stay — this one names the condition, and the
 		// other catches whatever else can make df undefined.
-		return Test{}, false
+		return Test{}, fmt.Errorf("%w: neither group varies", ErrNoTest)
 	}
 	se := math.Sqrt(se2)
 
@@ -171,7 +248,7 @@ func Welch(measure string, a, b Group) (Test, bool) {
 	//
 	(va*va)/(na*na*(na-1)) + (vb*vb)/(nb*nb*(nb-1)))
 	if math.IsNaN(df) || df <= 0 {
-		return Test{}, false
+		return Test{}, fmt.Errorf("%w: the degrees of freedom are undefined", ErrNoTest)
 	}
 
 	p := twoTailedT(t, df)
@@ -183,12 +260,20 @@ func Welch(measure string, a, b Group) (Test, bool) {
 		d = (a.Mean() - b.Mean()) / pooled
 	}
 
-	// A 95% interval on the difference of means. Approximated with 1.96 rather
-	// than the exact t quantile: at the sample sizes this reports a verdict for
-	// (MinGroupN and up) the difference is under 3%, and an inverse-t would be
-	// another approximation of its own.
+	// A 95% interval on the difference of means, using the t quantile for THIS
+	// df rather than the normal's 1.96.
+	//
+	// The approximation was justified in a comment as "under 3%", which was both
+	// wrong and the wrong thing to care about: it made the interval disagree with
+	// the verdict beside it. Measured at n=20/20 (df=38, t* = 2.0244):
+	//
+	//	NOT distinguishable from chance (Welch t = 1.96, p = 0.057), 95% CI 0.00 to 6.36
+	//
+	// an interval excluding zero next to a null verdict, in one sentence a claim
+	// has to quote. The quantile is inverted from the same distribution the
+	// p-value comes from, so the two cannot disagree by construction.
 	diff := a.Mean() - b.Mean()
-	half := 1.96 * se
+	half := tQuantile(df) * se
 
 	test := Test{
 		Kind: "welch t-test", Measure: measure,
@@ -199,7 +284,7 @@ func Welch(measure string, a, b Group) (Test, bool) {
 	}
 	test.Verdict = verdictFor(p, a.N, b.N)
 	test.Summary = summarize(test)
-	return test, true
+	return test, nil
 }
 
 func verdictFor(p float64, na, nb int64) Verdict {
@@ -272,6 +357,26 @@ func pval(p float64) string {
 		return "<0.001"
 	}
 	return fmt.Sprintf("%.3f", p)
+}
+
+// tQuantile is the two-sided 95% critical value for df degrees of freedom —
+// the t solving twoTailedT(t, df) = Alpha.
+//
+// Found by bisection on the same function that produces the p-value, so the
+// interval and the verdict are answers about one distribution rather than two.
+// Twenty iterations over [0, 400] resolves it to ~4e-4, well inside the
+// precision anything downstream prints.
+func tQuantile(df float64) float64 {
+	lo, hi := 0.0, 400.0
+	for i := 0; i < 60; i++ {
+		mid := (lo + hi) / 2
+		if twoTailedT(mid, df) > Alpha {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	return (lo + hi) / 2
 }
 
 // -----------------------------------------------------------------------------

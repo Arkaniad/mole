@@ -3,6 +3,7 @@ package coderunner_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -69,13 +70,56 @@ func TestOnlyDeclaredNamesCross(t *testing.T) {
 	if len(out.Findings) != 1 || out.Findings[0].Name != "seasonality" {
 		t.Fatalf("findings = %+v, want only the declared test", out.Findings)
 	}
-	// Refusals are reported. A plan that declared the wrong names must read as a
-	// mismatch, not as an analysis that found nothing.
-	if len(out.Dropped) != 3 {
-		t.Errorf("Dropped = %v, want the three refused names", out.Dropped)
+	// Refusals are reported — as a COUNT for anything the plan did not declare.
+	// The names are the script's own text, and repeating them made the key a
+	// channel out of the sandbox: a review probe returned 12KB of records
+	// through it.
+	if out.Undeclared != 3 {
+		t.Errorf("Undeclared = %d, want 3", out.Undeclared)
+	}
+	if len(out.Dropped) != 0 {
+		t.Errorf("Dropped = %v, want empty — every refusal here was undeclared", out.Dropped)
 	}
 	if len(out.Notes) == 0 || !strings.Contains(out.Notes[0], "did not declare") {
 		t.Errorf("nothing explains the refusals: %v", out.Notes)
+	}
+
+	// And nothing the script chose appears anywhere in what crosses.
+	passage := out.Text("")
+	for _, chosen := range []string{"ada@example.org", "note_for_row_7", "undeclared_test"} {
+		if strings.Contains(passage, chosen) {
+			t.Errorf("text the script chose reached the passage: %q\n%s", chosen, passage)
+		}
+	}
+}
+
+// TestAnUndeclaredKeyIsNotRepeatedAnywhere is the review finding, kept as a
+// property rather than as a note in a commit message.
+//
+// The whole output contract rests on a script being unable to choose what text
+// comes back. A key is text the script chose, so echoing a refused key defeats
+// the contract exactly as accepting its value would — and the package comment
+// claimed the opposite in the specific case this asserts.
+func TestAnUndeclaredKeyIsNotRepeatedAnywhere(t *testing.T) {
+	const secret = "patient_7 ada7@example.org cardiology 1987-04-02 91234"
+	out, err := coderunner.Parse(
+		`{"metrics":{"ok":1,"`+secret+`":0},`+
+			`"tests":[{"name":"`+secret+`","n":50,"statistic":1,"p":0.01,"effect_size":0.3}]}`,
+		coderunner.Contract{Metrics: []string{"ok"}, Tests: []string{"seasonality"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Undeclared != 2 {
+		t.Errorf("Undeclared = %d, want 2", out.Undeclared)
+	}
+	rendered, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, where := range []string{string(rendered), out.Text("")} {
+		if strings.Contains(where, "ada7@example.org") {
+			t.Fatalf("the script's own text crossed:\n%s", where)
+		}
 	}
 }
 

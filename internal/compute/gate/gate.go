@@ -252,6 +252,20 @@ func Aggregate(ctx context.Context, db *sql.DB, query string, opts Options) (Agg
 	if err != nil {
 		return AggregateEnvelope{}, err
 	}
+	if len(names) != len(shape.isKey) {
+		// The whole accumulator indexes shape.isKey by result-column position,
+		// so this correspondence is load-bearing and was unchecked. A star
+		// expands to one result column per table column while the parse tree
+		// holds one, and the mismatch surfaced as an index panic rather than a
+		// refusal — with the result set already in memory.
+		//
+		// classify refuses every star spelling now. This stays because the
+		// invariant is what the code depends on, not the one construct that was
+		// found to break it.
+		return AggregateEnvelope{}, refuse("result shape does not match the statement",
+			fmt.Sprintf("%d result column(s) for %d in the statement; the statement "+
+				"expands to something this cannot describe", len(names), len(shape.isKey)))
+	}
 
 	acc := newAccumulator(names, shape, opts)
 	var n int64
@@ -371,19 +385,53 @@ func (a *accumulator) scan(rows *sql.Rows) error {
 	}
 
 	row := make([]cell, len(a.names))
-	var key []string
 	for i, v := range raw {
 		text, num, isNum, isNull := coerce(v)
 		row[i] = cell{text: text, num: num, isNum: isNum, null: isNull}
-		if a.shape.isKey[i] && !isNull {
-			key = append(key, text)
-		} else if a.shape.isKey[i] {
-			key = append(key, "")
-		}
 	}
 	a.rows = append(a.rows, row)
-	a.keyOf = append(a.keyOf, strings.Join(key, "\x1f"))
+	a.keyOf = append(a.keyOf, a.groupKey(row))
 	return nil
+}
+
+// NullLabel is how a NULL group key is reported.
+//
+// A label and not an empty string, because they are different groups and were
+// being merged into one. See groupKey.
+const NullLabel = "(none)"
+
+// groupKey encodes a row's grouping columns injectively.
+//
+// Both properties here are repairs. The key used to be the values joined with
+// \x1f, with NULL mapped to "", and both halves of that lost information:
+//
+//   - NULL and "" produced the same key, so two distinct SQL groups merged into
+//     one bucket. With three records each and a floor of five, the merged bucket
+//     of six CLEARED the floor — a k-anonymity bypass — and reported one group's
+//     mean under a label belonging to neither.
+//   - A plain join is not injective. ["x", "y\x1fz"] and ["x\x1fy", "z"] both
+//     produce "x\x1fy\x1fz", so two result rows merged and the bucket carried
+//     the sum of their counts under one of the two keys.
+//
+// Length-prefixing each part makes the encoding injective, and a distinct
+// marker byte keeps NULL apart from every possible string.
+func (a *accumulator) groupKey(row []cell) string {
+	var b strings.Builder
+	for i := range a.names {
+		if i >= len(a.shape.isKey) || !a.shape.isKey[i] {
+			continue
+		}
+		if row[i].null {
+			b.WriteString("N;")
+			continue
+		}
+		b.WriteString("V")
+		b.WriteString(strconv.Itoa(len(row[i].text)))
+		b.WriteString(":")
+		b.WriteString(row[i].text)
+		b.WriteString(";")
+	}
+	return b.String()
 }
 
 // coerce normalizes a scanned cell. The text form is what feeds distinctness
@@ -418,6 +466,10 @@ type group struct {
 	count    int64
 	measures map[string]float64
 	rows     []int
+	// collided marks a bucket that two result rows mapped onto, which an
+	// injective key makes impossible. If it is ever set the shape analysis was
+	// wrong and the bucket describes neither group.
+	collided bool
 }
 
 // envelope builds the result, and returns the rows it was allowed to describe
@@ -487,11 +539,27 @@ func groupFrom(b Bucket) (stats.Group, bool) {
 	if !ok {
 		return stats.Group{}, false
 	}
+	// n is the count of NON-NULL measure values, never COUNT(*).
+	//
+	// b.Count is COUNT(*) and Sum comes from SUM(measure), which skips NULL. The
+	// two were used together, so a group with half its measure missing reported
+	// a mean half its real value — and the test called the resulting difference
+	// large and significant. Required rather than defaulted: a query that did
+	// not supply it cannot support a test.
+	n, ok := b.Measures[stats.CountColumn]
+	if !ok || n < 2 {
+		return stats.Group{}, false
+	}
 	name := strings.Join(b.Key, " / ")
 	if name == "" {
 		return stats.Group{}, false
 	}
-	return stats.Group{Name: name, N: b.Count, Sum: sum, SumSq: sumSq}, true
+	return stats.Group{
+		Name: name, N: int64(n), Sum: sum, SumSq: sumSq,
+		// Absent means the query did not centre its measure, which is safe:
+		// Variance refuses rather than reporting a cancelled figure.
+		Offset: b.Measures[stats.OffsetColumn],
+	}, true
 }
 
 // measureName is what the compared column is called, for the sentence. The
@@ -514,6 +582,20 @@ func (a *accumulator) measureName() string {
 // returns the row indexes the statistics may be computed over.
 func (a *accumulator) describedRows(env *AggregateEnvelope) []int {
 	if !a.shape.grouped {
+		// The floor applies here too, and used to not.
+		//
+		// `describedRows` returned every row for an ungrouped statement without
+		// asking how many RECORDS were aggregated — so the overview template
+		// over a one-row table published that row's value five times, as the
+		// minimum, the maximum, the mean, the median and the total. RowCount is
+		// the number of RESULT rows (one), so nothing downstream noticed.
+		if n, ok := a.recordCount(); ok && n < a.opts.KFloor {
+			env.Notes = append(env.Notes, fmt.Sprintf(
+				"the query aggregated %d record(s), fewer than the reporting floor of "+
+					"%d, so its numeric summaries describe individual records and were "+
+					"withheld (§12.1)", n, a.opts.KFloor))
+			return nil
+		}
 		return a.allRows()
 	}
 
@@ -526,7 +608,11 @@ func (a *accumulator) describedRows(env *AggregateEnvelope) []int {
 			g = &group{measures: map[string]float64{}}
 			for j := range a.names {
 				if a.shape.isKey[j] {
-					g.key = append(g.key, row[j].text)
+					if row[j].null {
+						g.key = append(g.key, NullLabel)
+					} else {
+						g.key = append(g.key, row[j].text)
+					}
 				}
 			}
 			byKey[k] = g
@@ -534,6 +620,13 @@ func (a *accumulator) describedRows(env *AggregateEnvelope) []int {
 		}
 		if a.shape.countCol >= 0 {
 			g.count += int64(row[a.shape.countCol].num)
+			if len(g.rows) > 0 {
+				// Two result rows sharing a bucket key. SQL already grouped the
+				// result, so this cannot happen with an injective encoding — and
+				// when the encoding was lossy it was how the floor got bypassed.
+				// Recorded rather than trusted.
+				g.collided = true
+			}
 		}
 		for j, c := range row {
 			if a.shape.isKey[j] || j == a.shape.countCol || !c.isNum {
@@ -555,6 +648,16 @@ func (a *accumulator) describedRows(env *AggregateEnvelope) []int {
 	other := Bucket{Other: true}
 	for _, k := range order {
 		g := byKey[k]
+		if g.collided {
+			// Cannot happen with an injective key. Folded into `other` rather
+			// than reported, because a bucket describing two groups is exactly
+			// the shape that bypassed the floor when the key was lossy.
+			other.Count += g.count
+			env.Suppressed++
+			env.Notes = append(env.Notes, "a bucket matched more than one result row "+
+				"and was withheld; the grouping could not be resolved")
+			continue
+		}
 		if g.count < a.opts.KFloor {
 			other.Count += g.count
 			env.Suppressed++
@@ -732,6 +835,20 @@ func (a *accumulator) statsFor(i int, name string, described []int, env *Aggrega
 				"records; withheld (§12.1)", name))
 	}
 	return c
+}
+
+// recordCount is how many records an ungrouped aggregate summarized, from its
+// COUNT(*) column. Reports false when the statement did not select one, in which
+// case the floor cannot be applied and the statement is refused by classify.
+func (a *accumulator) recordCount() (int64, bool) {
+	if a.shape.countCol < 0 || len(a.rows) != 1 {
+		return 0, false
+	}
+	c := a.rows[0][a.shape.countCol]
+	if !c.isNum {
+		return 0, false
+	}
+	return int64(c.num), true
 }
 
 func (a *accumulator) allRows() []int {

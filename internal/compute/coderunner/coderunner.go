@@ -111,10 +111,14 @@ type Output struct {
 	Metrics  map[string]float64 `json:"metrics,omitempty"`
 	Findings []Finding          `json:"findings,omitempty"`
 
-	// Dropped names every key refused, so a plan that declared the wrong things
-	// reads as a mismatch rather than as an empty result.
+	// Dropped names refused outputs the plan DID declare — mole's own strings,
+	// safe to repeat, and the case a model needs to see to fix its script.
 	Dropped []string `json:"dropped,omitempty"`
-	Notes   []string `json:"notes,omitempty"`
+	// Undeclared counts refused outputs the plan did not declare. A count and
+	// not a list: an undeclared key is text the script chose, and repeating it
+	// would make the key a channel out of the sandbox.
+	Undeclared int      `json:"undeclared,omitempty"`
+	Notes      []string `json:"notes,omitempty"`
 }
 
 // Empty reports whether anything crossed.
@@ -153,7 +157,16 @@ func Parse(raw string, c Contract) (Output, error) {
 	for name, rawVal := range r.Metrics {
 		switch {
 		case !c.allows("metric", name):
-			out.Dropped = append(out.Dropped, name)
+			// The NAME is not recorded, only the fact of a refusal.
+			//
+			// It used to be appended verbatim, joined into a note, and printed
+			// into the passage handed to the miner — so a script could return
+			// anything it liked by putting it in a KEY instead of a value. A
+			// review probe got 12KB of records out through this, past a package
+			// comment claiming that emitting {"ada@example.org": 1} "gets
+			// nothing out, because the key is not on the list". The key was not
+			// on the list and got out anyway.
+			out.Undeclared++
 		default:
 			v, ok := finiteNumber(rawVal)
 			if !ok {
@@ -169,7 +182,7 @@ func Parse(raw string, c Contract) (Output, error) {
 
 	for _, t := range r.Tests {
 		if !c.allows("test", t.Name) {
-			out.Dropped = append(out.Dropped, t.Name)
+			out.Undeclared++
 			continue
 		}
 		stat, okS := finiteNumber(t.Statistic)
@@ -190,11 +203,16 @@ func Parse(raw string, c Contract) (Output, error) {
 		})
 	}
 
+	if out.Undeclared > 0 {
+		out.Notes = append(out.Notes, fmt.Sprintf(
+			"%d output(s) the plan did not declare were refused; their names are not "+
+				"repeated here, because a name the script chose is text the script chose",
+			out.Undeclared))
+	}
 	if len(out.Dropped) > 0 {
 		sort.Strings(out.Dropped)
 		out.Notes = append(out.Notes, fmt.Sprintf(
-			"%d output(s) were refused because the plan did not declare them, or "+
-				"they were not finite numbers: %s",
+			"%d declared output(s) were refused for not being finite numbers: %s",
 			len(out.Dropped), strings.Join(out.Dropped, ", ")))
 	}
 	return out, nil
