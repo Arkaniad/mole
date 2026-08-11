@@ -250,6 +250,28 @@ take the writer.
 separate service" is a stated product property; a cgo driver would trade it away
 for marginal speed.
 
+**The pricing table is data, and a wrong rate is invisible.** Every ledger row
+reconciles against every other, `mole eval` passes, and only the provider's invoice
+disagrees — so DeepSeek's entries assert in dollars-per-million (the unit the price
+list is published in) rather than in the nano-dollars the table stores. Three things
+that are not obvious:
+
+- **Four entries for two models.** The ledger prices what the API *returned*
+  (`deepseek-chat` comes back as `deepseek-v4-flash`), and the pre-flight check that
+  refuses `--usd` for an unpriced model reads what was *configured*. Register only
+  one of the two names and half the mechanism silently does nothing.
+- **`perMTok` is wrong for DeepSeek.** Its cache multipliers are Anthropic's
+  contract — read at 0.1× input — and a DeepSeek cache hit is 2% of a miss. The
+  helper would have overcharged cache reads fivefold.
+- **Cache reads round up.** $0.0028/MTok is 2.8 nano-dollars per token and the rate
+  is an `int64`. 3 over-bills by 7%; 2 would under-bill by 29%. Under-billing is the
+  one direction this table may not fail in.
+
+An alias is the provider's to repoint without telling anyone, so `deepseek-reasoner`
+is registered at the dearer model's rates even though it currently resolves to the
+cheaper one. An estimate that is too high costs a briefly under-used budget; one
+that is too low lets work start that cannot be paid for.
+
 **Reasoning models get their own token allowance.** qwen3, gemma4 and the o-series
 emit a chain of thought against the *same* output allowance as the answer, so
 `MaxTokens: 4096` can buy 4096 tokens of thinking and an empty message — measured
