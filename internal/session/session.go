@@ -630,11 +630,16 @@ func (r *Runner) actorsFor(spec Spec, web *actors.WebActor) map[core.ActorType]a
 	out := map[core.ActorType]actors.Actor{core.ActorWeb: web}
 	for _, t := range spec.ActorTypes {
 		if t == core.ActorLocalCompute && r.Local != nil {
-			// Registered directly, not copied. The Academic arm below copies
-			// because it carries a SessionID that scopes the claims it writes;
-			// LocalComputeActor takes the session from the lead, so a per-session
-			// copy would imitate the shape of that rule without its reason.
-			out[core.ActorLocalCompute] = r.Local
+			// Copied, and it did not used to be: LocalComputeActor takes the
+			// session from the lead, so there was nothing per-session to set and
+			// a copy would have imitated the shape of the Academic rule below
+			// without its reason. It carries a Store now, for §12.1's audit
+			// trail, and assigning that to a shared instance while another
+			// session runs is a data race — so it is a copy for a reason rather
+			// than for symmetry.
+			local := *r.Local
+			local.Store = r.Store
+			out[core.ActorLocalCompute] = &local
 			continue
 		}
 		if t == core.ActorAcademic && r.Academic != nil {

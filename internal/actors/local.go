@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/lajosdeme/mole/internal/compute/coderunner"
@@ -19,6 +20,7 @@ import (
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/llm"
 	"github.com/lajosdeme/mole/internal/pricing"
+	"github.com/lajosdeme/mole/internal/store"
 )
 
 // LocalComputeActor answers a lead from the user's own data (M8, §12).
@@ -52,6 +54,14 @@ type LocalComputeActor struct {
 	// Gate tunes the aggregation gate. The zero value is §12.1's defaults, and
 	// raising KFloor is the only knob a privacy-conscious user needs.
 	Gate gate.Options
+
+	// Store persists the §12.1 audit trail. Nil disables the durable record and
+	// nothing else — the log line still happens, and a run without a store (a
+	// test, a dry probe) should not lose its evidence over an audit table.
+	//
+	// No SessionID field beside it: a crossing is filed under the lead's session,
+	// which this actor already has on every call.
+	Store store.Store
 
 	// Code runs model-authored analysis in the sandbox (§12.1). Nil disables it,
 	// which is the state of any machine without a container runtime — and a
@@ -125,6 +135,7 @@ func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, e
 	miner := &Miner{LLM: a.LLM, Pricing: a.Pricing, Log: a.Log, SessionID: lead.SessionID}
 	var findings []string
 	var usedGate, usedSandbox bool
+	var crossings []core.Crossing
 
 	for _, p := range plans {
 		if err := ctx.Err(); err != nil {
@@ -138,7 +149,10 @@ func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, e
 			res.Truncated = true
 			break
 		}
-		text, cite, note, err := a.evidence(ctx, sources, p)
+		text, cite, note, err := a.evidence(ctx, lead, sources, p)
+		if note.crossing.QueryHash != "" {
+			crossings = append(crossings, note.crossing)
+		}
 		if err != nil {
 			// A refused or unanswerable hypothesis is a normal outcome, not a
 			// failed run: the gate exists to say no. It is recorded so the
@@ -181,8 +195,34 @@ func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, e
 		}
 	}
 
+	// The audit trail, on an uncancellable context and for a reason stronger than
+	// the one that applies to claims: the data has ALREADY left the machine by
+	// this point, so a cancelled write loses the record of a crossing that
+	// happened. §12.1's promise is that the user can audit what left, and a trail
+	// that drops its rows when a sibling lead fails is not that promise.
+	a.recordCrossings(ctx, crossings)
+
 	res.Summary = localSummary(lead, findings, res, usedGate, usedSandbox)
 	return res, nil
+}
+
+// recordCrossings writes the audit trail, and never fails the run for it.
+//
+// A crossing has already happened when this is called. Returning an error would
+// discard evidence the user has paid for over a bookkeeping failure — so the
+// failure is logged loudly (a missing audit row is a real problem) and the run
+// keeps its findings.
+func (a *LocalComputeActor) recordCrossings(ctx context.Context, crossings []core.Crossing) {
+	if len(crossings) == 0 || a.Store == nil {
+		return
+	}
+	if err := a.Store.WithTx(context.WithoutCancel(ctx),
+		func(ctx context.Context, tx store.Tx) error {
+			return tx.InsertCrossings(ctx, crossings)
+		}); err != nil {
+		a.logger().ErrorContext(ctx, "the audit trail was not written; §12.1's record "+
+			"of what left this machine is incomplete", "crossings", len(crossings), "err", err)
+	}
 }
 
 // verdictNote is what a run learned about its own evidence, kept separately from
@@ -190,6 +230,10 @@ func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, e
 type verdictNote struct {
 	finding     string
 	unsupported bool
+	// crossing is the audit row for this hypothesis, present whether or not the
+	// gate let anything through. The zero value means no gate ran — the sandbox
+	// route, where the container rather than the gate is the control.
+	crossing core.Crossing
 }
 
 // cap applies §4's statistical-validity check.
@@ -213,26 +257,70 @@ func (n verdictNote) cap(claims []core.Claim) []core.Claim {
 // downstream — mining, the quote check, the claim graph — cannot tell them
 // apart. That is the point: the evidence differs and the standard does not.
 func (a *LocalComputeActor) evidence(
-	ctx context.Context, sources []connector.Connector, p hypothesis.Plan,
+	ctx context.Context, lead core.Lead, sources []connector.Connector, p hypothesis.Plan,
 ) (text, cite string, note verdictNote, err error) {
 	c, ok := findConnector(sources, p.Connector)
 	if !ok {
 		return "", "", note, fmt.Errorf("no connector named %q is registered", p.Connector)
 	}
 	if p.Code != nil {
-		return a.runCode(ctx, c, p)
+		return a.runCode(ctx, lead, c, p)
 	}
-	return a.runQuery(ctx, c, p)
+	return a.runQuery(ctx, lead, c, p)
+}
+
+// crossing turns one gate outcome into an audit row.
+//
+// Every outcome, not only the successful ones. A trail that recorded what crossed
+// and not what was refused would let a user conclude that the two questions mole
+// asked are all it tried — and the refusals are the more interesting half, because
+// they are the gate doing the thing the user is trusting it to do.
+func (a *LocalComputeActor) crossing(lead core.Lead, c connector.Connector, query string,
+	rec gate.Record, outcome core.CrossingOutcome, detail string) core.Crossing {
+	if rec.QueryHash == "" {
+		// A refusal never became an envelope, so there is no hash to read off one.
+		// A refusal from BEFORE rendering has no statement either — the plan never
+		// became SQL — so the hash is over whatever identifies the attempt, and the
+		// query column is honestly empty rather than filled with a fiction.
+		rec.Query, rec.QueryHash = query, gate.HashQuery(query)
+	}
+	return core.Crossing{
+		SessionID:       lead.SessionID,
+		LeadID:          lead.ID,
+		Connector:       c.Name,
+		Query:           rec.Query,
+		QueryHash:       rec.QueryHash,
+		Outcome:         outcome,
+		Detail:          detail,
+		RowsDescribed:   rec.RowsDescribed,
+		Columns:         rec.Columns,
+		ColumnsWithheld: rec.ColumnsWithheld,
+		Buckets:         rec.Buckets,
+		Suppressed:      rec.Suppressed,
+		BeyondTopK:      rec.BeyondTopK,
+		Tests:           rec.Tests,
+		Truncated:       rec.Truncated,
+	}
 }
 
 // runQuery is the SQL route: render, both gates, envelope.
 func (a *LocalComputeActor) runQuery(
-	ctx context.Context, c connector.Connector, p hypothesis.Plan,
+	ctx context.Context, lead core.Lead, c connector.Connector, p hypothesis.Plan,
 ) (string, string, verdictNote, error) {
 	var note verdictNote
 
 	query, err := hypothesis.Render(c, p)
 	if err != nil {
+		// Recorded, even though nothing was executed and nothing crossed.
+		//
+		// A trail that began at the gate would show only the questions that got as
+		// far as a statement, and the ones refused earlier — a free-text column
+		// asked to be a group, a template whose slots the model filled wrongly —
+		// are exactly the attempts a user auditing this would want to see. There is
+		// no statement to record because none was built, so the hash is over the
+		// plan instead.
+		note.crossing = a.crossing(lead, c, planDescriptor(p), gate.Record{},
+			core.CrossingRefused, err.Error())
 		return "", "", note, err
 	}
 	// hypothesis.Render only emits statements from its own templates, so this
@@ -240,11 +328,15 @@ func (a *LocalComputeActor) runQuery(
 	// gate on the path to the database, not on the paths thought likely to
 	// carry something bad.
 	if err := sqlguard.Check(query); err != nil {
+		note.crossing = a.crossing(lead, c, query, gate.Record{},
+			core.CrossingRefused, err.Error())
 		return "", "", note, err
 	}
 
 	db, err := c.Open()
 	if err != nil {
+		note.crossing = a.crossing(lead, c, query, gate.Record{},
+			core.CrossingRefused, err.Error())
 		return "", "", note, err
 	}
 	defer db.Close()
@@ -255,8 +347,18 @@ func (a *LocalComputeActor) runQuery(
 
 	env, err := gate.Aggregate(ctx, db, query, opts)
 	if err != nil {
+		// Recorded, with the outcomes kept apart: a refusal is the gate working,
+		// and ErrLeak is a rule upstream having broken in a way the backstop
+		// caught. §14.3's number is the count of the second, and folding them
+		// together would make it unmeasurable.
+		outcome := core.CrossingRefused
+		if errors.Is(err, gate.ErrLeak) {
+			outcome = core.CrossingWithheld
+		}
+		note.crossing = a.crossing(lead, c, query, gate.Record{}, outcome, err.Error())
 		return "", "", note, err
 	}
+	note.crossing = a.crossing(lead, c, query, gate.Describe(env), core.CrossingCrossed, "")
 
 	note.finding = describeFinding(p, env)
 	note.unsupported = unsupported(envelopeVerdicts(env))
@@ -273,7 +375,7 @@ func (a *LocalComputeActor) runQuery(
 // there is no model. What constrains this route is the container and the output
 // contract — see internal/compute/coderunner.
 func (a *LocalComputeActor) runCode(
-	ctx context.Context, c connector.Connector, p hypothesis.Plan,
+	ctx context.Context, lead core.Lead, c connector.Connector, p hypothesis.Plan,
 ) (string, string, verdictNote, error) {
 	var note verdictNote
 	if a.Code == nil {
@@ -300,6 +402,12 @@ func (a *LocalComputeActor) runCode(
 		query = rendered
 	}
 
+	// The sandbox route crosses too, and is recorded as such. §12.1 puts the
+	// control in the container rather than the gate here — but the promise is that
+	// a user can audit what left their machine, and "the container held it" is not
+	// the same as "nothing left". The declared metrics did.
+	codeHash := "code:" + shortHash(p.Code.Script)
+
 	out, err := a.Code.Analyze(ctx, coderunner.Request{
 		DBPath: c.DBPath,
 		Query:  query,
@@ -310,13 +418,28 @@ func (a *LocalComputeActor) runCode(
 		},
 	})
 	if err != nil {
+		note.crossing = a.crossing(lead, c, query, gate.Record{QueryHash: codeHash, Query: query},
+			core.CrossingRefused, err.Error())
 		return "", "", note, err
 	}
 	if out.Empty() {
-		return "", "", note, fmt.Errorf(
+		refusal := fmt.Errorf(
 			"the analysis produced nothing that may cross (%d declared and %d undeclared "+
 				"output(s) refused)", len(out.Dropped), out.Undeclared)
+		note.crossing = a.crossing(lead, c, query, gate.Record{QueryHash: codeHash, Query: query},
+			core.CrossingRefused, refusal.Error())
+		return "", "", note, refusal
 	}
+	note.crossing = a.crossing(lead, c, query, gate.Record{
+		QueryHash: codeHash,
+		Query:     query,
+		// The counts a script's output has: how many declared numbers crossed, and
+		// how many outputs the contract refused. Undeclared is a COUNT rather than
+		// a list for the reason coderunner gives — a key is text the script chose.
+		Columns:         len(out.Metrics),
+		ColumnsWithheld: len(out.Dropped) + out.Undeclared,
+		Tests:           len(out.Findings),
+	}, core.CrossingCrossed, "")
 
 	note.finding = describeCodeFinding(p, out)
 	note.unsupported = unsupported(outputVerdicts(out))
@@ -325,6 +448,26 @@ func (a *LocalComputeActor) runCode(
 	// suggested what to look at.
 	cite := fmt.Sprintf("connector:%s#code:%s", c.Name, shortHash(p.Code.Script))
 	return out.Text(p.Code.Script), cite, note, nil
+}
+
+// planDescriptor identifies an attempt that never became a statement.
+//
+// Not SQL and not pretending to be: the template and the columns the model chose,
+// which is what a reader auditing a refusal needs and all that exists at that
+// point. Identifiers only — the columns are names from the profile, which already
+// crossed when the model was shown the schema.
+func planDescriptor(p hypothesis.Plan) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "-- not rendered: template=%s table=%s", p.Template, p.Table)
+	names := make([]string, 0, len(p.Columns))
+	for role := range p.Columns {
+		names = append(names, role)
+	}
+	sort.Strings(names)
+	for _, role := range names {
+		fmt.Fprintf(&b, " %s=%s", role, p.Columns[role])
+	}
+	return b.String()
 }
 
 func shortHash(s string) string {

@@ -169,6 +169,10 @@ func Score(ctx context.Context, st store.Store, sessionID string, opts Options) 
 	// indistinguishable from a dataset session whose extraction failed entirely.
 	card.Metrics = append(card.Metrics, datasetMetrics(ctx, st, sessionID)...)
 
+	// §12.1's audit trail, scored (§14.3's exfil number). Blocked for a session
+	// that used no local data, and measured for one that did.
+	card.Metrics = append(card.Metrics, crossingMetrics(ctx, st, sessionID)...)
+
 	card.Metrics = append(card.Metrics, blockedMetrics(opts)...)
 	return card, nil
 }
@@ -403,28 +407,20 @@ func toolCallCount(calls []*core.ToolCall) Metric {
 
 // blockedMetrics names §14.3's remaining entries and why each is unavailable.
 //
-// Listing them is the point. Four of nine metrics will read zero until M4 and
-// M8, and a scorecard that silently omitted them would let a reader conclude
-// the pipeline is fully scored — then read a genuine future regression as
-// normal.
+// Listing them is the point: a scorecard that silently omitted them would let a
+// reader conclude the pipeline is fully scored, then read a genuine future
+// regression as normal.
+//
+// The exfil entry has left this list — twice, because it was here twice, once with
+// the reason "needs the aggregation gate (M8)" long after M8 landed. It is
+// measured from the crossings table now (see crossings.go), which is the shape
+// every entry here should eventually take: a duplicate blocked entry is what a
+// list of excuses decays into.
 func blockedMetrics(opts Options) []Metric {
 	metrics := []Metric{
 		{
 			Name: "claim precision", Status: Blocked,
 			Reason: "needs labelled answers; the question corpus (§14.2) is not built yet",
-		},
-		{
-			// The assertion itself is not blocked and does not live here: the
-			// aggregation gate checks every envelope against the data it came
-			// from before returning it, and withholds one that carries a value
-			// (internal/compute/gate, §14.3). What is blocked is reporting it
-			// PER SESSION, which needs a session that used a connector.
-			//
-			// Named rather than omitted so a reader can tell "not measured
-			// here" from "not measured anywhere".
-			Name: "exfil regression", Status: Blocked,
-			Reason: "enforced at the gate rather than scored here; per-session " +
-				"reporting needs the LocalComputeActor (M8) to have run",
 		},
 		{
 			Name: "contradiction recall", Status: Blocked,
@@ -441,10 +437,6 @@ func blockedMetrics(opts Options) []Metric {
 			// separation"; detection needs to know how many stale claims were there.
 			Reason: "supersedes edges now exist (see staleness separation), but detection " +
 				"needs a corpus with known-stale sources to measure what was missed (§14.2)",
-		},
-		{
-			Name: "exfil regression", Status: Blocked,
-			Reason: "needs the aggregation gate (§12.1) — M8",
 		},
 	}
 

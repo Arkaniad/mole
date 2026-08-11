@@ -121,6 +121,7 @@ func newRootCmd() *cobra.Command {
 		newCorpusCmd(),
 		newConnectCmd(),
 		newDatasetCmd(),
+		newCrossingsCmd(),
 		newPairsCmd(),
 		newMigrateCmd(),
 		newConfigCmd(),

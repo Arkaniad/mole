@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,7 +74,53 @@ func connectCeilings(t *testing.T, maxUSD, maxTokens int64) *rig {
 	return connectFull(t, maxUSD, maxTokens, nil)
 }
 
+// connectHeld is connectFull with a planner that blocks until the returned
+// function is called, so a test that needs a session to be RUNNING can hold it
+// there instead of hoping.
+//
+// TestAskRefusesARunningSession used to check sup.Running() and skip if the
+// session had already finished. That made it a coin flip: it passed alone,
+// skipped sometimes, and failed under load when the session finished between the
+// check and the ask — the wrong assertion firing rather than a real regression.
+func connectHeld(t *testing.T, maxUSD int64, answerer llm.Provider) (*rig, func()) {
+	t.Helper()
+	held := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(held) }) }
+	// Always released, so a failing test cannot leave the supervisor's shutdown
+	// waiting on a planner nobody let go.
+	t.Cleanup(release)
+	return connectActor(t, maxUSD, 0, answerer,
+		&actors.WebActor{LLM: heldPlanner{held}, Search: emptySearch{}}), release
+}
+
+// heldPlanner answers only after the test says so.
+type heldPlanner struct{ held chan struct{} }
+
+func (heldPlanner) Name() string               { return "stub" }
+func (heldPlanner) ModelFor(t llm.Tier) string { return "stub-model" }
+func (p heldPlanner) Complete(ctx context.Context, _ llm.Request) (*llm.Response, error) {
+	select {
+	case <-p.held:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return &llm.Response{
+		Text:  `{"questions":[],"rationale":"none"}`,
+		Model: "stub-model",
+		Usage: llm.Usage{InputTokens: 1, OutputTokens: 1},
+	}, nil
+}
+
 func connectFull(t *testing.T, maxUSD, maxTokens int64, answerer llm.Provider) *rig {
+	t.Helper()
+	return connectActor(t, maxUSD, maxTokens, answerer,
+		&actors.WebActor{LLM: idlePlanner{}, Search: emptySearch{}})
+}
+
+func connectActor(
+	t *testing.T, maxUSD, maxTokens int64, answerer llm.Provider, actor *actors.WebActor,
+) *rig {
 	t.Helper()
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "t.db"), sqlite.Options{})
 	if err != nil {
@@ -84,11 +131,7 @@ func connectFull(t *testing.T, maxUSD, maxTokens int64, answerer llm.Provider) *
 		t.Fatalf("migrate: %v", err)
 	}
 
-	runner := &session.Runner{
-		Store: db,
-		Actor: &actors.WebActor{LLM: idlePlanner{}, Search: emptySearch{}},
-		Owner: "test",
-	}
+	runner := &session.Runner{Store: db, Actor: actor, Owner: "test"}
 	sup := session.NewSupervisor(runner, 4, nil)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

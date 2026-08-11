@@ -305,6 +305,51 @@ func Aggregate(ctx context.Context, db *sql.DB, query string, opts Options) (Agg
 	return env, nil
 }
 
+// Record is what §12.1's audit trail holds about one crossing.
+//
+// One derivation, two consumers: the log line below and the durable row the actor
+// writes. They were going to be two hand-written descriptions of the same event,
+// which is the construct that has already cost this project a "crossing is logged"
+// claim that logged nothing and a doctor line reporting a property nothing
+// enforced.
+//
+// Carries no value from the data — counts, a hash, and the statement, which is
+// safe here because §12.3 forbids the model from authoring one.
+type Record struct {
+	Query           string
+	QueryHash       string
+	RowsDescribed   int64
+	Columns         int
+	ColumnsWithheld int
+	Buckets         int
+	Suppressed      int
+	BeyondTopK      int
+	Tests           int
+	Truncated       bool
+}
+
+// Describe summarizes an envelope for the audit trail.
+func Describe(env AggregateEnvelope) Record {
+	withheld := 0
+	for _, c := range env.Columns {
+		if c.FreeText {
+			withheld++
+		}
+	}
+	return Record{
+		Query:           env.Query,
+		QueryHash:       env.QueryHash,
+		RowsDescribed:   env.RowCount,
+		Columns:         len(env.Columns),
+		ColumnsWithheld: withheld,
+		Buckets:         len(env.TopK),
+		Suppressed:      env.Suppressed,
+		BeyondTopK:      env.BeyondTopK,
+		Tests:           len(env.TestResults),
+		Truncated:       env.Truncated,
+	}
+}
+
 // logCrossing is §12.1's audit line.
 //
 // Structured, and carrying no value from the data: the query, its hash, how
@@ -312,23 +357,24 @@ func Aggregate(ctx context.Context, db *sql.DB, query string, opts Options) (Agg
 // machine needs to be able to read this without it being another copy of the
 // thing they were worried about.
 func logCrossing(ctx context.Context, log *slog.Logger, env AggregateEnvelope) {
-	withheld := 0
-	for _, c := range env.Columns {
-		if c.FreeText {
-			withheld++
-		}
-	}
+	r := Describe(env)
 	log.InfoContext(ctx, "aggregate crossed the gate",
-		"query_hash", env.QueryHash,
-		"query", env.Query,
-		"rows_described", env.RowCount,
-		"columns", len(env.Columns),
-		"buckets", len(env.TopK),
-		"buckets_suppressed", env.Suppressed,
-		"buckets_beyond_top_k", env.BeyondTopK,
-		"columns_withheld", withheld,
-		"truncated", env.Truncated)
+		"query_hash", r.QueryHash,
+		"query", r.Query,
+		"rows_described", r.RowsDescribed,
+		"columns", r.Columns,
+		"buckets", r.Buckets,
+		"buckets_suppressed", r.Suppressed,
+		"buckets_beyond_top_k", r.BeyondTopK,
+		"columns_withheld", r.ColumnsWithheld,
+		"tests", r.Tests,
+		"truncated", r.Truncated)
 }
+
+// HashQuery is the identifier a local claim cites, exported because the audit
+// trail has to name a statement that was REFUSED — one that never became an
+// envelope and so has no hash of its own to read.
+func HashQuery(q string) string { return hashQuery(q) }
 
 func hashQuery(q string) string {
 	sum := sha256.Sum256([]byte(q))

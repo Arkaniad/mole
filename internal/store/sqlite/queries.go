@@ -1389,6 +1389,78 @@ func (t *queries) ListRows(ctx context.Context, sessionID string) ([]dataset.Row
 	return out, rows.Err()
 }
 
+// InsertCrossings records what left the machine (§12.1).
+//
+// No value from the data is written: the statement, its hash, the counts and one
+// of mole's own reason strings. See migration 0010 for why keeping the statement
+// is safe where keeping a value would not be.
+func (t *queries) InsertCrossings(ctx context.Context, crossings []core.Crossing) error {
+	if len(crossings) == 0 {
+		return nil
+	}
+	const insert = `
+		INSERT INTO compute_crossings
+		  (id, session_id, lead_id, connector, query, query_hash, outcome, detail,
+		   rows_described, columns, columns_withheld, buckets, buckets_suppressed,
+		   buckets_beyond_topk, tests, truncated, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	now := time.Now().UTC()
+	for _, c := range crossings {
+		id := c.ID
+		if id == "" {
+			id = core.NewCrossingID()
+		}
+		at := c.CreatedAt
+		if at.IsZero() {
+			at = now
+		}
+		if _, err := t.q.ExecContext(ctx, insert, id, c.SessionID,
+			nullStr(optional(c.LeadID)), c.Connector, c.Query, c.QueryHash,
+			string(c.Outcome), c.Detail, c.RowsDescribed, c.Columns, c.ColumnsWithheld,
+			c.Buckets, c.Suppressed, c.BeyondTopK, c.Tests, c.Truncated,
+			toMicros(at)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ListCrossings reads a session's audit trail, oldest first.
+func (t *queries) ListCrossings(ctx context.Context, sessionID string) ([]core.Crossing, error) {
+	rows, err := t.q.QueryContext(ctx, `
+		SELECT id, lead_id, connector, query, query_hash, outcome, detail,
+		       rows_described, columns, columns_withheld, buckets, buckets_suppressed,
+		       buckets_beyond_topk, tests, truncated, created_at
+		  FROM compute_crossings WHERE session_id = ? ORDER BY created_at, id`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []core.Crossing
+	for rows.Next() {
+		var (
+			leadID  sql.NullString
+			outcome string
+			at      int64
+			c       core.Crossing
+		)
+		if err := rows.Scan(&c.ID, &leadID, &c.Connector, &c.Query, &c.QueryHash,
+			&outcome, &c.Detail, &c.RowsDescribed, &c.Columns, &c.ColumnsWithheld,
+			&c.Buckets, &c.Suppressed, &c.BeyondTopK, &c.Tests, &c.Truncated,
+			&at); err != nil {
+			return nil, err
+		}
+		c.SessionID = sessionID
+		c.LeadID = leadID.String
+		c.Outcome = core.CrossingOutcome(outcome)
+		c.CreatedAt = fromMicros(at)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // SetDatasetSchema records the schema the rows were extracted against.
 func (t *queries) SetDatasetSchema(ctx context.Context, sessionID string, schema dataset.Schema) error {
 	raw, err := json.Marshal(schema)

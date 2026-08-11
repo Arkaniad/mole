@@ -120,6 +120,10 @@ type Queries interface {
 	// Reports false when the session is not a dataset session.
 	DatasetSchema(ctx context.Context, sessionID string) (dataset.Schema, bool, error)
 
+	// ListCrossings reads the audit trail of data that left the machine for this
+	// session, oldest first (§12.1, M8).
+	ListCrossings(ctx context.Context, sessionID string) ([]core.Crossing, error)
+
 	GetSession(ctx context.Context, id string) (*core.Session, error)
 	ListSessions(ctx context.Context, limit int) ([]*core.Session, error)
 
@@ -181,6 +185,13 @@ type Tx interface {
 	// leave the merge reasoning over evidence that was never fully recorded, and
 	// a dataset is precisely a thing somebody counts.
 	InsertRows(ctx context.Context, sessionID string, rows []dataset.Row) error
+
+	// InsertCrossings records what crossed the aggregation gate, and what was
+	// refused or withheld (§12.1).
+	//
+	// All or nothing, like the others: an audit trail missing half a batch invites
+	// exactly the wrong conclusion about what left the machine.
+	InsertCrossings(ctx context.Context, crossings []core.Crossing) error
 
 	// SetDatasetSchema records the schema a session's rows were extracted
 	// against. Reading a dataset back needs it: field order for the header, and

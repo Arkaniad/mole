@@ -846,10 +846,15 @@ func buildLocalActor(
 	}
 	local := &actors.LocalComputeActor{
 		Connectors: reg,
-		LLM:        web.LLM,
-		Pricing:    web.Pricing,
-		Log:        web.Log,
-		Budget:     web.Budget,
+		// The durable half of §12.1's audit trail. The log line alone met the
+		// letter of "every crossing is logged" and not the use: logs rotate, and
+		// a user asking what mole sent about their data last Tuesday cannot query
+		// a log line. `mole crossings <session>` reads the table.
+		Store:   web.Store,
+		LLM:     web.LLM,
+		Pricing: web.Pricing,
+		Log:     web.Log,
+		Budget:  web.Budget,
 		// §12.1: "Every crossing is logged, so a user can audit exactly what
 		// left their machine." That was written at Info while the actor's logger
 		// is built at Warn, so the audit trail emitted NOTHING in the shipped

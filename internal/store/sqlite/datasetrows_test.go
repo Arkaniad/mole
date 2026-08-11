@@ -89,7 +89,7 @@ func TestARowTimeIsStoredAsUnixMicros(t *testing.T) {
 
 // TestTheSchemaRefusesARowWithNoEvidence.
 //
-// §11.5 makes the quote mandatory, and `quote TEXT NOT NULL` admits '' — so the
+// §11.5 makes the quote mandatory, and `quote TEXT NOT NULL` admits ” — so the
 // one shape the column exists to forbid was the one it allowed. The check is the
 // schema stating the project's own rule rather than trusting every present and
 // future writer to remember it.

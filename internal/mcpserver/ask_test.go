@@ -224,7 +224,11 @@ func TestAnAskIsBoundedByItsOwnAllowance(t *testing.T) {
 // so the citations could point at claims that were not there when it was written.
 func TestAskRefusesARunningSession(t *testing.T) {
 	a := &answerer{}
-	r := connectWith(t, 0, a)
+	// Held, not hoped for. This used to skip when the session had already
+	// finished, which made it pass alone, skip sometimes, and fail under load —
+	// the wrong assertion firing rather than a regression.
+	r, release := connectHeld(t, 0, a)
+	defer release()
 
 	var rep mcpserver.ReportOut
 	r.call(t, "research.report", map[string]any{
@@ -232,9 +236,8 @@ func TestAskRefusesARunningSession(t *testing.T) {
 		"budget": map[string]any{"unit": "usd", "amount": "0.50"},
 	}, &rep)
 
-	// Only meaningful while it is genuinely running.
 	if len(r.sup.Running()) == 0 {
-		t.Skip("the session finished before the ask; nothing to observe")
+		t.Fatal("the held session is not running; the planner was not blocked")
 	}
 	res := r.call(t, "research.ask", map[string]any{
 		"session_id": rep.SessionID, "question": "anything",

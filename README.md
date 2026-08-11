@@ -363,19 +363,6 @@ Stated plainly rather than left to be discovered:
   significance out of noise. The two largest are compared and the envelope says
   so. A proper k-group test (ANOVA, or pairwise with a correction) is the
   obvious extension.
-- **The exfil metric is enforced, not scored.** §14.3 lists it as a number to
-  report per session; it is instead an invariant at the gate, checked before
-  every envelope is returned. `mole eval` names it `blocked` with that reason,
-  because per-session reporting needs a session that used a connector.
-- **The audit trail is a log line, not a table.** §12.1 asks that "every
-  crossing is logged, so a user can audit exactly what left their machine", and
-  every envelope emits a structured record — query, hash, rows described,
-  buckets crossed, buckets suppressed, columns withheld. It carries no value
-  from the data. A durable table lands with the actor, where there is a session
-  to attach a crossing to.
-- **`TestResults` is not in the envelope.** §12.1 lists it; nothing produces a
-  statistical test yet, so the field would be a shape with no filling. It
-  arrives with the statistical-validity verifier.
 - **Parquet is not readable.** SQLite cannot read it and no decoder is written,
   so a Parquet export has to be converted before `mole connect` will take it.
   Named because "point mole at my data folder" quietly skipping half a folder is
@@ -924,6 +911,51 @@ statistics library in a binary that is one static file on purpose. It is checked
 against published critical values at df = 2, 10, 20, 48 and ∞, and against the
 closed form `1 − |t|/√(t²+2)` at df = 2. The incomplete beta's two evaluation
 paths are asserted to agree, because that identity is what both of them rest on.
+
+### The audit trail: a table, not a log line
+
+§12.1 asks that "every crossing is logged, so a user can audit exactly what left
+their machine". M8 emitted a structured log line, which meets the letter of that
+and not the use: logs rotate, `Info` is off in some setups, and a line cannot be
+queried per session. The question a user actually has — *what did mole send about
+my sales data* — is a query against a table.
+
+```
+mole crossings <session-id>            # one row per crossing
+mole crossings <session-id> --queries  # each statement, and the reason for each refusal
+```
+
+```
+WHEN                  CONNECTOR  OUTCOME   ROWS  BUCKETS  SUPPRESSED  WITHHELD COLS  HASH
+2026-08-11T10:02:04Z  sales      crossed     40        2           1              1  447a678ffad5900a
+2026-08-11T10:02:05Z  sales      refused      0        0           0              0  9c1e0b77a2f4d310
+
+2 crossing(s): 1 aggregate(s) crossed, 1 refused, 0 withheld.
+```
+
+Three properties, each deliberate:
+
+- **Every outcome, not only the successes.** A trail of what crossed would let a
+  reader conclude that the questions mole answered are all it tried, and the
+  refusals are the more interesting half — they are the gate doing the thing the
+  user is trusting it to do. Attempts refused *before* a statement was even
+  rendered are in there too, with the plan rather than a fictional query.
+- **`withheld` is its own outcome**, not a kind of refusal. A refusal is the
+  design working; a withholding means the exfil check — a backstop for structural
+  rules that refuse first — caught a rule upstream having broken. The command says
+  so in those words and asks for a bug report.
+- **No value from the data.** Counts, a hash, one of mole's own reason strings, and
+  the statement. The statement is safe to keep for a reason specific to §12.3: a
+  model cannot author SQL, so a query is a template filled with identifiers the
+  profile already published. An audit trail that is another copy of the thing the
+  user was worried about would be worse than none.
+
+The table is what makes §14.3's exfil number *measured* rather than blocked.
+`mole eval` reports the share of envelopes that had to be withheld — zero, and a
+hard regression at anything else — beside the gate's refusal rate and how many
+buckets fell below the k-anonymity floor. It had been listed as blocked twice
+over, once with the reason "needs the aggregation gate (M8)" long after M8
+landed, which is what a list of excuses decays into if nothing ever leaves it.
 
 ### The sandbox: detected, measured, and never required
 
