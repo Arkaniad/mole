@@ -11,7 +11,7 @@ A Planner–Executor–Verifier deep research agent with budget as a first-class
 primitive. Web research, academic literature, and local-data analysis behind one
 Actor interface, exposed to coding agents over MCP.
 
-**Status: M7 complete — the loop runs end to end and coding agents can drive
+**Status: M9 complete — the loop runs end to end and coding agents can drive
 it.** Decompose → fetch → mine claims → digest → cross-check → replan → report,
 with the budget ledger binding at every step, behind a local daemon speaking MCP
 over a unix socket. Verified against a live provider rather than only fakes: a
@@ -213,9 +213,10 @@ The role breakdown is a single `GROUP BY` over the ledger — the entire reason
 | `internal/compute/stats` | Welch's t-test, effect size, and the verdict (§4) |
 | `internal/compute/sandbox` | Container runtime detection, §3.6's flags, and running in one |
 | `internal/compute/coderunner` | Model-authored analysis, and what may come back (§12.1) |
+| `internal/dataset` | Dataset mode: schema, rows, cross-source merge, CSV/JSON (§13) |
 | `internal/eval` | Mechanical scorecard, citation re-verification |
 | `internal/config` | Config file and environment resolution |
-| `cmd/mole` | CLI: `research`, `ask`, `serve`, `eval`, `connect`, `stats`, `trace`, `sessions`, `doctor`, `config`, `migrate`, `dev` |
+| `cmd/mole` | CLI: `research`, `ask`, `serve`, `eval`, `connect`, `dataset`, `stats`, `trace`, `sessions`, `doctor`, `config`, `migrate`, `dev` |
 | `cmd/mole-mcp` | The disposable stdio shim — pumps bytes to the daemon's socket |
 
 ### Decisions worth knowing before you read the code
@@ -318,7 +319,7 @@ The suites that carry weight:
 | M6 | AcademicActor | **done**, claim extraction unverified on a real model |
 | M7 | MCP daemon + stdio shim | **done** |
 | M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | **done** + reviewed; planning unverified on a capable model |
-| M9 | Dataset mode | |
+| M9 | Dataset mode | **done**; extraction unverified on a capable model |
 
 ---
 
@@ -346,6 +347,17 @@ Stated plainly rather than left to be discovered:
   none on the machine this was written on, so the podman branch is tested only
   against a recorded reply. The docker branch is verified end to end, including
   the container.
+- **Dataset extraction is unverified against a capable model.** The write path is
+  verified end to end against fakes — search, fetch, chunk, extract, persist,
+  merge, render — and the merge has real precision and recall numbers on
+  constructed ground truth. What has never run is a capable model filling a schema
+  from a real page: the only reachable model is the same 3B one that blocks M6 and
+  M8. So the pipeline is verified and the extraction quality is not.
+- **Schema inference is not built.** §13 says "user-defined or inferred schema",
+  and only the first half exists. A dataset session with no schema is refused
+  rather than inferred, deliberately: inference costs a model call, and a session
+  that silently invented its own columns would produce a table nobody asked for and
+  charge for it. It also could not be verified here for the reason above.
 - **Holdout stability is the one part of §4's row still missing.** n, effect
   size and significance are computed and enforced; "stable across 3 holdout
   windows" would mean re-running each comparison on deterministic subsets, which
@@ -1095,3 +1107,122 @@ Twenty-two mutations on the statistics slice and not one used a NULL, an upperca
 identifier, a large magnitude, or a qualified star. Reverting a mechanism proves a
 test can see that mechanism break; it says nothing about inputs the test never
 supplies.
+
+---
+
+## Dataset mode (M9)
+
+§13's third output mode: `user-defined schema → per-lead row extraction →
+cross-source merge/dedup by fuzzy key → CSV/JSON`. §15 warns that "schema
+inference plus cross-source fuzzy merge is the hardest quality problem in this
+document", and that warning shaped every decision below.
+
+```
+mole research "revenue of the largest UK grocers" \
+  --usd 2.00 --mode dataset \
+  --schema 'company:text!,revenue:number=annual revenue in GBP,founded:date'
+
+mole dataset s_06FZ... --format csv --provenance > grocers.csv
+mole dataset s_06FZ... --format json            > grocers.json
+```
+
+A `!` marks a **key** field. It is required, and the refusal says why: without one
+there is nothing to merge on, and a dataset that cannot be merged is a list of
+quotes wearing a table's clothes.
+
+### A row is a claim with columns
+
+Rows are extracted in the **same model call** that would have mined claims — not a
+second pass — so dataset mode costs the same per chunk as report mode. They go
+through §11.5 unchanged: a row whose quote is not verbatim in the page is dropped,
+and the rejection is counted. That standard does not relax because the output has a
+header line; a CSV is *more* likely to be believed without checking, since nobody
+reads a spreadsheet sceptically.
+
+Three further refusals: a row with no key field identifies nothing, a value the
+field's type cannot hold is dropped rather than carried (a number column holding
+"roughly £1.2m" merges against nothing and renders as something somebody will
+sort), and a field outside the schema is ignored — the reply is model output, so a
+key nobody asked for would put text the model chose into a file header.
+
+Values are normalised at **extraction**, not at merge time: "1,200,000" against
+"1200000" is a disagreement only if nothing looked at the declared type. The forms
+pages actually write are accepted — `$1.2m`, `1.5bn`, `12k`, `(4500)` for a
+negative — because dropping them loses the fact rather than the noise.
+
+### The merge, and the numbers behind it
+
+The measure went through three versions, each rejected by measurement rather than
+review:
+
+| attempt | precision | why it failed |
+|---|---|---|
+| Jaro-Winkler + overlap ÷ smaller set | 0.583 | "Acme" ⊂ "Acme Bakery Holdings" scored 1.0 |
+| the same ÷ union | 0.583 | Jaro-Winkler scored the same pairs 0.88 on its own |
+| **token-level, JW inside a token** | **1.000** | — |
+
+String similarity turned out to be the wrong primitive: Jaro-Winkler's prefix boost
+is built for short personal names, and on company names the distinguishing word
+comes second — `deutschebank` vs `deutschetelekom` scores 0.89. What separates
+them is which *tokens* they share, with Jaro-Winkler used only *inside* a token to
+absorb a typo:
+
+```
+acme            / acme bakery       0.50   not a match
+deutsche bank   / deutsche telekom  0.33   not a match
+deutsche bank   / deutsche bnak     1.00   a match, typo absorbed
+british airways / airways british   1.00   a match, order absorbed
+```
+
+At the default threshold: **precision 1.000, recall 1.000**, 16 rows from 31
+extractions against 16 known entities. The threshold is a *gap* rather than a knife
+edge — every true pair scores ≥0.67 and every false one ≤0.50 — and the test prints
+the whole curve, so 0.60 is calibrated rather than chosen.
+
+**Complete linkage, not transitive closure.** A row joins a cluster only if it
+matches every member, or "Acme Foods", "Acme Foods Europe" and "Acme Foods Europe
+West" collapse into one row because the middle matches both ends.
+
+**Conflicts are preserved, never resolved.** §11 renders contradiction edges
+explicitly "rather than silently resolved by whichever claim the model liked", and
+two sources giving one company two revenues is that problem with a column header.
+Agreement is preferred to arrival order and the outlier is kept. A key field's
+alternatives are *spellings*, not disagreements — the merge grouped those rows
+because it judged the keys to name one entity, so reporting the difference as a
+conflict would contradict its own decision.
+
+**The merge runs on read.** `mole dataset` re-derives from the stored rows, so a
+later fix to the matching rules improves every dataset already collected rather
+than only the next one. It costs no model call — the merge is arithmetic.
+
+### The two formats are not equivalent
+
+JSON is complete: every cell, every disagreeing value, every source and quote. CSV
+holds one value per cell, so it is lossy — and rather than pretend otherwise it
+carries a `sources` count and a `contested` column naming the fields the sources
+could not agree on. A format that quietly dropped disagreements would be the most
+convenient output and the least honest one.
+
+The summary goes to **stderr**, so `> out.csv` gets only data: what qualifies a
+dataset is the part a redirect would otherwise discard.
+
+### What `mole eval` reports, and what it cannot
+
+Four numbers need no labelled data and are the ones that qualify a result — "40
+rows" invites confidence that "40 rows, 31 from a single source, 6 contested" does
+not:
+
+```
+dataset row integrity     100%   40 of 40 rows carry a source and a verbatim quote
+dataset merge collapse     34%   61 extractions became 40 rows
+dataset corroboration      22%   9 of 40 rows have more than one source
+dataset disagreement       15%   6 of 40 rows have a field the sources disagree about
+```
+
+Row integrity is the one that is a **hard regression**: extraction already refuses
+a row without a quote, so a stored one means something bypassed §11.5.
+
+Merge accuracy is reported as *measured elsewhere* — on constructed ground truth,
+because that needs no labelling — the same treatment §14.3's exfil assertion gets.
+A per-session accuracy number would need labelled answers, exactly as §14.2's
+corpus does.

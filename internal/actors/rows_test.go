@@ -9,6 +9,9 @@ import (
 	"github.com/lajosdeme/mole/internal/actors"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/dataset"
+	"github.com/lajosdeme/mole/internal/store"
+	"github.com/lajosdeme/mole/internal/tools/fetch"
+	"github.com/lajosdeme/mole/internal/tools/search"
 )
 
 // M9 slice 1.
@@ -240,5 +243,95 @@ func TestNumberFormsAPageActuallyUses(t *testing.T) {
 		if got := out.Rows[0].Values["n"]; got != tc.want {
 			t.Errorf("%q normalised to %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Dataset mode through the whole actor (M9, slice 3)
+// -----------------------------------------------------------------------------
+
+// TestTheActorInDatasetModeStoresRowsAndNoClaims.
+//
+// The write path end to end: search, fetch, chunk, extract rows, persist. Verified
+// against fakes rather than against the network — the only reachable model cannot
+// produce structured output (the same blocker M6 and M8 record), so a live run
+// would prove the wiring and burn a search quota to do it.
+//
+// Rows INSTEAD of claims is the property: one model call per chunk either way, and
+// asking for both would double the cost of every chunk to produce a report nobody
+// requested.
+func TestTheActorInDatasetModeStoresRowsAndNoClaims(t *testing.T) {
+	const page = `Acme Ltd reported revenue of $1.2m for 2024. Beta GmbH made 900,000 euros in the same period.`
+
+	h := newHarness(t,
+		[]search.Result{{URL: "https://example.org/a", Title: "Revenues"}},
+		map[string]*fetch.Result{
+			"https://example.org/a": {
+				URL: "https://example.org/a", Outcome: fetch.OutcomeOK, StatusCode: 200,
+				ContentType: "text/html",
+				Content: []byte("<html><body><h1>Revenues</h1><p>" + page + "</p><p>" +
+					strings.Repeat("Filler sentence to give the extractor a document. ", 20) +
+					"</p></body></html>"),
+			},
+		},
+		func(prompt string) string {
+			// The row extractor is the only thing called in dataset mode, so any
+			// mine-shaped reply here would be a claim call that should not happen.
+			if !strings.Contains(prompt, `"rows"`) {
+				t.Errorf("the claim miner was called in dataset mode:\n%s", prompt[:200])
+				return `{"claims":[]}`
+			}
+			return `{"rows":[
+			  {"values":{"company":"Acme Ltd","revenue":"$1.2m"},
+			   "quote":"Acme Ltd reported revenue of $1.2m for 2024."},
+			  {"values":{"company":"Beta GmbH","revenue":"900,000"},
+			   "quote":"Beta GmbH made 900,000 euros in the same period."}
+			]}`
+		})
+
+	schema := rowSchema(t)
+	h.actor.Rows = &actors.RowMiner{
+		LLM: h.llm, SessionID: h.session.ID, Schema: schema,
+	}
+
+	res, err := h.actor.Run(context.Background(), h.lead)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Rows) != 2 {
+		t.Fatalf("rows = %d, want 2; claims = %d", len(res.Rows), len(res.Claims))
+	}
+	if len(res.Claims) != 0 {
+		t.Errorf("dataset mode produced %d claims as well as rows", len(res.Claims))
+	}
+
+	// Persisted, and readable back through the schema the session used.
+	var stored []dataset.Row
+	if err := h.db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		var err error
+		stored, err = q.ListRows(ctx, h.session.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("stored rows = %d, want 2", len(stored))
+	}
+	// In insertion order, and with the normalisation applied at extraction.
+	if stored[0].Values["revenue"] != "1200000" {
+		t.Errorf("stored revenue = %q, want the normalised figure",
+			stored[0].Values["revenue"])
+	}
+	for _, r := range stored {
+		if r.Source == "" || r.Quote == "" {
+			t.Errorf("a stored row lost its provenance: %+v", r)
+		}
+	}
+
+	// And the merge over what was stored gives one row per company.
+	d := dataset.Merge(schema, stored, dataset.Options{})
+	if len(d.Rows) != 2 || d.Extracted != 2 {
+		t.Errorf("merge gave %d rows from %d extractions, want 2 from 2",
+			len(d.Rows), d.Extracted)
 	}
 }
