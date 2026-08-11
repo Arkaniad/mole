@@ -1,0 +1,379 @@
+// Package stats is the arithmetic behind §4's statistical-validity check.
+//
+// §4's actor table says a LocalComputeActor's claims are verified on "n, effect
+// size, significance, holdout stability" — where a web claim is checked for
+// credibility and a paper for venue signal. Nothing else in mole can supply
+// those numbers, because nothing else has a sample: a web page asserts, a paper
+// asserts, and a query over local data MEASURES.
+//
+// That difference is why this exists rather than a call to a statistics
+// library. The whole computation is deterministic, runs on aggregates the
+// aggregation gate already carries, and produces a sentence a model can quote —
+// which is what makes a claim about a difference verifiable in the same way
+// §11.5 makes a claim about a page verifiable.
+//
+// Everything here works from group SUMMARIES. No sample is held, no row is
+// read: a count, a sum and a sum of squares are enough for a mean, a variance
+// and a two-sample test, and all three are aggregates §12.1 already permits.
+package stats
+
+import (
+	"fmt"
+	"math"
+)
+
+// SumColumn and SumSqColumn are the measure names a query must supply for a
+// test to be computable.
+//
+// A contract between the hypothesis templates that render the query and the
+// aggregation gate that reads the result, written down here because it is the
+// package that consumes both ends. n comes from COUNT(*), which the gate
+// already requires for the k-anonymity floor; these two are what turn a pair of
+// means into a comparison with a p-value attached.
+const (
+	SumColumn   = "sum_measure"
+	SumSqColumn = "sum_sq_measure"
+)
+
+// Group is one bucket's summary. n, Σx and Σx² are sufficient statistics for
+// everything below — which is the reason this fits behind the gate at all.
+type Group struct {
+	Name  string
+	N     int64
+	Sum   float64
+	SumSq float64
+}
+
+// Mean of the group.
+func (g Group) Mean() float64 {
+	if g.N == 0 {
+		return 0
+	}
+	return g.Sum / float64(g.N)
+}
+
+// Variance is the SAMPLE variance (n−1).
+//
+// Not the population variance the envelope's column summaries use, and the
+// difference is not pedantry: those describe the result set, which is all there
+// is of it, while this treats a group as a sample drawn from a process. A
+// t-test on a population variance overstates its own confidence.
+func (g Group) Variance() float64 {
+	if g.N < 2 {
+		return 0
+	}
+	n := float64(g.N)
+	// Σx² − (Σx)²/n, over n−1.
+	ss := g.SumSq - (g.Sum*g.Sum)/n
+	if ss < 0 {
+		// Cancellation. Real, for large values with small spread, and it means
+		// the variance is too small to resolve at float64 rather than negative.
+		return 0
+	}
+	return ss / (n - 1)
+}
+
+// Verdict is what the test supports.
+type Verdict string
+
+const (
+	// Significant: the difference is unlikely under the null, and there were
+	// enough records for that to mean something.
+	Significant Verdict = "significant"
+	// NotSignificant: the data does not distinguish the groups.
+	NotSignificant Verdict = "not significant"
+	// Underpowered: too few records to conclude either way. Reported as its own
+	// verdict rather than folded into "not significant", because the two lead
+	// to opposite next actions — one says the effect is absent, the other says
+	// nobody looked hard enough.
+	Underpowered Verdict = "underpowered"
+)
+
+// Alpha and MinGroupN are the thresholds.
+//
+// MinGroupN is a judgement and is stated as one. Twenty per group is where a
+// t-test on a non-normal sample stops being badly behaved in practice; it is
+// not a rule anyone can derive. It exists because the alternative is reporting
+// p = 0.03 from six records against five as though it settled something, which
+// is the exact failure §4's row is written to prevent.
+const (
+	Alpha     = 0.05
+	MinGroupN = 20
+)
+
+// Test is a two-sample comparison and its verdict.
+type Test struct {
+	Kind string `json:"kind"`
+	// Measure names the column compared.
+	Measure string `json:"measure"`
+
+	GroupA string `json:"group_a"`
+	GroupB string `json:"group_b"`
+	NA     int64  `json:"n_a"`
+	NB     int64  `json:"n_b"`
+
+	MeanA      float64 `json:"mean_a"`
+	MeanB      float64 `json:"mean_b"`
+	Difference float64 `json:"difference"`
+
+	Statistic float64 `json:"statistic"`
+	DF        float64 `json:"df"`
+	P         float64 `json:"p"`
+	// EffectSize is Cohen's d on the pooled standard deviation. §4 asks for it
+	// by name, and for the reason it is usually asked for: a significant
+	// difference can still be too small to act on, and p alone cannot say so.
+	EffectSize float64 `json:"effect_size"`
+	CILow      float64 `json:"ci_low"`
+	CIHigh     float64 `json:"ci_high"`
+
+	Verdict Verdict `json:"verdict"`
+	// Summary is the sentence that reaches a model. It is the whole point of
+	// the package: a model handed two means will describe a trend, and a model
+	// handed "not distinguishable from chance (p = 0.41)" has to quote that or
+	// lose the claim.
+	Summary string `json:"summary"`
+}
+
+// Welch compares two groups without assuming equal variances.
+//
+// Welch rather than Student because equal variances is an assumption nobody
+// checks and this has no way to check it either: the groups are two summaries,
+// arriving with whatever spread they have. Welch costs a slightly smaller
+// degrees of freedom and removes the assumption.
+//
+// Reports false when the groups cannot support a test at all — fewer than two
+// records, or no variation in either.
+func Welch(measure string, a, b Group) (Test, bool) {
+	if a.N < 2 || b.N < 2 {
+		return Test{}, false
+	}
+	va, vb := a.Variance(), b.Variance()
+	na, nb := float64(a.N), float64(b.N)
+
+	se2 := va/na + vb/nb
+	if se2 <= 0 {
+		// Both groups constant. Either they are identical, in which case there
+		// is nothing to test, or they differ with zero spread, which is a
+		// property of a tiny sample rather than evidence about a process.
+		//
+		// Overlapping with the degrees-of-freedom check below rather than
+		// distinct from it: a zero standard error also makes the
+		// Welch–Satterthwaite denominator zero, so removing either guard alone
+		// changes nothing. Both stay — this one names the condition, and the
+		// other catches whatever else can make df undefined.
+		return Test{}, false
+	}
+	se := math.Sqrt(se2)
+
+	t := (a.Mean() - b.Mean()) / se
+	// Welch–Satterthwaite.
+	df := (se2 * se2) / (
+	//
+	(va*va)/(na*na*(na-1)) + (vb*vb)/(nb*nb*(nb-1)))
+	if math.IsNaN(df) || df <= 0 {
+		return Test{}, false
+	}
+
+	p := twoTailedT(t, df)
+
+	// Cohen's d on the pooled standard deviation.
+	pooled := math.Sqrt(((na-1)*va + (nb-1)*vb) / (na + nb - 2))
+	var d float64
+	if pooled > 0 {
+		d = (a.Mean() - b.Mean()) / pooled
+	}
+
+	// A 95% interval on the difference of means. Approximated with 1.96 rather
+	// than the exact t quantile: at the sample sizes this reports a verdict for
+	// (MinGroupN and up) the difference is under 3%, and an inverse-t would be
+	// another approximation of its own.
+	diff := a.Mean() - b.Mean()
+	half := 1.96 * se
+
+	test := Test{
+		Kind: "welch t-test", Measure: measure,
+		GroupA: a.Name, GroupB: b.Name, NA: a.N, NB: b.N,
+		MeanA: a.Mean(), MeanB: b.Mean(), Difference: diff,
+		Statistic: t, DF: df, P: p, EffectSize: d,
+		CILow: diff - half, CIHigh: diff + half,
+	}
+	test.Verdict = verdictFor(p, a.N, b.N)
+	test.Summary = summarize(test)
+	return test, true
+}
+
+func verdictFor(p float64, na, nb int64) Verdict {
+	if na < MinGroupN || nb < MinGroupN {
+		return Underpowered
+	}
+	if p < Alpha {
+		return Significant
+	}
+	return NotSignificant
+}
+
+// summarize writes the sentence that becomes evidence.
+//
+// Phrased so the honest reading is the easy one. "not distinguishable from
+// chance" rather than "no difference" — the test cannot show absence — and
+// underpowered results say what is missing rather than reporting a p-value
+// somebody would quote.
+func summarize(t Test) string {
+	dir := "higher"
+	if t.Difference < 0 {
+		dir = "lower"
+	}
+	head := fmt.Sprintf("%s in %q is %s than in %q by %s (means %s and %s; n = %d and %d)",
+		t.Measure, t.GroupA, dir, t.GroupB, sig(math.Abs(t.Difference)),
+		sig(t.MeanA), sig(t.MeanB), t.NA, t.NB)
+
+	switch t.Verdict {
+	case Underpowered:
+		return head + fmt.Sprintf(
+			"; UNDERPOWERED — fewer than %d records in a group, so this difference "+
+				"is not evidence either way", MinGroupN)
+	case Significant:
+		return head + fmt.Sprintf(
+			"; statistically significant (Welch t = %s, p = %s), effect size %s (%s), "+
+				"95%% CI %s to %s",
+			sig(t.Statistic), pval(t.P), sig(t.EffectSize), magnitude(t.EffectSize),
+			sig(t.CILow), sig(t.CIHigh))
+	default:
+		return head + fmt.Sprintf(
+			"; NOT distinguishable from chance (Welch t = %s, p = %s), 95%% CI %s to %s",
+			sig(t.Statistic), pval(t.P), sig(t.CILow), sig(t.CIHigh))
+	}
+}
+
+// magnitude labels an effect size, because "d = 0.21" means nothing to a reader
+// who has not memorised the conventions and everything to one who has.
+func magnitude(d float64) string {
+	switch a := math.Abs(d); {
+	case a < 0.2:
+		return "negligible"
+	case a < 0.5:
+		return "small"
+	case a < 0.8:
+		return "medium"
+	default:
+		return "large"
+	}
+}
+
+func sig(f float64) string {
+	if f == math.Trunc(f) && math.Abs(f) < 1e15 {
+		return fmt.Sprintf("%.0f", f)
+	}
+	return fmt.Sprintf("%.2f", f)
+}
+
+func pval(p float64) string {
+	if p < 0.001 {
+		return "<0.001"
+	}
+	return fmt.Sprintf("%.3f", p)
+}
+
+// -----------------------------------------------------------------------------
+// The t distribution
+// -----------------------------------------------------------------------------
+
+// twoTailedT is P(|T| >= |t|) for df degrees of freedom.
+//
+//	p = I_{df/(df+t²)}(df/2, 1/2)
+//
+// where I is the regularized incomplete beta function. Written out rather than
+// taken from a dependency: it is forty lines, the alternative pulls a whole
+// statistics library into a binary that is one static file on purpose, and a
+// wrong p-value is the sort of error that would be believed.
+func twoTailedT(t, df float64) float64 {
+	if math.IsNaN(t) || math.IsInf(t, 0) {
+		return 1
+	}
+	x := df / (df + t*t)
+	p := incompleteBeta(df/2, 0.5, x)
+	return math.Min(1, math.Max(0, p))
+}
+
+// incompleteBeta is the regularized incomplete beta function I_x(a, b).
+func incompleteBeta(a, b, x float64) float64 {
+	switch {
+	case x <= 0:
+		return 0
+	case x >= 1:
+		return 1
+	}
+	lbeta := lgamma(a+b) - lgamma(a) - lgamma(b) +
+		a*math.Log(x) + b*math.Log(1-x)
+	front := math.Exp(lbeta)
+
+	// The continued fraction converges quickly on one side of the symmetry
+	// point and slowly on the other, so the far side is evaluated through the
+	// identity I_x(a,b) = 1 − I_{1−x}(b,a).
+	if x < (a+1)/(a+b+2) {
+		return front * betaCF(a, b, x) / a
+	}
+	return 1 - math.Exp(lgamma(a+b)-lgamma(a)-lgamma(b)+
+		b*math.Log(1-x)+a*math.Log(x))*betaCF(b, a, 1-x)/b
+}
+
+// betaCF evaluates the continued fraction for the incomplete beta function by
+// the modified Lentz method.
+func betaCF(a, b, x float64) float64 {
+	const (
+		maxIter = 200
+		epsilon = 3e-14
+		tiny    = 1e-300
+	)
+	qab, qap, qam := a+b, a+1, a-1
+
+	c := 1.0
+	d := 1 - qab*x/qap
+	if math.Abs(d) < tiny {
+		d = tiny
+	}
+	d = 1 / d
+	h := d
+
+	for m := 1; m <= maxIter; m++ {
+		fm := float64(m)
+		m2 := 2 * fm
+
+		// Even step.
+		num := fm * (b - fm) * x / ((qam + m2) * (a + m2))
+		d = 1 + num*d
+		if math.Abs(d) < tiny {
+			d = tiny
+		}
+		c = 1 + num/c
+		if math.Abs(c) < tiny {
+			c = tiny
+		}
+		d = 1 / d
+		h *= d * c
+
+		// Odd step.
+		num = -(a + fm) * (qab + fm) * x / ((a + m2) * (qap + m2))
+		d = 1 + num*d
+		if math.Abs(d) < tiny {
+			d = tiny
+		}
+		c = 1 + num/c
+		if math.Abs(c) < tiny {
+			c = tiny
+		}
+		d = 1 / d
+		del := d * c
+		h *= del
+
+		if math.Abs(del-1) < epsilon {
+			break
+		}
+	}
+	return h
+}
+
+func lgamma(x float64) float64 {
+	v, _ := math.Lgamma(x)
+	return v
+}

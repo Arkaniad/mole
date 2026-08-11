@@ -11,6 +11,7 @@ import (
 	"github.com/lajosdeme/mole/internal/compute/gate"
 	"github.com/lajosdeme/mole/internal/compute/hypothesis"
 	"github.com/lajosdeme/mole/internal/compute/sqlguard"
+	"github.com/lajosdeme/mole/internal/compute/stats"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/llm"
 	"github.com/lajosdeme/mole/internal/pricing"
@@ -137,7 +138,7 @@ func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, e
 				"connector", p.Connector, "err", err)
 			continue
 		}
-		res.Claims = append(res.Claims, out.Claims...)
+		res.Claims = append(res.Claims, capUnsupported(out.Claims, env)...)
 		findings = append(findings, describeFinding(p, env))
 	}
 
@@ -210,6 +211,44 @@ func freeTextColumns(c connector.Connector) []string {
 		}
 	}
 	return out
+}
+
+// unsupportedAssertionCap is where a claim lands when the envelope it was mined
+// from ran a comparison and the comparison did not support one.
+//
+// A cap and not a rejection, because the claim may be perfectly true — "the
+// north region has the most records" is a fact about the counts whether or not
+// the means differ significantly. What it must not do is enter the graph
+// asserting as much as a claim the data actually supports. §11.3 derives
+// confidence from the graph, and AssertionStrength is what the source says
+// about itself; an underpowered result should not say much.
+const unsupportedAssertionCap = 0.3
+
+// capUnsupported applies §4's statistical-validity check to what was mined.
+//
+// The rule is deliberately mechanical. Deciding whether a sentence ASSERTS the
+// difference the test failed to find would take another model call and would be
+// wrong sometimes in both directions; capping every claim mined from an
+// unsupported comparison is blunt, cheap, and cannot be argued with.
+//
+// A query with no comparison in it — a distribution, an overview — is left
+// alone. There is no test to fail, and capping those would punish the claims
+// that are simply counts.
+func capUnsupported(claims []core.Claim, env gate.AggregateEnvelope) []core.Claim {
+	if len(env.TestResults) == 0 {
+		return claims
+	}
+	for _, t := range env.TestResults {
+		if t.Verdict == stats.Significant {
+			return claims
+		}
+	}
+	for i := range claims {
+		if claims[i].AssertionStrength > unsupportedAssertionCap {
+			claims[i].AssertionStrength = unsupportedAssertionCap
+		}
+	}
+	return claims
 }
 
 // -----------------------------------------------------------------------------
@@ -294,6 +333,12 @@ func describeFinding(p hypothesis.Plan, env gate.AggregateEnvelope) string {
 	line := fmt.Sprintf("%s — %d row(s) described", q, env.RowCount)
 	if env.Suppressed > 0 {
 		line += fmt.Sprintf(", %d group(s) too small to report", env.Suppressed)
+	}
+	// The verdict, in the summary the planner reads. Without it a replan sees
+	// "compared revenue by region" and treats an underpowered result as a
+	// settled one worth building on.
+	for _, t := range env.TestResults {
+		line += fmt.Sprintf("; comparison %s", t.Verdict)
 	}
 	return line
 }

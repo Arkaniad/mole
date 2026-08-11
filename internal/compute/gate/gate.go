@@ -48,6 +48,7 @@ import (
 
 	"github.com/lajosdeme/mole/internal/compute/connector"
 	"github.com/lajosdeme/mole/internal/compute/sqlguard"
+	"github.com/lajosdeme/mole/internal/compute/stats"
 )
 
 // ErrRefused matches every refusal to build an envelope.
@@ -136,6 +137,16 @@ type AggregateEnvelope struct {
 	RowCount int64         `json:"row_count"`
 	Columns  []ColumnStats `json:"columns"`
 	TopK     []Bucket      `json:"top_k,omitempty"`
+
+	// TestResults are §12.1's statistical tests, and §4's "statistical
+	// validity: n, effect size, significance". Empty unless the query supplied
+	// the sufficient statistics — see stats.SumColumn.
+	//
+	// Computed rather than asserted, and computed HERE rather than by whoever
+	// reads the envelope: a model handed two means will describe a trend, and
+	// the only defense against that is for the significance to arrive as
+	// evidence alongside them.
+	TestResults []stats.Test `json:"test_results,omitempty"`
 
 	// Suppressed is how many buckets fell below the floor and were folded into
 	// the `other` bucket. Reported rather than silently dropped: a distribution
@@ -428,7 +439,75 @@ func (a *accumulator) envelope(query string) (AggregateEnvelope, []int) {
 	for i, name := range a.names {
 		env.Columns = append(env.Columns, a.statsFor(i, name, described, &env))
 	}
+	a.addTests(&env)
 	return env, described
+}
+
+// addTests compares the two largest buckets, when the query supplied enough to.
+//
+// TWO, not every pair. Comparing every pair of k buckets is k(k−1)/2 tests
+// against the same alpha, which manufactures a significant result out of noise
+// as soon as there are a handful of groups — and it would do it in the one
+// place mole reports statistics as though they settled something. One
+// comparison, named, with no multiple-testing correction needed because there
+// is nothing to correct for.
+func (a *accumulator) addTests(env *AggregateEnvelope) {
+	var named []Bucket
+	for _, b := range env.TopK {
+		if !b.Other {
+			named = append(named, b)
+		}
+	}
+	if len(named) < 2 {
+		return
+	}
+	// TopK is already ordered by count.
+	first, ok := groupFrom(named[0])
+	if !ok {
+		return
+	}
+	second, ok := groupFrom(named[1])
+	if !ok {
+		return
+	}
+	measure := a.measureName()
+	if t, ok := stats.Welch(measure, first, second); ok {
+		env.TestResults = append(env.TestResults, t)
+		env.Notes = append(env.Notes, "a two-sample comparison was run on the two "+
+			"largest groups only; comparing every pair would invent significance")
+	}
+}
+
+func groupFrom(b Bucket) (stats.Group, bool) {
+	sum, ok := b.Measures[stats.SumColumn]
+	if !ok {
+		return stats.Group{}, false
+	}
+	sumSq, ok := b.Measures[stats.SumSqColumn]
+	if !ok {
+		return stats.Group{}, false
+	}
+	name := strings.Join(b.Key, " / ")
+	if name == "" {
+		return stats.Group{}, false
+	}
+	return stats.Group{Name: name, N: b.Count, Sum: sum, SumSq: sumSq}, true
+}
+
+// measureName is what the compared column is called, for the sentence. The
+// template names its mean column `mean`, so that is what a reader recognises;
+// the sums are machinery.
+func (a *accumulator) measureName() string {
+	for _, n := range a.names {
+		switch n {
+		case stats.SumColumn, stats.SumSqColumn:
+			continue
+		}
+		if n == "mean" {
+			return "the mean"
+		}
+	}
+	return "the measure"
 }
 
 // describedRows applies the floor and the cap, fills in the buckets, and

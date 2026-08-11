@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/lajosdeme/mole/internal/compute/connector"
+	"github.com/lajosdeme/mole/internal/compute/stats"
 )
 
 // ErrInvalid matches every refusal to render a plan.
@@ -117,12 +118,18 @@ var Templates = []Template{
 			{Name: "key", Role: RoleCategory},
 			{Name: "measure", Role: RoleMeasure},
 		},
+		// The two sums are not decoration. §4 asks for significance and effect
+		// size on a local claim, and a mean per group cannot supply either: a
+		// count, a sum and a sum of squares can, and all three are aggregates
+		// §12.1 already permits. Without them the gate reports two means and a
+		// model calls the larger one a finding.
 		render: func(t string, c map[string]string) string {
 			return fmt.Sprintf(
 				"SELECT %[1]s AS bucket, COUNT(*) AS n, AVG(%[2]s) AS mean, "+
-					"MIN(%[2]s) AS lowest, MAX(%[2]s) AS highest FROM %[3]s "+
+					"MIN(%[2]s) AS lowest, MAX(%[2]s) AS highest, "+
+					"SUM(%[2]s) AS %[4]s, SUM(%[2]s * %[2]s) AS %[5]s FROM %[3]s "+
 					"GROUP BY 1 ORDER BY n DESC",
-				c["key"], c["measure"], t)
+				c["key"], c["measure"], t, stats.SumColumn, stats.SumSqColumn)
 		},
 	},
 	{

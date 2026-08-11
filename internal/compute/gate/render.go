@@ -42,6 +42,16 @@ func (e AggregateEnvelope) Text() string {
 		}
 	}
 
+	if len(e.TestResults) > 0 {
+		// Before the notes and after the groups, because this is the sentence a
+		// claim about a difference has to quote. A model that reads two means
+		// and stops has already written the wrong claim.
+		b.WriteString("\nStatistical tests:\n")
+		for _, t := range e.TestResults {
+			b.WriteString("  " + t.Summary + "\n")
+		}
+	}
+
 	if len(e.Notes) > 0 {
 		// The notes are part of the evidence, not a footer. "grouped on a
 		// free-text column, so no buckets crossed" is the difference between a

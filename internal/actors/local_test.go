@@ -3,6 +3,7 @@ package actors_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -290,6 +291,115 @@ func TestTheSummaryReportsWhatCrossed(t *testing.T) {
 	for _, want := range []string{"How do records split by region?", "aggregation gate"} {
 		if !strings.Contains(res.Summary, want) {
 			t.Errorf("the summary does not mention %q:\n%s", want, res.Summary)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------------
+// §4's statistical-validity check, at the actor
+// -----------------------------------------------------------------------------
+
+// samplesRegistry builds two groups of n records with a fixed separation, so a
+// comparison is either underpowered or significant purely by choosing n.
+func samplesRegistry(t *testing.T, n int) registry {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("region,spend\n")
+	for _, g := range []struct {
+		name string
+		mean float64
+	}{{"north", 100}, {"south", 40}} {
+		for i := 0; i < n; i++ {
+			v := g.mean + 5
+			if i%2 == 1 {
+				v = g.mean - 5
+			}
+			fmt.Fprintf(&b, "%s,%.0f\n", g.name, v)
+		}
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "samples.csv")
+	if err := os.WriteFile(src, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := connector.Ingest(context.Background(), "sales", src, filepath.Join(dir, "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry{c}
+}
+
+// quoteTheTestLine makes the model cite the statistical summary, which is what
+// a model reasoning honestly about a difference would quote.
+func quoteTheTestLine(passage string) (string, string) {
+	for _, line := range strings.Split(passage, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "Welch") || strings.Contains(line, "UNDERPOWERED") {
+			return "Spending differs between the regions", line
+		}
+	}
+	return quoteAGroupLine(passage)
+}
+
+const comparePlan = `[
+  {"connector":"sales","table":"samples","template":"group_comparison",
+   "columns":{"key":"region","measure":"spend"},"question":"How does spend differ by region?"}
+]`
+
+// TestAnUnsupportedComparisonCapsWhatTheClaimAsserts is §4's check.
+//
+// The claim may well be true — it is asserting a difference the numbers show —
+// but twelve records cannot support it, and §11.3 derives confidence from the
+// graph on the strength each source claims for itself. An underpowered result
+// must not enter the graph asserting as much as a measured one.
+func TestAnUnsupportedComparisonCapsWhatTheClaimAsserts(t *testing.T) {
+	for _, tc := range []struct {
+		why     string
+		n       int
+		capped  bool
+		verdict string
+	}{
+		{"six records a side", 6, true, "underpowered"},
+		{"forty records a side", 40, false, "significant"},
+	} {
+		t.Run(tc.why, func(t *testing.T) {
+			fl := scriptedModel(comparePlan, quoteTheTestLine)
+			res := runLocal(t, fl, samplesRegistry(t, tc.n))
+
+			if len(res.Claims) == 0 {
+				t.Fatalf("no claims; summary was:\n%s", res.Summary)
+			}
+			for _, c := range res.Claims {
+				capped := c.AssertionStrength <= 0.3
+				if capped != tc.capped {
+					t.Errorf("AssertionStrength = %v (capped=%v), want capped=%v for a %s result",
+						c.AssertionStrength, capped, tc.capped, tc.verdict)
+				}
+			}
+			if !strings.Contains(res.Summary, tc.verdict) {
+				t.Errorf("the planner's summary does not report the verdict %q:\n%s",
+					tc.verdict, res.Summary)
+			}
+		})
+	}
+}
+
+// TestAQueryWithNoComparisonIsNotCapped. A distribution has no test to fail,
+// and capping those would punish claims that are simply counts.
+func TestAQueryWithNoComparisonIsNotCapped(t *testing.T) {
+	fl := scriptedModel(`[
+	  {"connector":"sales","table":"samples","template":"distribution",
+	   "columns":{"key":"region"},"question":"How do records split by region?"}
+	]`, quoteAGroupLine)
+
+	res := runLocal(t, fl, samplesRegistry(t, 6))
+	if len(res.Claims) == 0 {
+		t.Fatalf("no claims:\n%s", res.Summary)
+	}
+	for _, c := range res.Claims {
+		if c.AssertionStrength <= 0.3 {
+			t.Errorf("a claim from a query with no comparison was capped: %v",
+				c.AssertionStrength)
 		}
 	}
 }

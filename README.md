@@ -210,6 +210,7 @@ The role breakdown is a single `GROUP BY` over the ledger — the entire reason
 | `internal/compute/sqlguard` | The parse gate — one SELECT, allowlisted functions (§12.2) |
 | `internal/compute/gate` | The aggregation gate — the only path from data to a model (§12.1) |
 | `internal/compute/hypothesis` | Templates: the only SQL that reaches a connector (§12.3) |
+| `internal/compute/stats` | Welch's t-test, effect size, and the verdict (§4) |
 | `internal/eval` | Mechanical scorecard, citation re-verification |
 | `internal/config` | Config file and environment resolution |
 | `cmd/mole` | CLI: `research`, `ask`, `serve`, `eval`, `connect`, `stats`, `trace`, `sessions`, `doctor`, `config`, `migrate`, `dev` |
@@ -329,10 +330,16 @@ Stated plainly rather than left to be discovered:
   failed to parse, because the only reachable model is the same 3B local one
   that blocks M6. It returned a doubly-wrapped JSON array. So the pipeline is
   verified and the model's half of §12.3 is not. Same blocker, same fix: credit.
-- **The statistical-validity verifier does not exist.** §4's table says local
-  claims are checked on n, effect size, significance and holdout stability. They
-  are currently checked exactly as web claims are — quote verification and the
-  claim graph — which is real but is not what that row promises.
+- **Holdout stability is the one part of §4's row still missing.** n, effect
+  size and significance are computed and enforced; "stable across 3 holdout
+  windows" would mean re-running each comparison on deterministic subsets, which
+  is three more queries per hypothesis and a splitting rule nobody has chosen.
+  Named rather than quietly dropped.
+- **The comparison is two groups, and only ever two.** Comparing every pair of
+  k groups is k(k−1)/2 tests against the same alpha, which manufactures
+  significance out of noise. The two largest are compared and the envelope says
+  so. A proper k-group test (ANOVA, or pairwise with a correction) is the
+  obvious extension.
 - **The exfil metric is enforced, not scored.** §14.3 lists it as a number to
   report per session; it is instead an invariant at the gate, checked before
   every envelope is returned. `mole eval` names it `blocked` with that reason,
@@ -837,3 +844,53 @@ opposite of what §12 is for. Search is now required only when `web` is among
 mole connect add sales ./exports/sales.csv
 mole research "how do the regions compare on revenue" --actors local_compute
 ```
+
+### Statistical validity: what stops a model calling two means a finding
+
+§4's actor table says a local claim is verified on **n, effect size,
+significance** — where a web claim is checked for credibility and a paper for
+venue signal. The difference is that a page *asserts* and a query *measures*, so
+there is something to test.
+
+A model handed `north: mean 100` and `south: mean 40` will describe a trend.
+That is not a prompting problem and no instruction fixes it — the fix is for the
+significance to arrive **as evidence, alongside the means**:
+
+```
+Statistical tests:
+  the mean in "north" is higher than in "south" by 60 (means 100 and 40; n = 40 and 40);
+  statistically significant (Welch t = 42.43, p = <0.001), effect size 9.49 (large),
+  95% CI 57.23 to 62.77
+```
+
+and, when it is not:
+
+```
+  …; UNDERPOWERED — fewer than 20 records in a group, so this difference is not
+  evidence either way
+```
+
+Because that sentence is in the passage claims are mined from, §11.5 applies to
+it: a claim about the difference has to quote it or be dropped. And any claim
+mined from an envelope whose comparison was *not* significant has its
+`AssertionStrength` capped — it may still be true, but it must not enter the
+graph asserting as much as a measured result, since §11.3 derives confidence
+from what each source claims for itself.
+
+**It runs on aggregates, so it fits behind the gate.** A count, Σx and Σx² are
+sufficient statistics for a mean, a variance and a two-sample test, and all
+three are aggregates §12.1 already permits — which is why the group-comparison
+template selects the two sums. No sample is held and no row is read.
+
+Welch's t-test rather than Student's, because equal variances is an assumption
+nothing here can check. `MinGroupN = 20` is a judgement and is written down as
+one: it exists so that p = 0.03 from six records against five is reported as
+*underpowered* rather than as a finding — which is exactly what §4's row is
+there to prevent. "Underpowered" is its own verdict rather than folded into "not
+significant", because the two lead to opposite next actions.
+
+The t distribution is implemented rather than imported — forty lines against a
+statistics library in a binary that is one static file on purpose. It is checked
+against published critical values at df = 2, 10, 20, 48 and ∞, and against the
+closed form `1 − |t|/√(t²+2)` at df = 2. The incomplete beta's two evaluation
+paths are asserted to agree, because that identity is what both of them rest on.
