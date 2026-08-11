@@ -56,7 +56,11 @@ import (
 const DefaultImage = "python:3.13-slim"
 
 // DefaultCommand reads the script from stdin.
-var DefaultCommand = []string{"python3", "-"}
+//
+// A function, not a package-level slice: a mutable global holding the command
+// that launches model-authored code is the wrong shape, and the repo's own
+// precedent (academic.Kinds) returns a fresh copy.
+func DefaultCommand() []string { return []string{"python3", "-"} }
 
 // MountPath is where the connector's database appears inside the container.
 const MountPath = "/data/connector.sqlite"
@@ -208,7 +212,7 @@ func Parse(raw string, c Contract) (Output, error) {
 		out.Findings = append(out.Findings, Finding{
 			Name: t.Name, N: t.N, Statistic: stat, P: p, EffectSize: effect,
 			// §4's thresholds, applied here rather than taken from the script.
-			Verdict: verdictFor(p, t.N),
+			Verdict: stats.VerdictFor(p, t.N),
 		})
 	}
 
@@ -225,18 +229,6 @@ func Parse(raw string, c Contract) (Output, error) {
 			len(out.Dropped), strings.Join(out.Dropped, ", ")))
 	}
 	return out, nil
-}
-
-// verdictFor mirrors the SQL path's rule so the two cannot disagree about what
-// counts as evidence. stats owns the thresholds.
-func verdictFor(p float64, n int64) stats.Verdict {
-	if n < stats.MinGroupN {
-		return stats.Underpowered
-	}
-	if p < stats.Alpha {
-		return stats.Significant
-	}
-	return stats.NotSignificant
 }
 
 func finiteNumber(raw json.RawMessage) (float64, bool) {
@@ -304,6 +296,16 @@ func (o Output) Text(script string) string {
 	var b strings.Builder
 	b.WriteString("Result of an analysis run inside the sandbox, over local data.\n")
 	b.WriteString("No network was available to it and its only output was the figures below.\n")
+	if s := strings.TrimSpace(script); s != "" {
+		// The script belongs in the passage. A reader — and the model writing the
+		// claim — cannot judge "the analysis computed amplitude = 12.5" without
+		// seeing what the analysis was, and the parameter was being passed and
+		// ignored.
+		b.WriteString("\nWhat was run:\n")
+		for _, line := range strings.Split(s, "\n") {
+			b.WriteString("  " + line + "\n")
+		}
+	}
 
 	if len(o.Metrics) > 0 {
 		b.WriteString("\nMetrics:\n")
@@ -319,7 +321,7 @@ func (o Output) Text(script string) string {
 			// about a single metric could not be cited at all — the quote check
 			// dropped every one of them, which is how this was found.
 			fmt.Fprintf(&b, "  The analysis computed %s = %s over the local data.\n",
-				n, num(o.Metrics[n]))
+				n, stats.Num(o.Metrics[n]))
 		}
 	}
 
@@ -339,35 +341,17 @@ func (o Output) Text(script string) string {
 	return b.String()
 }
 
-// Summary is the sentence a claim has to quote, phrased like the SQL path's so
-// that a reader cannot tell from the wording which one produced it — the
-// evidence differs, the standard does not.
+// Summary is the sentence a claim has to quote.
+//
+// Built by stats.Sentence, so the two evidence paths cannot word the same verdict
+// differently — they did, in the underpowered clause and in whether an effect
+// size appeared at all, under a comment claiming a reader could not tell them
+// apart.
 func (f Finding) Summary() string {
-	head := fmt.Sprintf("%s: statistic %s, n = %d", f.Name, num(f.Statistic), f.N)
-	switch f.Verdict {
-	case stats.Underpowered:
-		return head + fmt.Sprintf("; UNDERPOWERED — fewer than %d records, so this is "+
-			"not evidence either way", stats.MinGroupN)
-	case stats.Significant:
-		return head + fmt.Sprintf("; statistically significant (p = %s), effect size %s",
-			pval(f.P), num(f.EffectSize))
-	default:
-		return head + fmt.Sprintf("; NOT distinguishable from chance (p = %s)", pval(f.P))
-	}
-}
-
-func num(f float64) string {
-	if f == math.Trunc(f) && math.Abs(f) < 1e15 {
-		return fmt.Sprintf("%.0f", f)
-	}
-	return fmt.Sprintf("%.4f", f)
-}
-
-func pval(p float64) string {
-	if p < 0.001 {
-		return "<0.001"
-	}
-	return fmt.Sprintf("%.3f", p)
+	head := fmt.Sprintf("%s: statistic %s, n = %d", f.Name, stats.Num(f.Statistic), f.N)
+	detail := fmt.Sprintf(", effect size %s (%s)",
+		stats.Num(f.EffectSize), stats.Magnitude(f.EffectSize))
+	return stats.Sentence(head, f.Verdict, f.P, detail)
 }
 
 // -----------------------------------------------------------------------------
@@ -417,7 +401,7 @@ func (s Sandboxed) Analyze(ctx context.Context, req Request) (Output, error) {
 	}
 	command := s.Command
 	if len(command) == 0 {
-		command = DefaultCommand
+		command = DefaultCommand()
 	}
 
 	res, err := s.Report.Run(ctx, sandbox.Spec{

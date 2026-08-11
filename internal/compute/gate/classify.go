@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lajosdeme/mole/internal/compute/sqlguard"
 	"github.com/rqlite/sql"
 )
 
@@ -32,10 +33,17 @@ type shape struct {
 // COUNT(*) OVER () returns one row per input row, so a statement whose only
 // "aggregate" is windowed produces the raw result set with a count stapled to
 // each row.
-var aggregateFunctions = map[string]bool{
-	"count": true, "sum": true, "total": true, "avg": true,
-	"min": true, "max": true, "group_concat": true,
-}
+// Derived from sqlguard rather than restated. The two lists were identical and
+// unlinked, so adding an aggregate to the parse gate's allowlist for a new
+// template would have left the aggregation gate silently refusing the rendered
+// query as "not an aggregate".
+var aggregateFunctions = func() map[string]bool {
+	m := map[string]bool{}
+	for _, name := range sqlguard.Aggregates() {
+		m[name] = true
+	}
+	return m
+}()
 
 func classify(query string) (shape, error) {
 	p := sql.NewParser(strings.NewReader(query))

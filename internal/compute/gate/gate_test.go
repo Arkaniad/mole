@@ -261,7 +261,12 @@ func TestFreeTextValuesNeverCross(t *testing.T) {
 		t.Run(tc.why, func(t *testing.T) {
 			env, err := aggregate(t, db, tc.query)
 			if err != nil {
-				t.Skipf("refused outright, which is also safe: %v", err)
+				// Refusing is also safe, and is asserted as an outcome rather
+				// than skipped: a Skip turns green when a change makes the gate
+				// refuse these shapes, which is indistinguishable from the
+				// assertion below passing.
+				t.Logf("refused, which is also safe: %v", err)
+				return
 			}
 			raw, err := json.Marshal(env)
 			if err != nil {
@@ -372,8 +377,10 @@ func TestTheStatisticsDescribeTheResult(t *testing.T) {
 // TestQuantilesAndMomentsOverManyRows checks the distribution summary on a
 // result with a spread, which the single-row case above cannot.
 func TestQuantilesAndMomentsOverManyRows(t *testing.T) {
-	// Five buckets of four, so every bucket clears a floor of four and the
-	// counts have a distribution of their own.
+	// The fixture's five groups are 8/6/3/2/1, and the floor is dropped to one so
+	// all five cross — the counts then have a distribution of their own, which is
+	// what this measures. (The comment here used to describe a fixture of five
+	// equal buckets that does not exist.)
 	db := testDB(t)
 	env, err := gate.Aggregate(context.Background(), db,
 		`SELECT region, COUNT(*) AS n, AVG(spend) AS mean FROM tickets GROUP BY region`,

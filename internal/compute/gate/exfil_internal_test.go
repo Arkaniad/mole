@@ -14,15 +14,26 @@ import (
 // envelopes that legitimately carry aggregates and require it to stay quiet,
 // because a check that refuses everything is not a safe one, it is a broken one.
 
+// fixture's category values are deliberately LONGER than leakMinLen.
+//
+// They used to be "north" and "south", five characters each, so every value in
+// every fixture fell under the length floor — and the `allowed` derivation, the
+// part of the check that decides which values may legitimately appear, was
+// covered by nothing. Mutation-proven: replacing the described loop with an empty
+// range left the whole suite green, because the positive controls were passing on
+// the length floor rather than on the allow-list.
+//
+// With categories this long, breaking `allowed` turns a legitimate envelope into
+// ErrLeak and TestTheExfilCheckIsQuietOnLegitimateAggregates fails.
 func fixture() *accumulator {
 	a := &accumulator{
-		names:       []string{"region", "note"},
+		names:       []string{"sector", "note"},
 		freeTextKey: map[int]bool{},
 		shape:       shape{grouped: true, isKey: []bool{true, false}, countCol: -1},
 	}
 	for _, r := range [][2]string{
-		{"north", "the invoice needs splitting across two cost centres"},
-		{"south", "replacement unit failed on arrival, second one sent"},
+		{"manufacturing", "the invoice needs splitting across two cost centres"},
+		{"professional services", "replacement unit failed on arrival, second one sent"},
 	} {
 		a.rows = append(a.rows, []cell{{text: r[0]}, {text: r[1]}})
 	}
@@ -81,10 +92,14 @@ func TestTheExfilCheckIsQuietOnLegitimateAggregates(t *testing.T) {
 	}{
 		{"a bucket key that was reported as a range", AggregateEnvelope{
 			Columns: []ColumnStats{
-				{Name: "region", Kind: KindText, Range: &TextRange{Min: "north", Max: "south"}},
+				{Name: "sector", Kind: KindText,
+					Range: &TextRange{Min: "manufacturing", Max: "professional services"}},
 				{Name: "note", Kind: KindText, FreeText: true},
 			},
-			TopK: []Bucket{{Key: []string{"north"}, Count: 9}, {Key: []string{"south"}, Count: 7}},
+			TopK: []Bucket{
+				{Key: []string{"manufacturing"}, Count: 9},
+				{Key: []string{"professional services"}, Count: 7},
+			},
 		}},
 		{"counts and moments", AggregateEnvelope{
 			RowCount: 2,
@@ -95,6 +110,12 @@ func TestTheExfilCheckIsQuietOnLegitimateAggregates(t *testing.T) {
 		}},
 		{"a note that names a column but quotes nothing", AggregateEnvelope{
 			Notes: []string{`column "note" holds free text; its values were not read (§12.1)`},
+		}},
+		{"a long category naming itself in a note", AggregateEnvelope{
+			Columns: []ColumnStats{{Name: "sector", Kind: KindText,
+				Range: &TextRange{Min: "manufacturing", Max: "professional services"}}},
+			TopK:  []Bucket{{Key: []string{"manufacturing"}, Count: 9}},
+			Notes: []string{"the largest group is manufacturing"},
 		}},
 	} {
 		t.Run(tc.why, func(t *testing.T) {

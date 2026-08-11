@@ -49,7 +49,10 @@ const (
 // Order is the preference. Podman first: it is daemonless and rootless by
 // default, so the non-root-uid and dropped-capability half of §3.6 starts from
 // a better place and needs no privileged service running to get there.
-var Order = []Runtime{Podman, Docker}
+//
+// A function rather than a package-level slice, so the search order of a
+// security boundary cannot be reassigned at runtime.
+func Order() []Runtime { return []Runtime{Podman, Docker} }
 
 // probeTimeout bounds the interrogation.
 //
@@ -92,7 +95,7 @@ type Report struct {
 // their podman cannot filter syscalls, not handed docker instead.
 func Detect(ctx context.Context) Report {
 	var tried []string
-	for _, rt := range Order {
+	for _, rt := range Order() {
 		bin, err := exec.LookPath(string(rt))
 		if err != nil {
 			tried = append(tried, string(rt)+": not on PATH")

@@ -44,24 +44,28 @@ import (
 // statement is not allowed" from "the guard itself failed".
 var ErrRejected = errors.New("sqlguard: rejected")
 
-// Rejection says what was refused and why.
-type Rejection struct {
-	// Reason is the rule that fired, stable enough to switch on.
-	Reason string
-	// Detail is what in the statement tripped it.
-	Detail string
+// rejection says what was refused and why.
+//
+// Unexported, matching gate.refusal, which is the identical construct. It was
+// exported with Reason documented as "stable enough to switch on" and nothing
+// ever switched on it — every caller uses errors.Is(err, ErrRejected). Two copies
+// of one error wrapper in a single milestone differing only in visibility is a
+// coin flip for whoever writes the third.
+type rejection struct {
+	reason string
+	detail string
 }
 
-func (r *Rejection) Error() string {
-	if r.Detail == "" {
-		return "sqlguard: " + r.Reason
+func (r *rejection) Error() string {
+	if r.detail == "" {
+		return "sqlguard: " + r.reason
 	}
-	return "sqlguard: " + r.Reason + ": " + r.Detail
+	return "sqlguard: " + r.reason + ": " + r.detail
 }
 
-func (r *Rejection) Is(target error) bool { return target == ErrRejected }
+func (r *rejection) Is(target error) bool { return target == ErrRejected }
 
-func reject(reason, detail string) error { return &Rejection{Reason: reason, Detail: detail} }
+func reject(reason, detail string) error { return &rejection{reason: reason, detail: detail} }
 
 // MaxLength caps statement size. A template renders a bounded query; anything
 // approaching this is not one of ours.
@@ -217,11 +221,16 @@ func checkVocabulary(query string) error {
 				return reject("function not on the allowlist", name+"()")
 			}
 		}
-		if isIdentifier(tok) && strings.HasPrefix(strings.ToLower(lit), "sqlite_") {
+		if isIdentifier(tok) {
 			// Not only as a call: `FROM sqlite_master` is a plain table
-			// reference. SQLite reserves the prefix, so no user table can
-			// collide with this and the rule costs nothing.
-			return reject("reserved name", strings.ToLower(lit))
+			// reference, and so is `FROM pragma_table_list` — the table-valued
+			// pragma functions can be spelled without parentheses, which the
+			// call rule above therefore missed. SQLite reserves both prefixes,
+			// so no user table can collide and the rule costs nothing.
+			if name := strings.ToLower(lit); strings.HasPrefix(name, "sqlite_") ||
+				strings.HasPrefix(name, "pragma_") {
+				return reject("reserved name", name)
+			}
 		}
 
 		prevTok, prevLit = tok, lit
@@ -259,9 +268,21 @@ func quoteForError(lit string) string {
 //	    ways to move bytes that no statistic needs.
 //	json_*
 //	    no template produces JSON; if one does, add what it uses.
-var allowedFunctions = newSet(
-	// Aggregates — what an AggregateEnvelope is made of.
+//
+// aggregateFunctions is the subset that collapses rows. The aggregation gate
+// derives its own set from Aggregates() rather than restating these.
+var aggregateFunctions = []string{
 	"count", "sum", "total", "avg", "min", "max", "group_concat",
+}
+
+// Aggregates returns the allowlisted functions that collapse rows.
+func Aggregates() []string {
+	out := make([]string, len(aggregateFunctions))
+	copy(out, aggregateFunctions)
+	return out
+}
+
+var allowedFunctions = newSet(append(aggregateFunctions,
 
 	// Window functions, for trend and seasonality templates.
 	"row_number", "rank", "dense_rank", "percent_rank", "cume_dist", "ntile",
@@ -281,7 +302,7 @@ var allowedFunctions = newSet(
 
 	// Time, for bucketing a time axis.
 	"date", "time", "datetime", "julianday", "unixepoch", "strftime", "timediff",
-)
+)...)
 
 func newSet(names ...string) map[string]bool {
 	m := make(map[string]bool, len(names))

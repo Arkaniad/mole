@@ -179,7 +179,8 @@ func TestTheQuoteCheckStillDropsFabrication(t *testing.T) {
 //
 // Asserted on the query never running rather than on the absence of claims: a
 // plan that produced no claims for some other reason would pass the weaker
-// check while the statement had already executed.
+// check while the statement had already executed. The DROP case additionally
+// checks the table is still there, which is the direct question.
 func TestAModelThatWritesSQLGetsNowhere(t *testing.T) {
 	reg := localRegistry(t)
 
@@ -216,6 +217,19 @@ func TestAModelThatWritesSQLGetsNowhere(t *testing.T) {
 			if res.Stats.ChunksSkipped == 0 {
 				t.Error("the refused hypothesis was not counted, so a run that " +
 					"refused everything looks like one that was never asked")
+			}
+			// The direct question, not a proxy: is the table still there?
+			for _, c := range reg {
+				db, err := c.Open()
+				if err != nil {
+					t.Fatal(err)
+				}
+				var n int64
+				err = db.QueryRow(`SELECT COUNT(*) FROM tickets`).Scan(&n)
+				db.Close()
+				if err != nil || n == 0 {
+					t.Fatalf("the table is gone: err=%v rows=%d", err, n)
+				}
 			}
 		})
 	}
@@ -274,9 +288,11 @@ func TestTheHypothesisCountIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// One plan call plus at most two mining calls.
-	if len(res.Costs) > 3 {
-		t.Fatalf("%d model call(s) for a ceiling of 2 hypotheses", len(res.Costs))
+	// Exactly one plan call plus two minings. `> 3` also passed when the plans
+	// were truncated to none, which is the opposite of what this measures.
+	if len(res.Costs) != 3 {
+		t.Fatalf("%d model call(s) for a ceiling of 2 hypotheses; want 1 plan + 2 mine",
+			len(res.Costs))
 	}
 }
 
@@ -709,5 +725,73 @@ func TestTheSchemaPromptCarriesNoRecordValues(t *testing.T) {
 			t.Errorf("%s (%s) is not flagged; its type is the least relevant fact about it",
 				col, cc.Type)
 		}
+	}
+}
+
+// TestTheInputCeilingIsEnforced.
+//
+// WebActor rechecks Budget.MaxInputTokens per chunk; this actor read only
+// MaxSources and MaxClaimsPerSource, so the executor's per-lead reservation went
+// unenforced and reserved-versus-actual diverged for every local lead. The
+// planning prompt is why it matters: the schema is every column of every
+// registered connector.
+func TestTheInputCeilingIsEnforced(t *testing.T) {
+	one := `{"connector":"sales","table":"samples","template":"distribution",
+	         "columns":{"key":"region"}}`
+	fl := scriptedModel("["+strings.Repeat(one+",", 4)+one+"]", quoteAGroupLine)
+
+	a := &actors.LocalComputeActor{
+		Connectors: samplesRegistry(t, 40), LLM: fl,
+		// Enough for the plan call and not for five minings.
+		Budget: actors.Budget{MaxSources: 5, MaxInputTokens: 200},
+	}
+	res, err := a.Run(context.Background(), localLead())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Truncated {
+		t.Error("the run exhausted its input allowance and did not say so")
+	}
+	// One plan call plus at most a couple of minings — not five.
+	if len(res.Costs) > 3 {
+		t.Errorf("%d model call(s) under an allowance of 200 tokens", len(res.Costs))
+	}
+}
+
+// TestASandboxOnlyRunDoesNotClaimTheGate.
+//
+// localSummary appended "every figure above came through the aggregation gate" to
+// every run, including a sandbox-only one — whose own code says in as many words
+// that "the script never touches the aggregation gate". A false privacy claim in
+// the text the planner and the report both read.
+func TestASandboxOnlyRunDoesNotClaimTheGate(t *testing.T) {
+	runner := &fakeRunner{out: coderunner.Output{Metrics: map[string]float64{"amplitude": 12.5}}}
+	fl := scriptedModel(codePlan, quoteAMetricLine)
+
+	a := &actors.LocalComputeActor{Connectors: samplesRegistry(t, 40), LLM: fl, Code: runner}
+	res, err := a.Run(context.Background(), localLead())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res.Summary, "aggregation gate as an aggregate") {
+		t.Errorf("a sandbox-only run claims the gate:\n%s", res.Summary)
+	}
+	for _, want := range []string{"no network", "the plan declared"} {
+		if !strings.Contains(res.Summary, want) {
+			t.Errorf("the summary does not describe the boundary that applied (%q):\n%s",
+				want, res.Summary)
+		}
+	}
+	// And the SQL route still describes its own.
+	fl2 := scriptedModel(`[
+	  {"connector":"sales","table":"samples","template":"distribution",
+	   "columns":{"key":"region"},"question":"split by region"}]`, quoteAGroupLine)
+	a2 := &actors.LocalComputeActor{Connectors: samplesRegistry(t, 40), LLM: fl2}
+	res2, err := a2.Run(context.Background(), localLead())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res2.Summary, "aggregation gate") {
+		t.Errorf("the SQL route no longer names the gate:\n%s", res2.Summary)
 	}
 }

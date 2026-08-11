@@ -289,7 +289,10 @@ func TestNoRuntimeIsReportedAsUnavailable(t *testing.T) {
 // a model will actually write, and python:3.13-slim could not be pulled where
 // this was written; that limit is in the package's known gaps rather than
 // papered over with a test that pretends otherwise.
-func shellRunner(t *testing.T) (coderunner.Sandboxed, bool) {
+// shellRunner skips the test when there is nothing to run against, so it returns
+// no ok flag — t.Skipf ends the goroutine, which made `if !ok { return }` dead in
+// all six callers.
+func shellRunner(t *testing.T) coderunner.Sandboxed {
 	t.Helper()
 	rep := sandbox.Detect(context.Background())
 	if !rep.Usable {
@@ -304,7 +307,7 @@ func shellRunner(t *testing.T) (coderunner.Sandboxed, bool) {
 		Image:   image,
 		Command: []string{"sh"},
 		Limits:  sandbox.Limits{CPUs: 1, MemoryMB: 256, Pids: 32, Wallclock: 20 * time.Second},
-	}, true
+	}
 }
 
 func localShellImage(t *testing.T, runtime string) string {
@@ -352,10 +355,7 @@ func connectorDB(t *testing.T) string {
 
 // TestAnAnalysisRunsAndOnlyItsFiguresComeBack, in a real container.
 func TestAnAnalysisRunsAndOnlyItsFiguresComeBack(t *testing.T) {
-	runner, ok := shellRunner(t)
-	if !ok {
-		return
-	}
+	runner := shellRunner(t)
 
 	out, err := runner.Analyze(context.Background(), coderunner.Request{
 		DBPath: connectorDB(t),
@@ -383,10 +383,7 @@ func TestAnAnalysisRunsAndOnlyItsFiguresComeBack(t *testing.T) {
 // database — and the connector's own read-only handle does not apply here, the
 // container is what enforces it.
 func TestTheMountedDatabaseIsReadableAndNotWritable(t *testing.T) {
-	runner, ok := shellRunner(t)
-	if !ok {
-		return
-	}
+	runner := shellRunner(t)
 	path := connectorDB(t)
 	// World-writable on purpose. The container runs as uid 65534, so a file
 	// owned by the invoking user is unwritable whatever the mount says — which
@@ -432,10 +429,7 @@ func TestTheMountedDatabaseIsReadableAndNotWritable(t *testing.T) {
 // that dumps what it read. Refused rather than parsed — the prefix of whatever
 // it was doing is not a safe way to find out what.
 func TestAScriptThatPrintsItsInputIsRefused(t *testing.T) {
-	runner, ok := shellRunner(t)
-	if !ok {
-		return
-	}
+	runner := shellRunner(t)
 	out, err := runner.Analyze(context.Background(), coderunner.Request{
 		DBPath: connectorDB(t),
 		// Half a megabyte, past the 256KB cap.
@@ -453,10 +447,7 @@ func TestAScriptThatPrintsItsInputIsRefused(t *testing.T) {
 // TestAHangingScriptIsKilled. The wallclock limit is enforced outside the
 // container, because a limit the script could choose to ignore is not one.
 func TestAHangingScriptIsKilled(t *testing.T) {
-	runner, ok := shellRunner(t)
-	if !ok {
-		return
-	}
+	runner := shellRunner(t)
 	runner.Limits.Wallclock = 3 * time.Second
 
 	start := time.Now()
@@ -481,10 +472,7 @@ func TestAHangingScriptIsKilled(t *testing.T) {
 // TestAFailingScriptReportsItsStderr. A model whose code raised has to be told
 // what it raised, or the next attempt is the same attempt.
 func TestAFailingScriptReportsItsStderr(t *testing.T) {
-	runner, ok := shellRunner(t)
-	if !ok {
-		return
-	}
+	runner := shellRunner(t)
 	_, err := runner.Analyze(context.Background(), coderunner.Request{
 		DBPath:   connectorDB(t),
 		Script:   `echo "column spend does not exist" >&2; exit 3`,
@@ -498,24 +486,7 @@ func TestAFailingScriptReportsItsStderr(t *testing.T) {
 	}
 }
 
-func itoa(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var b []byte
-	for n > 0 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-		n /= 10
-	}
-	if neg {
-		return "-" + string(b)
-	}
-	return string(b)
-}
+func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
 func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
 
@@ -577,10 +548,7 @@ func TestAPValueMustBeAProbability(t *testing.T) {
 // a lot reported "printed more than the output limit" and its traceback was never
 // shown — leaving the model to make the same attempt again.
 func TestAFailingScriptShowsItsErrorEvenWhenItPrintedTooMuch(t *testing.T) {
-	runner, ok := shellRunner(t)
-	if !ok {
-		return
-	}
+	runner := shellRunner(t)
 	_, err := runner.Analyze(context.Background(), coderunner.Request{
 		DBPath: connectorDB(t),
 		Script: `i=0; while [ $i -lt 4000 ]; do printf '%0128d\n' $i; i=$((i+1)); done
@@ -598,10 +566,7 @@ func TestAFailingScriptShowsItsErrorEvenWhenItPrintedTooMuch(t *testing.T) {
 // TestACancelledAnalysisIsNotReportedAsATimeout, because they mean opposite
 // things about the script: one ran too long, the other never got the chance.
 func TestACancelledAnalysisIsNotReportedAsATimeout(t *testing.T) {
-	runner, ok := shellRunner(t)
-	if !ok {
-		return
-	}
+	runner := shellRunner(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		time.Sleep(300 * time.Millisecond)

@@ -76,12 +76,13 @@ type Spec struct {
 // spec.
 var ErrMountPath = errors.New("sandbox: unusable mount path")
 
-// DefaultMaxOutputBytes bounds stdout.
+// defaultMaxOutputBytes bounds stdout. Unexported: nothing outside this package
+// has a reason to name it.
 //
 // Generous for a set of statistics and far too small for a data dump, which is
 // the distinction that matters: a script that tries to print its input hits
 // this rather than filling memory.
-const DefaultMaxOutputBytes = 256 << 10
+const defaultMaxOutputBytes = 256 << 10
 
 // Result is what the run produced.
 type Result struct {
@@ -122,7 +123,7 @@ func (r Report) Run(ctx context.Context, spec Spec) (Result, error) {
 	}
 	maxOut := spec.MaxOutputBytes
 	if maxOut <= 0 {
-		maxOut = DefaultMaxOutputBytes
+		maxOut = defaultMaxOutputBytes
 	}
 
 	name, err := containerName()

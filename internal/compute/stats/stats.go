@@ -85,13 +85,34 @@ func (g Group) Variance() float64 {
 	return v
 }
 
-// RelativeErrorLimit is how much of the variance may be lost to cancellation
-// before the result is treated as unresolvable.
+// MaxMagnitudeRatio is how far the mean may sit from zero, in standard
+// deviations, before a variance computed from Σx and Σx² is treated as
+// unresolvable.
 //
-// One percent. Σx² − (Σx)²/n subtracts two nearly equal large numbers, and the
-// first-order relative error is about eps·Σx²/ss — so the accuracy depends on
-// how large the values are compared to how much they vary, not on n.
-const RelativeErrorLimit = 0.01
+// Σx² − (Σx)²/n subtracts two nearly equal large numbers, and what survives
+// depends on the ratio of magnitude to spread. Measured, on 1000-row groups
+// whose true variance is known:
+//
+//	spread 1    mean 1e6    relative error 1.5e-06
+//	spread 10   mean 1e7    relative error 0.026
+//	spread 10   mean 3e7    relative error 0.178
+//	spread 100  mean 3e8    relative error 0.099
+//
+// A first-order estimate of that error cannot be used as the test: eps·Σx²/ss
+// comes out at 3.4e-4 for both the 1.5e-06 row and the 0.026 row, so no
+// threshold on it separates an accurate variance from a 2% wrong one. That was
+// the first attempt, and it accepted variances up to 18% wrong.
+//
+// The ratio does separate them. A million is four orders of magnitude inside
+// float64's ~16 digits, and every row above with an error over 1% exceeds it
+// while the accurate ones do not.
+//
+// It over-refuses the spread-1/mean-1e6 case, which is accurate. That is the
+// right way to be wrong: the fix is one line in the query — subtract a constant,
+// which the group-comparison template does — and a refusal naming it costs a
+// retry, where a variance ten times too small costs a fabricated p-value of
+// 6e-10.
+const MaxMagnitudeRatio = 1e6
 
 // variance reports the SAMPLE variance (n−1) and whether float64 could resolve
 // it.
@@ -122,11 +143,15 @@ func (g Group) variance() (float64, bool) {
 	if ss <= 0 {
 		return 0, ss == 0 && g.SumSq == 0
 	}
-	// eps·Σx²/ss estimates how much of ss is rounding rather than signal.
-	if g.SumSq > 0 && (math.Nextafter(1, 2)-1)*g.SumSq/ss > RelativeErrorLimit {
+	v := ss / (n - 1)
+	// After centring, Σx/n is near zero and this ratio is small whatever the
+	// original magnitude was — so a query that subtracts a constant passes
+	// without a special case, and one that does not is measured on its own
+	// numbers.
+	if sd := math.Sqrt(v); sd > 0 && math.Abs(g.Sum/n)/sd > MaxMagnitudeRatio {
 		return 0, false
 	}
-	return ss / (n - 1), true
+	return v, true
 }
 
 // Verdict is what the test supports.
@@ -282,14 +307,23 @@ func WelchOrReason(measure string, a, b Group) (Test, error) {
 		Statistic: t, DF: df, P: p, EffectSize: d,
 		CILow: diff - half, CIHigh: diff + half,
 	}
-	test.Verdict = verdictFor(p, a.N, b.N)
+	test.Verdict = VerdictFor(p, a.N, b.N)
 	test.Summary = summarize(test)
 	return test, nil
 }
 
-func verdictFor(p float64, na, nb int64) Verdict {
-	if na < MinGroupN || nb < MinGroupN {
-		return Underpowered
+// VerdictFor is the one place the thresholds are applied.
+//
+// Variadic over the group sizes because a two-sample test has two and a
+// sandbox-computed result has one. It used to be written twice — here over both
+// groups, and again in coderunner over a single n — under a comment claiming the
+// copy "mirrors the SQL path's rule so the two cannot disagree". They already
+// did: this required BOTH groups to clear MinGroupN and the copy checked one.
+func VerdictFor(p float64, ns ...int64) Verdict {
+	for _, n := range ns {
+		if n < MinGroupN {
+			return Underpowered
+		}
 	}
 	if p < Alpha {
 		return Significant
@@ -303,6 +337,29 @@ func verdictFor(p float64, na, nb int64) Verdict {
 // chance" rather than "no difference" — the test cannot show absence — and
 // underpowered results say what is missing rather than reporting a p-value
 // somebody would quote.
+// Sentence renders a verdict for a passage a claim will quote.
+//
+// Shared, because there were two: Welch's and the sandbox's, under a comment
+// claiming they were "phrased like the SQL path's so that a reader cannot tell
+// from the wording which one produced it". A reader could — the two differed in
+// the underpowered clause, in whether a test statistic was named, and in whether
+// an effect size or an interval appeared at all.
+//
+// detail is the part only the caller knows: Welch adds its statistic and
+// interval, a sandbox result adds what its script reported.
+func Sentence(head string, v Verdict, p float64, detail string) string {
+	switch v {
+	case Underpowered:
+		return head + fmt.Sprintf("; UNDERPOWERED — fewer than %d records, so this is "+
+			"not evidence either way", MinGroupN)
+	case Significant:
+		return head + fmt.Sprintf("; statistically significant (p = %s)%s", PValue(p), detail)
+	default:
+		return head + fmt.Sprintf("; NOT distinguishable from chance (p = %s)%s",
+			PValue(p), detail)
+	}
+}
+
 func summarize(t Test) string {
 	dir := "higher"
 	if t.Difference < 0 {
@@ -312,27 +369,17 @@ func summarize(t Test) string {
 		t.Measure, t.GroupA, dir, t.GroupB, sig(math.Abs(t.Difference)),
 		sig(t.MeanA), sig(t.MeanB), t.NA, t.NB)
 
-	switch t.Verdict {
-	case Underpowered:
-		return head + fmt.Sprintf(
-			"; UNDERPOWERED — fewer than %d records in a group, so this difference "+
-				"is not evidence either way", MinGroupN)
-	case Significant:
-		return head + fmt.Sprintf(
-			"; statistically significant (Welch t = %s, p = %s), effect size %s (%s), "+
-				"95%% CI %s to %s",
-			sig(t.Statistic), pval(t.P), sig(t.EffectSize), magnitude(t.EffectSize),
-			sig(t.CILow), sig(t.CIHigh))
-	default:
-		return head + fmt.Sprintf(
-			"; NOT distinguishable from chance (Welch t = %s, p = %s), 95%% CI %s to %s",
-			sig(t.Statistic), pval(t.P), sig(t.CILow), sig(t.CIHigh))
-	}
+	detail := fmt.Sprintf(", Welch t = %s, effect size %s (%s), 95%% CI %s to %s",
+		Num(t.Statistic), Num(t.EffectSize), Magnitude(t.EffectSize),
+		Num(t.CILow), Num(t.CIHigh))
+	return Sentence(head, t.Verdict, t.P, detail)
 }
 
 // magnitude labels an effect size, because "d = 0.21" means nothing to a reader
 // who has not memorised the conventions and everything to one who has.
-func magnitude(d float64) string {
+// Magnitude labels an effect size. Exported so both evidence paths use the same
+// words for the same number.
+func Magnitude(d float64) string {
 	switch a := math.Abs(d); {
 	case a < 0.2:
 		return "negligible"
@@ -345,19 +392,45 @@ func magnitude(d float64) string {
 	}
 }
 
-func sig(f float64) string {
-	if f == math.Trunc(f) && math.Abs(f) < 1e15 {
+// Num formats a figure for a passage a claim will quote.
+//
+// One formatter, and there were three: the gate rendered at two decimals, the
+// sandbox at four, and this at two. The gate's destroyed the figures it
+// rendered — a rate column of 0.0001 to 0.003 reached the model as
+//
+//	lowest 0.00, highest 0.00, mean 0.00, median 0.00
+//
+// so §11.5 then permitted only "0.00" as a citation. Small magnitudes keep
+// significant digits instead of decimal places, which is what makes a rate
+// quotable at all.
+//
+// The gate's copy also used float64(int64(f)), undefined above 2^63, where the
+// other two guarded the range.
+func Num(f float64) string {
+	switch a := math.Abs(f); {
+	case f == math.Trunc(f) && a < 1e15:
 		return fmt.Sprintf("%.0f", f)
+	case a >= 0.01:
+		return fmt.Sprintf("%.2f", f)
+	case a > 0:
+		// Four significant digits, however small. %g keeps them without
+		// committing to an exponent until one is needed.
+		return fmt.Sprintf("%.4g", f)
+	default:
+		return "0"
 	}
-	return fmt.Sprintf("%.2f", f)
 }
 
-func pval(p float64) string {
+// PValue formats a p-value, with a floor rather than a run of zeros.
+func PValue(p float64) string {
 	if p < 0.001 {
 		return "<0.001"
 	}
 	return fmt.Sprintf("%.3f", p)
 }
+
+func sig(f float64) string  { return Num(f) }
+func pval(p float64) string { return PValue(p) }
 
 // tQuantile is the two-sided 95% critical value for df degrees of freedom —
 // the t solving twoTailedT(t, df) = Alpha.

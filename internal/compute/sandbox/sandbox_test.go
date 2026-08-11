@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -388,14 +389,4 @@ func writeFakeRuntime(t *testing.T, dir, name, output string, exitCode int) {
 	}
 }
 
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	var b []byte
-	for i > 0 {
-		b = append([]byte{byte('0' + i%10)}, b...)
-		i /= 10
-	}
-	return string(b)
-}
+func itoa(i int) string { return strconv.Itoa(i) }

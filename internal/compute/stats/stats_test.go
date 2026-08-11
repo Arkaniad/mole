@@ -234,3 +234,172 @@ func TestTheSummaryCarriesEveryNumberAClaimWouldCite(t *testing.T) {
 		}
 	}
 }
+
+// -----------------------------------------------------------------------------
+// M8 review regressions
+// -----------------------------------------------------------------------------
+
+// TestTheIntervalNeverContradictsTheVerdict.
+//
+// The interval used 1.96 rather than the t quantile for its own degrees of
+// freedom, justified in a comment as "under 3%". The percentage was not the
+// point: at n=20/20 (df=38, t* = 2.0244) any 1.96 < |t| < 2.0244 produced
+//
+//	NOT distinguishable from chance (Welch t = 1.96, p = 0.057), 95% CI 0.00 to 6.36
+//
+// an interval excluding zero beside a null verdict, in one sentence a claim has
+// to quote. The quantile is now inverted from the same distribution the p-value
+// comes from, so the two cannot disagree by construction.
+func TestTheIntervalNeverContradictsTheVerdict(t *testing.T) {
+	var disagreements int
+	for _, n := range []int64{20, 25, 40, 100, 500} {
+		for gap := 0.0; gap <= 6.0; gap += 0.01 {
+			a := stats.Group{Name: "a", N: n}
+			b := stats.Group{Name: "b", N: n}
+			for i := int64(0); i < n; i++ {
+				d := 5.0
+				if i%2 == 1 {
+					d = -5.0
+				}
+				va, vb := gap+d, d
+				a.Sum += va
+				a.SumSq += va * va
+				b.Sum += vb
+				b.SumSq += vb * vb
+			}
+			got, ok := stats.Welch("x", a, b)
+			if !ok {
+				continue
+			}
+			excludesZero := (got.CILow > 0) == (got.CIHigh > 0)
+			if excludesZero != (got.P < stats.Alpha) {
+				disagreements++
+				if disagreements == 1 {
+					t.Errorf("n=%d gap=%.2f: p = %.5f but the 95%% CI is [%.4f, %.4f]\n  %s",
+						n, gap, got.P, got.CILow, got.CIHigh, got.Summary)
+				}
+			}
+		}
+	}
+	if disagreements > 0 {
+		t.Errorf("%d parameter combinations disagree", disagreements)
+	}
+}
+
+// TestALostVarianceIsRefusedRatherThanReported.
+//
+// Σx² − (Σx)²/n subtracts two nearly equal large numbers. The old guard clamped a
+// negative result to zero and missed the regime that matters — measured on
+// 1000-row groups with true variance 0.667 and a true p of 0.171:
+//
+//	mean 1e6   variance 0.667668   not significant, p = 0.177   correct
+//	mean 1e7   variance 0.064064   SIGNIFICANT,     p = 6.2e-10  fabricated
+//
+// so at values around ten million the test reported a large significant effect
+// for data with none.
+func TestALostVarianceIsRefusedRatherThanReported(t *testing.T) {
+	// spread scales with the magnitude for the cases that must still work: what
+	// decides whether the sums can resolve a variance is the RATIO of the two,
+	// not the magnitude alone. See MaxMagnitudeRatio.
+	build := func(offset, mean, spread float64, n int) stats.Group {
+		g := stats.Group{N: int64(n)}
+		for i := 0; i < n; i++ {
+			v := mean + offset + spread*(float64(i%3)-1)
+			g.Sum += v
+			g.SumSq += v * v
+		}
+		return g
+	}
+
+	// An ordinary column must still be computable, or the guard is just a
+	// refusal. A spread of 100 around a million is a ratio of ten thousand.
+	for _, mean := range []float64{1e3, 1e6, 1e7} {
+		got, err := stats.WelchOrReason("x",
+			build(0, mean, 100, 1000), build(5, mean, 100, 1000))
+		if err != nil {
+			t.Fatalf("an ordinary column at mean %g was refused: %v", mean, err)
+		}
+		if got.Verdict == stats.Underpowered {
+			t.Errorf("mean %g: n=1000 a side reported as underpowered", mean)
+		}
+	}
+
+	// A spread float64 cannot resolve at this magnitude must be refused, with the
+	// fix in the message rather than a silent zero or a wrong figure.
+	for _, mean := range []float64{1e7, 1e8, 1e9} {
+		_, err := stats.WelchOrReason("x",
+			build(0, mean, 1, 1000), build(0.05, mean, 1, 1000))
+		if err == nil {
+			t.Errorf("mean %g produced a test from a variance float64 cannot resolve", mean)
+			continue
+		}
+		if !strings.Contains(err.Error(), "subtract a constant") {
+			t.Errorf("mean %g: the error does not say how to fix it: %v", mean, err)
+		}
+	}
+}
+
+// TestCentringMakesALargeMagnitudeComputable, which is the actual fix — the
+// refusal above is only the backstop. Variance is shift-invariant, so a query
+// that subtracts a constant gets the right answer and the mean is recovered from
+// Offset.
+func TestCentringMakesALargeMagnitudeComputable(t *testing.T) {
+	const mean = 1e7
+	build := func(offset float64, n int) stats.Group {
+		g := stats.Group{N: int64(n), Offset: mean}
+		for i := 0; i < n; i++ {
+			v := offset + float64(i%3) - 1 // already centred
+			g.Sum += v
+			g.SumSq += v * v
+		}
+		return g
+	}
+	got, err := stats.WelchOrReason("x", build(0, 1000), build(0.05, 1000))
+	if err != nil {
+		t.Fatalf("centred data was refused: %v", err)
+	}
+	if got.Verdict == stats.Significant {
+		t.Errorf("a difference of 0.05 on a spread of 1 was called significant (p = %v)", got.P)
+	}
+	// The means must be reported at their real magnitude.
+	if got.MeanA < 0.99e7 || got.MeanA > 1.01e7 {
+		t.Errorf("MeanA = %v, want ~1e7 — Offset was not added back", got.MeanA)
+	}
+}
+
+// TestOneVerdictRuleForBothPaths. It was written twice and the copies already
+// differed: this required BOTH groups to clear MinGroupN and coderunner's checked
+// one, under a comment claiming they could not disagree.
+func TestOneVerdictRuleForBothPaths(t *testing.T) {
+	// One group short of the floor is underpowered even when the other is not.
+	if got := stats.VerdictFor(0.0001, 500, 5); got != stats.Underpowered {
+		t.Errorf("VerdictFor(p, 500, 5) = %q, want %q", got, stats.Underpowered)
+	}
+	if got := stats.VerdictFor(0.0001, 500); got != stats.Significant {
+		t.Errorf("VerdictFor(p, 500) = %q, want %q", got, stats.Significant)
+	}
+	if got := stats.VerdictFor(0.4, 500, 500); got != stats.NotSignificant {
+		t.Errorf("VerdictFor(0.4, 500, 500) = %q, want %q", got, stats.NotSignificant)
+	}
+}
+
+// TestSmallMagnitudesKeepTheirDigits. Three formatters existed at two
+// precisions, and the gate's rendered a rate column of 0.0001 to 0.003 as
+// "0.00" — so §11.5 then permitted only a wrong number as a citation.
+func TestSmallMagnitudesKeepTheirDigits(t *testing.T) {
+	for _, tc := range []struct{ in, want float64 }{
+		{0.0001, 0.0001}, {0.003, 0.003}, {0.00155, 0.00155},
+	} {
+		got := stats.Num(tc.in)
+		if got == "0.00" || got == "0" {
+			t.Errorf("Num(%v) = %q, which destroys the figure a claim must quote",
+				tc.in, got)
+		}
+	}
+	// Whole numbers and ordinary magnitudes keep reading naturally.
+	for in, want := range map[float64]string{20: "20", 10.5: "10.50", 1050: "1050"} {
+		if got := stats.Num(in); got != want {
+			t.Errorf("Num(%v) = %q, want %q", in, got, want)
+		}
+	}
+}

@@ -539,8 +539,11 @@ func (r *Runner) actorsFor(spec Spec, web *actors.WebActor) map[core.ActorType]a
 	out := map[core.ActorType]actors.Actor{core.ActorWeb: web}
 	for _, t := range spec.ActorTypes {
 		if t == core.ActorLocalCompute && r.Local != nil {
-			local := *r.Local
-			out[core.ActorLocalCompute] = &local
+			// Registered directly, not copied. The Academic arm below copies
+			// because it carries a SessionID that scopes the claims it writes;
+			// LocalComputeActor takes the session from the lead, so a per-session
+			// copy would imitate the shape of that rule without its reason.
+			out[core.ActorLocalCompute] = r.Local
 			continue
 		}
 		if t == core.ActorAcademic && r.Academic != nil {

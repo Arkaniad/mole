@@ -114,6 +114,14 @@ func TestRefusedStatements(t *testing.T) {
 		{"sqlite_master in a subquery",
 			`SELECT COUNT(*) FROM sales WHERE region IN (SELECT name FROM sqlite_master)`, "reserved"},
 		{"sqlite_ function", `SELECT sqlite_compileoption_get(0)`, "reserved"},
+		// The table-valued pragma functions can be spelled WITHOUT parentheses,
+		// which the identifier-followed-by-`(` rule therefore missed — and the
+		// bare-name rule covered only the sqlite_ prefix. Verified reachable: it
+		// passed Check and then executed on the read-only handle.
+		{"bare pragma function", `SELECT COUNT(*) FROM pragma_table_list`, "reserved"},
+		{"bare pragma in a subquery",
+			`SELECT COUNT(*) FROM sales WHERE region IN (SELECT name FROM pragma_table_list)`,
+			"reserved"},
 
 		// An unknown function is refused even when it is harmless, because the
 		// allowlist is what makes the escape hatches unreachable by default.
@@ -217,7 +225,6 @@ func TestWalkIsNotAnExhaustiveTraversal(t *testing.T) {
 		if _, err := sql.Walk(v, stmts[0]); err != nil {
 			t.Fatal(err)
 		}
-		_ = stmts
 		if v.sawEscape {
 			t.Errorf("Walk now reaches the call in %q — the AST has become usable "+
 				"as a second check; the token check should stay regardless", q)

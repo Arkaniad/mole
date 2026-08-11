@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lajosdeme/mole/internal/compute/sandbox"
 )
 
 // M8 slice 6, at the command level.
@@ -107,15 +109,20 @@ func TestDoctorSaysWhatStillWorksWithoutASandbox(t *testing.T) {
 // A line claiming "netns disabled, seccomp default" while the runner forgot
 // --network=none would be a check reporting a property nothing enforces, so the
 // summary is rendered from the same flags CodeRunner will pass.
+// The branch is taken from the detection itself, not inferred from a sentence
+// being absent. The old key was `!strings.Contains(out, "no container runtime
+// found")`, and the found-but-unusable arm prints neither that string nor the
+// limits summary — so on a docker install without seccomp this asserted the
+// limits were present and failed for the wrong reason.
 func TestDoctorPrintsTheFlagsItWouldUse(t *testing.T) {
-	out, _ := doctorRun(t, t.TempDir(), "")
-	if !strings.Contains(out, "no container runtime found") {
-		for _, want := range []string{"no network", "read-only rootfs", "capabilities dropped", "uid 65534"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("a usable runtime was found but %q is not in the report:\n%s", want, out)
-			}
-		}
-		return
+	rep := sandbox.Detect(context.Background())
+	if !rep.Usable {
+		t.Skipf("no usable container runtime: %s", rep.Detail)
 	}
-	t.Skip("no container runtime on this machine")
+	out, _ := doctorRun(t, t.TempDir(), "")
+	for _, want := range []string{"no network", "read-only rootfs", "capabilities dropped", "uid 65534"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q is not in the report:\n%s", want, out)
+		}
+	}
 }

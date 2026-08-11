@@ -2,8 +2,10 @@ package gate
 
 import (
 	"fmt"
-	"strconv"
+	"sort"
 	"strings"
+
+	"github.com/lajosdeme/mole/internal/compute/stats"
 )
 
 // Text renders the envelope as the passage a model reads.
@@ -24,7 +26,7 @@ import (
 func (e AggregateEnvelope) Text() string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "Result of one query against local data.\n")
+	b.WriteString("Result of one query against local data.\n")
 	fmt.Fprintf(&b, "Query: %s\n", e.Query)
 	fmt.Fprintf(&b, "Rows in the result: %d\n", e.RowCount)
 
@@ -105,14 +107,14 @@ func bucketLine(b Bucket) string {
 	return line
 }
 
-// num formats a figure the way a claim would quote it: no exponent, no trailing
-// zeros, and never "1.0000000000000002".
-func num(f float64) string {
-	if f == float64(int64(f)) {
-		return strconv.FormatInt(int64(f), 10)
-	}
-	return strconv.FormatFloat(f, 'f', 2, 64)
-}
+// num is stats.Num.
+//
+// It used to be its own formatter at two decimal places, which destroyed the
+// figures it rendered: a rate column of 0.0001 to 0.003 reached the model as
+// "lowest 0.00, highest 0.00, mean 0.00", and §11.5 then permitted only "0.00"
+// as a citation. Three formatters at two precisions, one of which was wrong; now
+// one.
+func num(f float64) string { return stats.Num(f) }
 
 func sortedKeys(m map[string]float64) []string {
 	out := make([]string, 0, len(m))
@@ -121,10 +123,6 @@ func sortedKeys(m map[string]float64) []string {
 	}
 	// Deterministic, because the rendering feeds a model call that a cassette
 	// keys on the request body (§14.1). Map order would make replay a coin toss.
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j] < out[j-1]; j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
+	sort.Strings(out)
 	return out
 }

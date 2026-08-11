@@ -74,7 +74,8 @@ func (a *LocalComputeActor) logger() *slog.Logger {
 	return slog.Default()
 }
 
-// maxHypotheses caps how many questions one lead may ask.
+// defaultHypotheses caps how many questions one lead may ask when the budget
+// names no ceiling of its own.
 const defaultHypotheses = 3
 
 func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, error) {
@@ -90,6 +91,18 @@ func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, e
 	if maxClaims <= 0 {
 		maxClaims = 8
 	}
+	// The input ceiling, which this actor ignored entirely.
+	//
+	// WebActor rechecks it per chunk and reports Truncated; this read only
+	// MaxSources and MaxClaimsPerSource, so the executor's per-lead reservation
+	// was silently unenforced and reserved-versus-actual diverged for every local
+	// lead. The planning prompt is the reason it matters: renderSchema emits every
+	// column of every registered connector, uncapped.
+	maxInput := budget.MaxInputTokens
+	if maxInput <= 0 {
+		maxInput = 12000
+	}
+	var inputUsed int64
 
 	res := &Result{}
 	sources := a.Connectors.List()
@@ -99,7 +112,8 @@ func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, e
 		return res, nil
 	}
 
-	plans, err := a.plan(ctx, lead, sources, maxHypotheses, res)
+	plans, spent, err := a.plan(ctx, lead, sources, maxHypotheses, maxInput, res)
+	inputUsed += spent
 	if err != nil {
 		return res, err
 	}
@@ -110,9 +124,17 @@ func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, e
 
 	miner := &Miner{LLM: a.LLM, Pricing: a.Pricing, Log: a.Log, SessionID: lead.SessionID}
 	var findings []string
+	var usedGate, usedSandbox bool
 
 	for _, p := range plans {
 		if err := ctx.Err(); err != nil {
+			res.Truncated = true
+			break
+		}
+		if remaining := maxInput - inputUsed; remaining <= 0 {
+			// Out of allowance. Reported, not silently skipped: a run that asked
+			// three questions and could afford one is a different result from one
+			// that found nothing.
 			res.Truncated = true
 			break
 		}
@@ -126,9 +148,12 @@ func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, e
 			res.Stats.ChunksSkipped++
 			continue
 		}
-		res.Stats.SearchResults++
+		// Chunks only. SearchResults used to be incremented too, for a run that
+		// performs no search — the sibling AcademicActor never touches that field
+		// and the two lines counted one event twice.
 		res.Stats.Chunks++
 
+		inputUsed += llm.EstimateTokens(len(text))
 		out, err := miner.Mine(ctx, MineInput{
 			Lead:      lead,
 			SourceURL: cite,
@@ -149,9 +174,14 @@ func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, e
 		}
 		res.Claims = append(res.Claims, note.cap(out.Claims)...)
 		findings = append(findings, note.finding)
+		if p.Code != nil {
+			usedSandbox = true
+		} else {
+			usedGate = true
+		}
 	}
 
-	res.Summary = localSummary(lead, findings, res)
+	res.Summary = localSummary(lead, findings, res, usedGate, usedSandbox)
 	return res, nil
 }
 
@@ -229,7 +259,7 @@ func (a *LocalComputeActor) runQuery(
 	}
 
 	note.finding = describeFinding(p, env)
-	note.unsupported = unsupportedComparison(env)
+	note.unsupported = unsupported(envelopeVerdicts(env))
 	// §4's table: a local claim's source is "connector name + query hash", and a
 	// claim nobody can trace back to a statement is not evidence.
 	cite := fmt.Sprintf("connector:%s#%s", c.Name, env.QueryHash[:16])
@@ -251,7 +281,24 @@ func (a *LocalComputeActor) runCode(
 			"no container runtime is available, so a code hypothesis cannot run " +
 				"(mole doctor reports what is missing)")
 	}
-	query, _ := hypothesis.Render(c, p)
+	// Rendered and checked, or not sent at all.
+	//
+	// The error used to be discarded, so a code plan whose template slots were
+	// unfilled ran a container with MOLE_QUERY="" and its table and columns were
+	// never validated. The query is only a hint to the script — the container is
+	// the control — but a hint nobody checked is still a string mole built from a
+	// model's choice.
+	var query string
+	if p.Template != "" {
+		rendered, err := hypothesis.Render(c, p)
+		if err != nil {
+			return "", "", note, err
+		}
+		if err := sqlguard.Check(rendered); err != nil {
+			return "", "", note, err
+		}
+		query = rendered
+	}
 
 	out, err := a.Code.Analyze(ctx, coderunner.Request{
 		DBPath: c.DBPath,
@@ -272,7 +319,7 @@ func (a *LocalComputeActor) runCode(
 	}
 
 	note.finding = describeCodeFinding(p, out)
-	note.unsupported = unsupportedFindings(out)
+	note.unsupported = unsupported(outputVerdicts(out))
 	// The script is what produced the evidence, so the script is what the
 	// citation identifies. A query hash would name a statement that only
 	// suggested what to look at.
@@ -285,46 +332,50 @@ func shortHash(s string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-// unsupportedComparison reports whether an envelope ran a comparison and none of
-// them supported a difference.
-func unsupportedComparison(env gate.AggregateEnvelope) bool {
-	if len(env.TestResults) == 0 {
+// unsupported reports whether a run produced verdicts and none supported a
+// difference.
+//
+// One predicate over verdicts, because there were two — the same three lines
+// over two element types — and §4's cap is exactly the rule that must not
+// diverge by route. Empty means no test was computable, which is not the same as
+// a test that failed and is deliberately not capped: a distribution has no
+// comparison to fail.
+func unsupported(verdicts []stats.Verdict) bool {
+	if len(verdicts) == 0 {
 		return false
 	}
-	for _, t := range env.TestResults {
-		if t.Verdict == stats.Significant {
+	for _, v := range verdicts {
+		if v == stats.Significant {
 			return false
 		}
 	}
 	return true
 }
 
-func unsupportedFindings(out coderunner.Output) bool {
-	if len(out.Findings) == 0 {
-		return false
+func envelopeVerdicts(env gate.AggregateEnvelope) []stats.Verdict {
+	out := make([]stats.Verdict, 0, len(env.TestResults))
+	for _, t := range env.TestResults {
+		out = append(out, t.Verdict)
 	}
-	for _, f := range out.Findings {
-		if f.Verdict == stats.Significant {
-			return false
-		}
+	return out
+}
+
+func outputVerdicts(o coderunner.Output) []stats.Verdict {
+	out := make([]stats.Verdict, 0, len(o.Findings))
+	for _, f := range o.Findings {
+		out = append(out, f.Verdict)
 	}
-	return true
+	return out
 }
 
 func describeCodeFinding(p hypothesis.Plan, out coderunner.Output) string {
-	q := p.Question
-	if strings.TrimSpace(q) == "" {
-		q = "a sandboxed analysis over " + p.Connector
-	}
-	line := fmt.Sprintf("%s — ran in the sandbox, %d metric(s) and %d statistical result(s)",
-		q, len(out.Metrics), len(out.Findings))
+	headline := fmt.Sprintf("ran in the sandbox, %d metric(s) and %d statistical result(s)",
+		len(out.Metrics), len(out.Findings))
 	if n := len(out.Dropped) + out.Undeclared; n > 0 {
-		line += fmt.Sprintf(", %d output(s) refused", n)
+		headline += fmt.Sprintf(", %d output(s) refused", n)
 	}
-	for _, f := range out.Findings {
-		line += fmt.Sprintf("; %s %s", f.Name, f.Verdict)
-	}
-	return line
+	return finding(p.Question, "a sandboxed analysis over "+p.Connector,
+		headline, outputVerdicts(out))
 }
 
 func findConnector(sources []connector.Connector, name string) (connector.Connector, bool) {
@@ -367,13 +418,24 @@ const unsupportedAssertionCap = 0.3
 
 // plan asks the model which questions to put to the data.
 //
-// One call for every hypothesis rather than one per hypothesis: the schema is
+// One call for ALL the hypotheses rather than one per hypothesis: the schema is
 // the expensive part of the prompt and it does not change between them.
 func (a *LocalComputeActor) plan(
-	ctx context.Context, lead core.Lead, sources []connector.Connector, max int, res *Result,
-) ([]hypothesis.Plan, error) {
+	ctx context.Context, lead core.Lead, sources []connector.Connector,
+	max int, maxInput int64, res *Result,
+) ([]hypothesis.Plan, int64, error) {
 	fence := fenceToken()
 	prompt := planPrompt(fence, lead.Query, sources, max, a.Code != nil)
+
+	// The schema is unbounded in principle — every column of every registered
+	// connector — so it is capped here rather than discovered to be too large by
+	// the provider. Truncated is set so a thin plan reads as a budget outcome.
+	if limit := int(maxInput) * 3; len(prompt) > limit && limit > 0 {
+		prompt = prompt[:limit] + "\n[schema truncated: the input allowance for this " +
+			"lead does not cover every registered column]"
+		res.Truncated = true
+	}
+	spent := llm.EstimateTokens(len(prompt))
 
 	resp, err := a.LLM.Complete(ctx, llm.Request{
 		Tier:      llm.TierCheap,
@@ -382,25 +444,25 @@ func (a *LocalComputeActor) plan(
 		MaxTokens: 2048,
 	})
 	if resp == nil {
-		return nil, err
+		return nil, spent, err
 	}
 	res.Costs = append(res.Costs,
 		toolCallFor(lead.SessionID, lead, resp, "local:plan", a.Pricing, a.Log, err))
 	if err != nil {
-		return nil, err
+		return nil, spent, err
 	}
 	if resp.Refused {
-		return nil, fmt.Errorf("actors: model refused to plan (%s)", resp.RefusalCategory)
+		return nil, spent, fmt.Errorf("actors: model refused to plan (%s)", resp.RefusalCategory)
 	}
 
 	plans, err := parsePlans(resp.Text)
 	if err != nil {
-		return nil, err
+		return nil, spent, err
 	}
 	if len(plans) > max {
 		plans = plans[:max]
 	}
-	return plans, nil
+	return plans, spent, nil
 }
 
 func parsePlans(raw string) ([]hypothesis.Plan, error) {
@@ -435,29 +497,53 @@ func extractJSONArray(raw string) string {
 // Summary
 // -----------------------------------------------------------------------------
 
-func describeFinding(p hypothesis.Plan, env gate.AggregateEnvelope) string {
-	q := p.Question
-	if strings.TrimSpace(q) == "" {
-		q = fmt.Sprintf("%s over %s.%s", p.Template, p.Connector, p.Table)
+// finding is one line of the planner's summary.
+//
+// One builder for both routes. There were two, sharing three of four decisions
+// in different words and a different order — and the §4 verdict clause is the
+// part that must read the same whichever route produced it, since a replan that
+// cannot tell an underpowered result from a settled one builds on it.
+func finding(question, fallback, headline string, verdicts []stats.Verdict) string {
+	q := strings.TrimSpace(question)
+	if q == "" {
+		q = fallback
 	}
-	line := fmt.Sprintf("%s — %d row(s) described", q, env.RowCount)
-	if env.Suppressed > 0 {
-		line += fmt.Sprintf(", %d group(s) too small to report", env.Suppressed)
-	}
-	// The verdict, in the summary the planner reads. Without it a replan sees
-	// "compared revenue by region" and treats an underpowered result as a
-	// settled one worth building on.
-	for _, t := range env.TestResults {
-		line += fmt.Sprintf("; comparison %s", t.Verdict)
+	line := q + " — " + headline
+	for _, v := range verdicts {
+		line += fmt.Sprintf("; comparison %s", v)
 	}
 	return line
 }
 
-func localSummary(lead core.Lead, findings []string, res *Result) string {
+func describeFinding(p hypothesis.Plan, env gate.AggregateEnvelope) string {
+	headline := fmt.Sprintf("%d row(s) described", env.RowCount)
+	if env.Suppressed > 0 {
+		headline += fmt.Sprintf(", %d group(s) below the reporting floor", env.Suppressed)
+	}
+	if env.BeyondTopK > 0 {
+		headline += fmt.Sprintf(", %d beyond the reported limit", env.BeyondTopK)
+	}
+	return finding(p.Question,
+		fmt.Sprintf("%s over %s.%s", p.Template, p.Connector, p.Table),
+		headline, envelopeVerdicts(env))
+}
+
+// localSummary describes the run for the planner, and names the boundary that
+// actually applied.
+//
+// It used to append "every figure above came through the aggregation gate" to
+// every run — including a sandbox-only one, whose own code says in as many words
+// that "the script never touches the aggregation gate". A false privacy claim in
+// the text the planner and the report both read.
+func localSummary(lead core.Lead, findings []string, res *Result, usedGate, usedSandbox bool) string {
 	if len(findings) == 0 {
+		// ChunksSkipped plus ChunksFailed: the first counts hypotheses refused
+		// before mining, the second those whose mining call errored. Reporting
+		// only the first under-reported what was attempted.
 		return fmt.Sprintf(
 			"No hypothesis over the registered data could be answered for %q. "+
-				"%d were tried.", lead.Query, res.Stats.ChunksSkipped)
+				"%d were tried.", lead.Query,
+			res.Stats.ChunksSkipped+res.Stats.ChunksFailed)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Queried local data for %q. %d hypothes%s answered, yielding %d claim(s).\n\n",
@@ -465,8 +551,20 @@ func localSummary(lead core.Lead, findings []string, res *Result) string {
 	for _, f := range findings {
 		b.WriteString("- " + f + "\n")
 	}
-	b.WriteString("\nNo row from the data left the machine: every figure above came " +
-		"through the aggregation gate as an aggregate (§12.1).")
+	b.WriteString("\nNo row from the data left the machine. ")
+	switch {
+	case usedGate && usedSandbox:
+		b.WriteString("The queried figures crossed the aggregation gate as aggregates " +
+			"(§12.1); the sandboxed ones were computed in a container with no network " +
+			"and returned only the values their plan declared.")
+	case usedSandbox:
+		b.WriteString("The figures were computed inside a container with no network, " +
+			"no writable filesystem and a read-only view of the data, and only the " +
+			"values the plan declared were returned (§12.1).")
+	default:
+		b.WriteString("Every figure above came through the aggregation gate as an " +
+			"aggregate (§12.1).")
+	}
 	return b.String()
 }
 

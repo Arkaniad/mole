@@ -317,7 +317,7 @@ The suites that carry weight:
 | M5 | Executor pool | **done**, real-run speedup unmeasured |
 | M6 | AcademicActor | **done**, claim extraction unverified on a real model |
 | M7 | MCP daemon + stdio shim | **done** |
-| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | **done**; planning unverified on a capable model |
+| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | **done** + reviewed; planning unverified on a capable model |
 | M9 | Dataset mode | |
 
 ---
@@ -1017,3 +1017,81 @@ Verified against a real container: the mounted database is readable and not
 writable, a script printing half a megabyte is refused rather than parsed, a
 script that never finishes is killed at the wallclock limit, and stderr reaches
 the model so the next attempt is not the same attempt.
+
+### What the M8 review found
+
+Three parallel reviews — security, correctness, code quality — over roughly
+10,000 lines. Every finding below was reproduced before it was fixed and is now
+held by a regression test naming the shape that found it. The list is longer than
+any previous milestone's, on the milestone built fastest.
+
+**The central claim was falsified twice.** M8's premise is that rows never reach
+a model. Two paths did:
+
+- The **schema prompt**, rendered on every local run *before any query exists*,
+  carried `MIN`/`MAX` for every column that was not prose — with no k-anonymity
+  floor anywhere on that path. A probe registered a six-column CSV and the prompt
+  contained a real name, a real SSN, a real phone number and a real date of
+  birth. Two causes: `IsFreeText` returned false on the **type** check before the
+  personal-identifier name list was read, so a column named `ssn` was never
+  considered; and a range was recorded for any non-prose column. A range now
+  requires `rows/distinct >= RangeFloor`, the same idea the gate applies.
+- The **coderunner's refusal list** echoed the script's own undeclared *key* text
+  into the passage handed to the miner, so a script could return anything by
+  putting it in a key. A probe got 12KB of records out — past a package comment
+  claiming that emitting `{"ada@example.org": 1}` "gets nothing out".
+
+**Two ways to fabricate statistical significance.** Both reachable from the
+ordinary template:
+
+- `COUNT(*)` was used as *n* while `SUM` skips NULL. Two groups whose every
+  non-null value was 10, one with half its measure missing, reported *"means 10
+  and 5 … significant, p<0.001, effect size 1.41 (large)"* beside a bucket line
+  printing `mean 10` for the group the test called 5. Blank CSV cells become
+  NULL, so this was the default state of a real export.
+- `Σx² − (Σx)²/n` cancels. At a mean of 1e7 the variance came out **ten times too
+  small** and the test reported `p = 6.2e-10` for data whose true p is 0.171. The
+  template now centres the measure — variance is shift-invariant — and the
+  fallback guard was itself rebuilt after a measured sweep showed the first
+  version accepted variances up to 18% wrong.
+
+**Two k-anonymity bypasses.** `NULL` was encoded as `""`, so a NULL group and an
+empty-string group shared a bucket: three records each under a floor of five
+merged into six and *crossed*. And the floor was never applied to an ungrouped
+aggregate, so the overview template over a one-row table published that row five
+times.
+
+**One crash.** Only a bare `*` was refused, so `SELECT t.*, COUNT(*)` passed
+classification with a two-element shape against four result columns and panicked
+with the whole result set in memory.
+
+**One silent data loss.** `safeIdent` accepted only lower case, so an ordinary
+CamelCase database registered with no error and a profile of **one table with one
+column** — the model then planned over a schema that was not the user's data.
+
+**Three claims the code did not keep.** §12.1's "every crossing is logged"
+emitted nothing (written at `Info`, actor logger at `Warn`); `Usable = Seccomp`
+where seccomp was neither passed nor verified, now checked by reading
+`/proc/self/status` inside a real container; and a sandbox-only run printed "every
+figure above came through the aggregation gate" for evidence whose own code says
+it never touches it.
+
+**Eight duplications**, two already divergent: the verdict rule (one required both
+groups to clear the floor, its copy checked one), the verdict sentence, three
+number formatters at two precisions — one of which rendered a rate column of
+0.0001–0.003 as `0.00`, so §11.5 permitted only a wrong number as a citation.
+
+Also fixed: JSONL integers corrupted through float64, a BOM readable in CSV but
+not JSONL, `inf` inferring as a number, a failed re-import destroying a working
+connector, `p` never range-checked so the script controlled both verdict inputs,
+cancellation reported as a timeout, a cancelled caller waiting 40 seconds, an
+unenforced input budget, `Suppressed` conflating the privacy floor with a
+presentation limit, and the exfil check's allow-list derivation — the heart of the
+check — covered by no test because every fixture value sat under the length floor.
+
+**Why the milestone's own falsification missed all of it.** Every HIGH finding
+came from a *data* shape, and the falsification pass tested the *rules*.
+Twenty-two mutations on the statistics slice and not one used a NULL, an uppercase
+identifier, a large magnitude, or a qualified star. Reverting a mechanism proves a
+test can see that mechanism break; it says nothing about inputs the test never
+supplies.
