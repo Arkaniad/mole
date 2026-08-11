@@ -45,6 +45,15 @@ type Cell struct {
 	// revenues is the same problem with a column header, and picking the one
 	// that happened to arrive first is the same mistake.
 	Others []string `json:"others,omitempty"`
+	// Variants are other SPELLINGS of the same value, which is a different thing
+	// from a disagreement.
+	//
+	// Only key fields have them. "Acme Ltd" and "Acme Limited" are why these two
+	// rows merged at all, so re-reporting the difference as a conflict would have
+	// the merge contradicting its own decision — and would mark almost every
+	// merged row as contested, drowning the disagreements that matter. A test
+	// caught exactly that.
+	Variants []string `json:"variants,omitempty"`
 	// Sources are the sources that supplied Text.
 	Sources []string `json:"sources,omitempty"`
 }
