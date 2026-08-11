@@ -461,7 +461,7 @@ Stated plainly rather than left to be discovered:
 
   What that produced: **1,865 judged pairs — 115 `contradicts`, 146 `duplicate_of`,
   1,604 `unrelated`.** Labelling all of them is thousands of human judgements and is
-  deliberately not the plan. `testdata/corpus/contradiction-pairs.json` is the
+  deliberately not the plan. `testdata/pairs/contradictions.json` is the
   bounded slice instead, 159 pairs:
 
   - **all 115 pairs the Verifier called `contradicts`** — complete, not sampled, so
@@ -473,7 +473,7 @@ Stated plainly rather than left to be discovered:
 
   ```bash
   # label the "label" field: contradicts | duplicate_of | neither
-  mole pairs score testdata/corpus/contradiction-pairs.json
+  mole pairs score testdata/pairs/contradictions.json
   ```
 
   Partial labelling works — the scorer counts skipped pairs rather than guessing

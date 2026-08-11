@@ -20,6 +20,11 @@ func TestCommittedCorporaLoad(t *testing.T) {
 	if len(files) == 0 {
 		t.Fatal("no corpus files found; the glob is wrong or they moved")
 	}
+	// testdata/corpus holds QUESTION corpora and nothing else, which is what makes
+	// this glob a guard rather than a filter. A labelled pair set and a baseline
+	// report are neither, and both briefly lived here — they are under
+	// testdata/pairs and testdata/baselines now. Stated so the next person puts a
+	// new file in the right place instead of loosening the check.
 
 	for _, f := range files {
 		t.Run(filepath.Base(f), func(t *testing.T) {
