@@ -124,6 +124,15 @@ type Queries interface {
 	// session, oldest first (§12.1, M8).
 	ListCrossings(ctx context.Context, sessionID string) ([]core.Crossing, error)
 
+	// RecentLeadCosts returns finished leads' settled costs with the actor type
+	// and depth that produced them, OLDEST first, across every session.
+	//
+	// Feeds the estimator's warm start (§8). Across sessions on purpose: the
+	// question it answers — what does a web lead at depth 2 cost on this install
+	// — is not a per-session one, and a fresh session is exactly when a cold
+	// estimator hurts.
+	RecentLeadCosts(ctx context.Context, limit int) ([]core.LeadCost, error)
+
 	GetSession(ctx context.Context, id string) (*core.Session, error)
 	ListSessions(ctx context.Context, limit int) ([]*core.Session, error)
 

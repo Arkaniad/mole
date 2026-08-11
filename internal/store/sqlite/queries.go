@@ -1426,6 +1426,61 @@ func (t *queries) InsertCrossings(ctx context.Context, crossings []core.Crossing
 	return nil
 }
 
+// RecentLeadCosts totals each finished lead's calls and attributes them to the
+// lead's actor type and depth.
+//
+// Only leads that reached `done`: a lead that failed halfway spent real money and
+// is a sample of a FAILURE, and mixing those into the distribution would teach the
+// estimator to reserve for the average of working and broken.
+//
+// Errored calls are counted, though. The money was spent, the ledger charged it,
+// and a reservation that ignored retries would under-reserve exactly the leads
+// that need the room.
+//
+// Ordered oldest first, which is what the caller's rolling window expects: it
+// keeps the last N observations, so feeding newest-first would keep the oldest.
+func (t *queries) RecentLeadCosts(ctx context.Context, limit int) ([]core.LeadCost, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := t.q.QueryContext(ctx, `
+		SELECT actor_type, depth, usd, in_tok, out_tok, cr_tok, cw_tok FROM (
+			SELECT l.actor_type AS actor_type, l.depth AS depth,
+			       COALESCE(SUM(tc.usd_micros),0)         AS usd,
+			       COALESCE(SUM(tc.input_tokens),0)       AS in_tok,
+			       COALESCE(SUM(tc.output_tokens),0)      AS out_tok,
+			       COALESCE(SUM(tc.cache_read_tokens),0)  AS cr_tok,
+			       COALESCE(SUM(tc.cache_write_tokens),0) AS cw_tok,
+			       MAX(tc.created_at)                     AS last_at
+			  FROM tool_calls tc
+			  JOIN leads l ON l.id = tc.lead_id
+			 WHERE l.status = 'done'
+			 GROUP BY tc.lead_id
+			 ORDER BY last_at DESC
+			 LIMIT ?
+		) ORDER BY last_at ASC`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: recent lead costs: %w", err)
+	}
+	defer rows.Close()
+
+	var out []core.LeadCost
+	for rows.Next() {
+		var (
+			actor string
+			lc    core.LeadCost
+		)
+		if err := rows.Scan(&actor, &lc.Depth, &lc.Cost.USDMicros, &lc.Cost.InputTokens,
+			&lc.Cost.OutputTokens, &lc.Cost.CacheReadTokens,
+			&lc.Cost.CacheWriteTokens); err != nil {
+			return nil, err
+		}
+		lc.ActorType = core.ActorType(actor)
+		out = append(out, lc)
+	}
+	return out, rows.Err()
+}
+
 // ListCrossings reads a session's audit trail, oldest first.
 func (t *queries) ListCrossings(ctx context.Context, sessionID string) ([]core.Crossing, error) {
 	rows, err := t.q.QueryContext(ctx, `

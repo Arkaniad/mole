@@ -230,6 +230,11 @@ func (e *Executor) Run(ctx context.Context, sessionID string) (*Result, error) {
 	// estimate now caps how much work each lead may do.
 	if e.Estimator == nil {
 		e.Estimator = budget.NewEstimator(sess.BudgetUnit)
+		// Warmed from finished leads on this install, across sessions (§8.4's
+		// "improves with use" — which, without this, meant improves within one
+		// session and forgets). A cold start is not an error: an install with no
+		// history keeps the conservative seeds.
+		e.warmEstimator(ctx, sess)
 	}
 
 	res := &Result{SessionID: sessionID, Status: core.StatusDone}
@@ -1131,6 +1136,28 @@ func (e *Executor) complete(ctx context.Context, lease *queue.Lease, status core
 	if err := e.Queue.Complete(context.WithoutCancel(ctx), lease, status); err != nil {
 		e.logger().ErrorContext(ctx, "could not complete a lead; it may be re-run and re-charged",
 			"lead", lease.Lead.ID, "status", status, "err", err)
+	}
+}
+
+// warmEstimator seeds the reservation estimates from history.
+//
+// Best effort by design: a failed read leaves the seeds, which are honestly
+// conservative, and a session that could not read its own history has larger
+// problems that the next query will surface properly.
+func (e *Executor) warmEstimator(ctx context.Context, sess *core.Session) {
+	var samples []core.LeadCost
+	if err := e.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		samples, err = q.RecentLeadCosts(ctx, budget.WarmLimit)
+		return err
+	}); err != nil {
+		e.logger().WarnContext(ctx, "could not warm the cost estimator from history; "+
+			"using cold-start seeds", "err", err)
+		return
+	}
+	if n := e.Estimator.Warm(samples); n > 0 {
+		e.logger().InfoContext(ctx, "cost estimator warmed from past leads",
+			"samples", n, "unit", sess.BudgetUnit)
 	}
 }
 

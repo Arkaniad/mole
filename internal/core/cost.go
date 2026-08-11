@@ -150,3 +150,15 @@ func ParseUSD(s string) (int64, error) {
 	}
 	return micros, nil
 }
+
+// LeadCost is one finished lead's settled cost, with what produced it.
+//
+// The estimator's warm start (§8): a reservation is predicted per (actor type,
+// depth), and attributing a settled cost to either needs the join to leads that
+// M3 made possible. The Cost travels whole rather than pre-converted, so the same
+// row serves a token-budgeted session and a dollar-budgeted one.
+type LeadCost struct {
+	ActorType ActorType
+	Depth     int
+	Cost      Cost
+}

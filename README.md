@@ -250,6 +250,19 @@ take the writer.
 separate service" is a stated product property; a cgo driver would trade it away
 for marginal speed.
 
+**Reservations are predicted from this install's own history.** The estimator
+holds a rolling p75 of settled cost per `(actor type, depth)`, and it used to
+start cold on every session — so what a hundred previous leads actually cost was
+thrown away at the start of the next one, and §8.4's "improves with use" meant
+"improves within one run, then forgets". It warms from the last 200 finished
+leads, across sessions, joined to `leads` for the actor type and depth that
+produced them. Nothing is guessed: leads that never reached `done` are not read,
+because a lead that failed halfway is a sample of a failure. Bounded at 200 for a
+second reason — an install's oldest leads were priced by whatever model was
+configured then, and a warm start reaching back a year would size today's
+reservations from last year's tier. A cold start is not an error; an install with
+no history keeps the conservative seeds.
+
 **Schema enforces the invariants.** `spent`, `held`, and `escrow` carry
 non-negative CHECK constraints, and `ApplyBudgetDelta` repeats them in its
 `WHERE` clause. A double-settle matches zero rows and surfaces as
@@ -432,10 +445,6 @@ Stated plainly rather than left to be discovered:
   the loop stops before leasing more, so the blast radius is bounded at one
   batch; it is not bounded at one lead, and `--workers 1` is the only way to get
   that back.
-- **The estimator does not warm from history.** Attributing a settled cost to
-  `(actor_type, depth)` needs a join to `leads`, which M3 now populates, so the
-  blocker is gone and this is simply unimplemented. Guessing the actor type would
-  poison the distribution — worse than the honestly conservative cold-start seeds.
 - **The binary is ~24MB, up 8.3MB after the cobra port.** Cobra itself is only
   ~0.3MB on top of this dependency set — measured, not assumed. The rest is
   retained type metadata: cobra and `text/template` use reflection, which stops

@@ -141,9 +141,46 @@ func (e *Estimator) Observe(actor core.ActorType, depth int, amount int64) {
 	e.samples[k] = s
 }
 
-// Warming the estimator from history is deliberately not implemented yet.
+// WarmLimit is how many past leads a warm start reads.
 //
-// Attributing a settled cost to (actor_type, depth) requires joining tool_calls
-// to leads, and leads are not populated until M3. Guessing an actor type here
-// would poison the distribution with rows that belong to a different one, which
-// is worse than a cold start — the seeds are at least honestly conservative.
+// Two hundred is more than the rolling window keeps per bucket (50) and few enough
+// that the read is one indexed scan at session start. Bounded rather than
+// unbounded for a second reason: an install's oldest leads were priced by whatever
+// model was configured then, and a warm start that reached back a year would seed
+// today's reservations with last year's tier.
+const WarmLimit = 200
+
+// Warm seeds the estimator from finished leads on this install.
+//
+// This was "deliberately not implemented" because attributing a settled cost to
+// (actor_type, depth) needs the join to leads, and leads were not populated until
+// M3. M3 populated them; the note outlived the blocker, which is the failure mode
+// this project keeps finding in its own comments.
+//
+// Guessing an actor type would still poison the distribution — so nothing is
+// guessed: a sample carries the actor type and depth its lead recorded, and leads
+// that never finished are not read at all.
+//
+// A cold start is not an error. Warm returns how many samples it took so a caller
+// can log the difference, and an empty history simply leaves the seeds in place.
+//
+// What this cannot know: which model produced those costs. A user who switches
+// from a cheap tier to an expensive one gets reservations sized for the old one
+// until the window turns over. That is an accuracy cost rather than a correctness
+// one — an under-reservation surfaces as a flagged overshoot in SettleResult,
+// never as a budget breach — and it is the same property the rolling window has
+// had since it was written.
+func (e *Estimator) Warm(samples []core.LeadCost) int {
+	var n int
+	for _, s := range samples {
+		amount := s.Cost.BudgetAmount(e.unit)
+		if amount <= 0 {
+			// A lead whose calls were all free in this unit says nothing about
+			// what the next one will cost.
+			continue
+		}
+		e.Observe(s.ActorType, s.Depth, amount)
+		n++
+	}
+	return n
+}
