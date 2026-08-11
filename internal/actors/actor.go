@@ -11,6 +11,7 @@ import (
 	"context"
 
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/dataset"
 	"github.com/lajosdeme/mole/internal/llm"
 )
 
@@ -23,6 +24,14 @@ type Result struct {
 	// Claims are atomic facts, each carrying a source and a verbatim quote
 	// that has already been checked against the text it came from.
 	Claims []core.Claim
+
+	// Rows are schema-shaped extractions, in dataset mode (M9, §13).
+	//
+	// Instead of Claims, not alongside them. The extraction is one model call per
+	// chunk either way, and asking for both would double the cost of every chunk
+	// to produce a report nobody asked for — dataset mode is an output MODE, so
+	// the output it produces is the dataset.
+	Rows []dataset.Row
 
 	// Costs are the tool calls this run made, for the ledger to settle. Every
 	// call is recorded whether or not it succeeded — the money was spent

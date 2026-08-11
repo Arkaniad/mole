@@ -171,11 +171,52 @@ func TestVersionBothForms(t *testing.T) {
 	}
 }
 
-// TestModeIsStillGated: only report works until M3.
+// TestModeIsStillGated: report and dataset work, chain and ask do not.
+//
+// M9 implemented dataset, so this now asserts the gate on what is still missing
+// rather than on dataset — the previous version would have gone green the moment
+// the refusal message changed, whether or not the mode worked.
 func TestModeIsStillGated(t *testing.T) {
+	for _, mode := range []string{"chain", "ask"} {
+		_, err := exec(t, "research", "a question", "--usd", "1.00", "--mode", mode)
+		if err == nil || !strings.Contains(err.Error(), "not implemented") {
+			t.Errorf("%s: err = %v, want the unimplemented-mode refusal", mode, err)
+		}
+	}
+}
+
+// TestADatasetSessionNeedsASchema. Refused rather than inferred: inference costs
+// a model call, and a session that silently invented its own columns would
+// produce a table nobody asked for and charge for it.
+func TestADatasetSessionNeedsASchema(t *testing.T) {
 	_, err := exec(t, "research", "a question", "--usd", "1.00", "--mode", "dataset")
-	if err == nil || !strings.Contains(err.Error(), "not implemented") {
-		t.Errorf("err = %v, want the unimplemented-mode refusal", err)
+	if err == nil {
+		t.Fatal("a dataset session with no schema was accepted")
+	}
+	if !strings.Contains(err.Error(), "--schema") {
+		t.Errorf("err = %v, want the schema requirement", err)
+	}
+}
+
+// TestASchemaWithoutDatasetModeIsRefused, rather than silently ignored — a user
+// who passed --schema expects columns, and a report would give them prose.
+func TestASchemaWithoutDatasetModeIsRefused(t *testing.T) {
+	_, err := exec(t, "research", "a question", "--usd", "1.00",
+		"--schema", "company:text!")
+	if err == nil || !strings.Contains(err.Error(), "--mode dataset") {
+		t.Errorf("err = %v, want the mode requirement", err)
+	}
+}
+
+// TestABadSchemaIsRefusedBeforeAnythingIsSpent.
+func TestABadSchemaIsRefusedBeforeAnythingIsSpent(t *testing.T) {
+	_, err := exec(t, "research", "a question", "--usd", "1.00",
+		"--mode", "dataset", "--schema", "company:text")
+	if err == nil {
+		t.Fatal("a schema with no key field was accepted")
+	}
+	if !strings.Contains(err.Error(), "key") {
+		t.Errorf("err = %v, want the missing-key refusal", err)
 	}
 }
 

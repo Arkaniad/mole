@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/dataset"
 )
 
 var (
@@ -111,6 +112,14 @@ type DomainCount struct {
 
 // Queries is the read surface.
 type Queries interface {
+	// ListRows reads a session's extracted dataset rows in insertion order
+	// (M9, §13). A read, so it lives here rather than on Tx.
+	ListRows(ctx context.Context, sessionID string) ([]dataset.Row, error)
+
+	// DatasetSchema is the schema a session's rows were extracted against.
+	// Reports false when the session is not a dataset session.
+	DatasetSchema(ctx context.Context, sessionID string) (dataset.Schema, bool, error)
+
 	GetSession(ctx context.Context, id string) (*core.Session, error)
 	ListSessions(ctx context.Context, limit int) ([]*core.Session, error)
 
@@ -165,6 +174,18 @@ type Tx interface {
 	SetSessionStatus(ctx context.Context, id string, status core.SessionStatus) error
 	// SetSessionReport stores the rendered answer and why it is degraded, if it is.
 	SetSessionReport(ctx context.Context, id, reportMD, degraded string) error
+
+	// InsertRows writes a batch of extracted dataset rows (M9, §13).
+	//
+	// All or nothing, for the same reason as InsertClaims: a partial batch would
+	// leave the merge reasoning over evidence that was never fully recorded, and
+	// a dataset is precisely a thing somebody counts.
+	InsertRows(ctx context.Context, sessionID string, rows []dataset.Row) error
+
+	// SetDatasetSchema records the schema a session's rows were extracted
+	// against. Reading a dataset back needs it: field order for the header, and
+	// which fields are keys for the merge.
+	SetDatasetSchema(ctx context.Context, sessionID string, schema dataset.Schema) error
 	ApplyBudgetDelta(ctx context.Context, sessionID string, d BudgetDelta) error
 
 	InsertReservation(ctx context.Context, r *core.Reservation) error

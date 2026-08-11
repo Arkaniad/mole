@@ -27,6 +27,7 @@ import (
 	"github.com/lajosdeme/mole/internal/budget"
 	"github.com/lajosdeme/mole/internal/cache"
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/dataset"
 	"github.com/lajosdeme/mole/internal/executor"
 	"github.com/lajosdeme/mole/internal/llm"
 	"github.com/lajosdeme/mole/internal/output"
@@ -56,6 +57,10 @@ type Spec struct {
 	// context deadline; this is the ceiling the loop checks itself against, and
 	// the two should not be equal — see Runner.Run.
 	Timeout time.Duration
+
+	// Schema is the dataset schema, required when Mode is ModeDataset and unused
+	// otherwise (M9, §13).
+	Schema *dataset.Schema
 
 	// ActorTypes are the actors this session may use. Empty means web only.
 	//
@@ -288,6 +293,18 @@ func (r *Runner) Run(ctx context.Context, sess *core.Session, spec Spec) (*Resul
 	// limiters global. Only the per-session fields are replaced.
 	actor := *r.Actor
 	actor.SessionID = sess.ID
+	// Dataset mode: the actor extracts rows instead of claims (M9, §13). Built
+	// here rather than by the caller because it needs the session id, exactly as
+	// the actor's own copy does.
+	if spec.Schema != nil {
+		actor.Rows = &actors.RowMiner{
+			LLM:       actor.LLM,
+			Pricing:   actor.Pricing,
+			Log:       actor.Log,
+			SessionID: sess.ID,
+			Schema:    *spec.Schema,
+		}
+	}
 	actor.Store = r.Store
 
 	// One cache shared between the loop and this actor, so a lead-level hit and a
@@ -339,7 +356,7 @@ func (r *Runner) Run(ctx context.Context, sess *core.Session, spec Spec) (*Resul
 	// money set aside at session creation spendable — a run that produced good
 	// claims and could not afford to write them up would have wasted the whole
 	// budget, not just the last call.
-	res.Report, res.Ground = r.finish(ctx, led, vf, sess, &actor)
+	res.Report, res.Ground = r.finish(ctx, led, vf, sess, &actor, spec.Schema)
 
 	if res.Run != nil {
 		res.Status = res.Run.Status
@@ -385,6 +402,7 @@ func (r *Runner) finish(
 	vf *verifier.Verifier,
 	sess *core.Session,
 	actor *actors.WebActor,
+	schema *dataset.Schema,
 ) (*output.Report, *verifier.GroundReport) {
 	// Whether the run was stopped, read BEFORE detaching. Everything below runs
 	// on a live context by design — the payoff for money already spent must not
@@ -430,6 +448,16 @@ func (r *Runner) finish(
 		if avail := cur.Available(); amount > avail {
 			amount = avail
 		}
+	}
+
+	// Dataset mode produces the dataset instead of prose, and produces it without
+	// a model call: the merge is deterministic arithmetic over rows that were
+	// already extracted and paid for. So there is nothing to reserve here, which
+	// is why this sits before the reservation rather than beside the generator —
+	// reserving output tokens for a step that spends none would leave a hold to
+	// settle at zero and report a cost that does not exist.
+	if schema != nil {
+		return r.finishDataset(ctx, sess.ID, *schema), ground
 	}
 
 	gen := &output.Generator{LLM: actor.LLM}
@@ -484,6 +512,47 @@ func (r *Runner) finish(
 		}
 	}
 	return report, ground
+}
+
+// finishDataset assembles the dataset from the rows the session extracted.
+//
+// From the STORE rather than from the returned Results, for the same reason the
+// report is: a lead's rows are persisted on an uncancellable context precisely so
+// that a cancelled session still emits what it paid for, and reading them back is
+// what makes that true.
+//
+// A failure here is a notice rather than an error. The rows are already stored, so
+// `mole dataset` can assemble them later; losing the session because the summary
+// could not be written would discard nothing but be reported as everything.
+func (r *Runner) finishDataset(ctx context.Context, sessionID string, schema dataset.Schema) *output.Report {
+	var rows []dataset.Row
+	if err := r.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		rows, err = q.ListRows(ctx, sessionID)
+		return err
+	}); err != nil {
+		r.notice("could not read the extracted rows: %v", err)
+		return nil
+	}
+
+	d := dataset.Merge(schema, rows, dataset.Options{})
+	markdown := dataset.Markdown(d)
+
+	if err := r.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		if err := tx.SetDatasetSchema(ctx, sessionID, schema); err != nil {
+			return err
+		}
+		var degraded string
+		if len(d.Rows) == 0 {
+			degraded = "no row survived extraction: every candidate either failed the " +
+				"quote check or filled no key field"
+		}
+		return tx.SetSessionReport(ctx, sessionID, markdown, degraded)
+	}); err != nil {
+		r.notice("could not store the dataset: %v", err)
+	}
+
+	return &output.Report{SessionID: sessionID, Body: markdown}
 }
 
 // ground runs §11.5.2's re-read within a bounded share of the released escrow.

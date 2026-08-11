@@ -120,6 +120,7 @@ func newRootCmd() *cobra.Command {
 		newEvalCmd(),
 		newCorpusCmd(),
 		newConnectCmd(),
+		newDatasetCmd(),
 		newPairsCmd(),
 		newMigrateCmd(),
 		newConfigCmd(),

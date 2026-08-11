@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/dataset"
 	"github.com/lajosdeme/mole/internal/store"
 )
 
@@ -1295,4 +1296,123 @@ func b2i(b bool) int64 {
 		return 1
 	}
 	return 0
+}
+
+// -----------------------------------------------------------------------------
+// Dataset rows (M9, §13)
+// -----------------------------------------------------------------------------
+
+// optional turns an empty string into a nil pointer, so an absent lead id is
+// stored as NULL rather than as "".
+func optional(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// InsertRows writes a batch of extracted rows.
+//
+// All or nothing, matching InsertClaims: a dataset is a thing somebody counts, so
+// a half-written batch is worse than none — the merge would report a row count
+// that never existed.
+func (t *queries) InsertRows(ctx context.Context, sessionID string, rows []dataset.Row) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	// No prepared statement: execer is the interface both a *sql.DB and a *sql.Tx
+	// satisfy here, and it deliberately exposes only the three Context methods —
+	// adding Prepare to it for one insert would widen the seam every other query
+	// in this file works through.
+	const insert = `
+		INSERT INTO dataset_rows
+		  (id, session_id, lead_id, seq, values_json, source, quote, quote_offset, retrieved_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	// Continues the session's existing sequence, so two batches from two leads do
+	// not both start at zero and lose their order against each other.
+	var base int64
+	if err := t.q.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(seq) + 1, 0) FROM dataset_rows WHERE session_id = ?`,
+		sessionID).Scan(&base); err != nil {
+		return err
+	}
+
+	for i, r := range rows {
+		values, err := json.Marshal(r.Values)
+		if err != nil {
+			return fmt.Errorf("store: encode row values: %w", err)
+		}
+		at := r.RetrievedAt
+		if at.IsZero() {
+			at = now
+		}
+		if _, err := t.q.ExecContext(ctx, insert, core.NewRowID(), sessionID,
+			nullStr(optional(r.LeadID)), base+int64(i), string(values),
+			r.Source, r.Quote, r.QuoteOffset, at); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ListRows reads a session's rows in insertion order.
+func (t *queries) ListRows(ctx context.Context, sessionID string) ([]dataset.Row, error) {
+	rows, err := t.q.QueryContext(ctx, `
+		SELECT lead_id, values_json, source, quote, quote_offset, retrieved_at
+		  FROM dataset_rows WHERE session_id = ? ORDER BY seq`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []dataset.Row
+	for rows.Next() {
+		var (
+			leadID sql.NullString
+			values string
+			r      dataset.Row
+		)
+		if err := rows.Scan(&leadID, &values, &r.Source, &r.Quote,
+			&r.QuoteOffset, &r.RetrievedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(values), &r.Values); err != nil {
+			return nil, fmt.Errorf("store: decode row values: %w", err)
+		}
+		r.LeadID = leadID.String
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SetDatasetSchema records the schema the rows were extracted against.
+func (t *queries) SetDatasetSchema(ctx context.Context, sessionID string, schema dataset.Schema) error {
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return fmt.Errorf("store: encode schema: %w", err)
+	}
+	_, err = t.q.ExecContext(ctx,
+		`UPDATE sessions SET dataset_schema = ? WHERE id = ?`, string(raw), sessionID)
+	return err
+}
+
+// DatasetSchema reads it back, reporting false for a session that is not a
+// dataset session.
+func (t *queries) DatasetSchema(ctx context.Context, sessionID string) (dataset.Schema, bool, error) {
+	var raw sql.NullString
+	err := t.q.QueryRowContext(ctx,
+		`SELECT dataset_schema FROM sessions WHERE id = ?`, sessionID).Scan(&raw)
+	if err != nil {
+		return dataset.Schema{}, false, err
+	}
+	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
+		return dataset.Schema{}, false, nil
+	}
+	var s dataset.Schema
+	if err := json.Unmarshal([]byte(raw.String), &s); err != nil {
+		return dataset.Schema{}, false, fmt.Errorf("store: decode schema: %w", err)
+	}
+	return s, true, nil
 }

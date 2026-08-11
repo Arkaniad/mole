@@ -18,6 +18,7 @@ import (
 	"github.com/lajosdeme/mole/internal/compute/sandbox"
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/dataset"
 	"github.com/lajosdeme/mole/internal/executor"
 	"github.com/lajosdeme/mole/internal/llm"
 	"github.com/lajosdeme/mole/internal/output"
@@ -76,6 +77,8 @@ type researchOpts struct {
 	maxDepth    int
 	workers     int
 	actorList   string
+	schemaSpec  string
+	schemaFile  string
 	dbPath      string
 
 	// silent suppresses ALL output, including the report.
@@ -112,7 +115,11 @@ func newResearchCmd() *cobra.Command {
 	f := c.Flags()
 	f.StringVar(&o.usd, "usd", "", "budget in dollars, e.g. --usd 3.00")
 	f.Int64Var(&o.tokens, "tokens", 0, "budget in tokens")
-	f.StringVar(&o.mode, "mode", string(core.ModeReport), "session mode")
+	f.StringVar(&o.mode, "mode", string(core.ModeReport), "session mode: report or dataset")
+	f.StringVar(&o.schemaSpec, "schema", "",
+		"dataset columns, e.g. company:text!,revenue:number "+
+			"(! marks a key field; =text after the type adds a description)")
+	f.StringVar(&o.schemaFile, "schema-file", "", "dataset schema as a JSON file")
 	f.IntVar(&o.maxSources, "max-sources", 5, "sources to read per lead")
 	f.StringVar(&o.actorList, "actors", "web",
 		"comma-separated actors: web, academic, local_compute "+
@@ -148,8 +155,15 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	if !sessionMode.Valid() {
 		return fmt.Errorf("unknown mode %q", o.mode)
 	}
-	if sessionMode != core.ModeReport {
-		return fmt.Errorf("mode %q is not implemented yet (M3 for report+, M9 for dataset)", o.mode)
+	switch sessionMode {
+	case core.ModeReport, core.ModeDataset:
+	default:
+		return fmt.Errorf("mode %q is not implemented yet (report and dataset are)", o.mode)
+	}
+
+	schema, err := resolveSchema(sessionMode, o.schemaSpec, o.schemaFile)
+	if err != nil {
+		return err
 	}
 
 	actorTypes, err := parseActorTypes(o.actorList)
@@ -249,6 +263,7 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 	spec := session.Spec{
 		Question:   question,
 		Mode:       sessionMode,
+		Schema:     schema,
 		BudgetUnit: unit,
 		Budget:     amount,
 		MaxSources: o.maxSources,
@@ -778,6 +793,35 @@ func parseActorTypes(raw string) ([]core.ActorType, error) {
 		out = []core.ActorType{core.ActorWeb}
 	}
 	return out, nil
+}
+
+// resolveSchema turns the flags into a schema, and refuses the combinations that
+// cannot mean anything.
+//
+// A dataset session with no schema is refused rather than inferred. Inference
+// needs a model call, and a session that silently invented its own columns would
+// produce a table nobody asked for and charge for it — `mole dataset infer` is
+// where that belongs, so the schema a run uses is always one somebody saw.
+func resolveSchema(mode core.Mode, spec, file string) (*dataset.Schema, error) {
+	if mode != core.ModeDataset {
+		if spec != "" || file != "" {
+			return nil, errors.New("--schema is only meaningful with --mode dataset")
+		}
+		return nil, nil
+	}
+	switch {
+	case spec != "" && file != "":
+		return nil, errors.New("give --schema or --schema-file, not both")
+	case file != "":
+		s, err := dataset.LoadSchema(file)
+		return &s, err
+	case spec != "":
+		s, err := dataset.ParseSpec(spec)
+		return &s, err
+	}
+	return nil, errors.New("--mode dataset needs a schema: --schema " +
+		"company:text!,revenue:number (! marks the field that identifies a row), " +
+		"or --schema-file schema.json")
 }
 
 // buildLocalActor wires the connector registry into the LocalComputeActor.

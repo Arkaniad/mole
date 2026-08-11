@@ -10,6 +10,7 @@ import (
 
 	"github.com/lajosdeme/mole/internal/cache"
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/dataset"
 	"github.com/lajosdeme/mole/internal/llm"
 	"github.com/lajosdeme/mole/internal/pricing"
 	"github.com/lajosdeme/mole/internal/store"
@@ -25,6 +26,11 @@ import (
 // The parenthesized step is conditional: a search provider that returned usable
 // page content skips it entirely (§10.4). Everything raw dies when Run returns.
 type WebActor struct {
+	// Rows, when set, switches this actor to dataset mode: every chunk is
+	// extracted into schema-shaped rows instead of claims (M9, §13). Nil is
+	// report mode, which is every session that did not ask for a dataset.
+	Rows *RowMiner
+
 	Search  search.Provider
 	Fetch   fetch.Fetcher
 	Extract extract.Extractor
@@ -149,6 +155,23 @@ func (a *WebActor) Run(ctx context.Context, lead core.Lead) (*Result, error) {
 				break
 			}
 
+			// Dataset mode extracts rows in place of claims (M9, §13). One model
+			// call per chunk either way: asking for both would double the cost of
+			// every chunk to produce a report nobody asked for.
+			if a.Rows != nil {
+				rows, usage, err := a.mineRowChunk(ctx, lead, src, doc, chunk, remainingClaims, res)
+				inputTokensUsed += usage.InputTokens + usage.CacheReadTokens
+				if err != nil {
+					res.Stats.ChunksFailed++
+					a.logger().WarnContext(ctx, "chunk row extraction failed",
+						"url", src.url, "chunk", chunk.Index, "err", err)
+					continue
+				}
+				res.Rows = append(res.Rows, rows...)
+				summary.Rows += len(rows)
+				continue
+			}
+
 			claims, usage, err := a.mineChunk(ctx, lead, src, doc, chunk, remainingClaims, budget, res)
 			inputTokensUsed += usage.InputTokens + usage.CacheReadTokens
 			if err != nil {
@@ -165,7 +188,7 @@ func (a *WebActor) Run(ctx context.Context, lead core.Lead) (*Result, error) {
 			summary.Claims = append(summary.Claims, claims...)
 		}
 
-		if len(summary.Claims) > 0 || doc.Excerpt != "" {
+		if len(summary.Claims) > 0 || summary.Rows > 0 || doc.Excerpt != "" {
 			summary.Excerpt = doc.Excerpt
 			perSource = append(perSource, summary)
 		}
@@ -216,6 +239,16 @@ func (a *WebActor) Run(ctx context.Context, lead core.Lead) (*Result, error) {
 			return res, fmt.Errorf("actors/web: persist claims: %w", err)
 		}
 	}
+	// Rows, on the same uncancellable context and for the same reason: the
+	// dataset is assembled from the STORE at the end of the session, so a row
+	// discarded here is one that was paid for and does not appear in the answer.
+	if len(res.Rows) > 0 && a.Store != nil {
+		if err := a.Store.WithTx(context.WithoutCancel(ctx), func(ctx context.Context, tx store.Tx) error {
+			return tx.InsertRows(ctx, a.SessionID, res.Rows)
+		}); err != nil {
+			return res, fmt.Errorf("actors/web: persist rows: %w", err)
+		}
+	}
 
 	return res, nil
 }
@@ -225,6 +258,11 @@ type sourceSummary struct {
 	URL     string
 	Excerpt string
 	Claims  []core.Claim
+	// Rows counts what dataset mode extracted from this source. A count, not the
+	// rows: the per-source summary feeds the reduce prompt, and a table of values
+	// there would be the extraction sent back through a model that has no use for
+	// it.
+	Rows int
 }
 
 // source is a read source: its text, and the URL that text actually came from.
@@ -485,4 +523,43 @@ func rootClaimOf(lead core.Lead) string {
 		return ""
 	}
 	return *lead.RootClaimID
+}
+
+// mineRowChunk is mineChunk for dataset mode (M9, §13).
+//
+// Deliberately a sibling rather than a branch inside mineChunk: the two return
+// different things and record different stats, and threading a mode flag through
+// one function would put a conditional around every line of it. What they share —
+// the cost row, the quote check — is shared through RowMiner and Miner both
+// calling toolCallFor and FindQuote, which is where the duplication that matters
+// was already collapsed.
+func (a *WebActor) mineRowChunk(
+	ctx context.Context,
+	lead core.Lead,
+	src source,
+	doc *extract.Document,
+	chunk llm.Chunk,
+	maxRows int,
+	res *Result,
+) ([]dataset.Row, llm.Usage, error) {
+	out, err := a.Rows.Mine(ctx, RowInput{
+		Lead:      lead,
+		SourceURL: src.url,
+		Title:     doc.Title,
+		Text:      chunk.Text,
+		Offset:    chunk.Start,
+		MaxRows:   maxRows,
+	})
+	if out.HasCall {
+		res.Costs = append(res.Costs, out.Call)
+	}
+	// The same counters the claim path uses, so a dataset run's trace reads the
+	// same way: a rising rejection rate is the signal that a model has started
+	// inventing table contents.
+	res.Stats.ClaimsProposed += out.Proposed
+	res.Stats.ClaimsRejected += out.Rejected
+	if err != nil {
+		return nil, out.Usage, err
+	}
+	return out.Rows, out.Usage, nil
 }

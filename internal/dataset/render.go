@@ -146,3 +146,60 @@ func (d Dataset) contestedFieldCounts() []fieldCount {
 	})
 	return out
 }
+
+// Markdown renders the dataset for the session's stored report.
+//
+// A table, capped, plus the summary. Not the whole dataset: a stored report is
+// read in a terminal and a thousand-row markdown table is not readable there —
+// `mole dataset` writes the complete file. The cap is stated in the output rather
+// than left for somebody to notice a missing row.
+func Markdown(d Dataset) string {
+	var b strings.Builder
+	b.WriteString("## Dataset\n\n")
+	b.WriteString(d.Summary())
+	b.WriteString("\n\n")
+
+	if len(d.Rows) == 0 {
+		b.WriteString("_No row survived extraction._\n")
+		return b.String()
+	}
+
+	names := d.Schema.Names()
+	b.WriteString("| " + strings.Join(names, " | ") + " | sources |\n")
+	b.WriteString("|" + strings.Repeat("---|", len(names)+1) + "\n")
+
+	shown := d.Rows
+	if len(shown) > MarkdownRows {
+		shown = shown[:MarkdownRows]
+	}
+	for _, row := range shown {
+		cells := make([]string, 0, len(names)+1)
+		for _, n := range names {
+			v := cleanCell(row.Get(n))
+			if row.Cells[n].Contested() {
+				// Marked in the table, because a reader scanning a markdown
+				// summary will not open the JSON to find out which figures the
+				// sources could not agree on.
+				v += " ⚠"
+			}
+			cells = append(cells, escapePipes(v))
+		}
+		cells = append(cells, fmt.Sprint(len(row.Sources)))
+		b.WriteString("| " + strings.Join(cells, " | ") + " |\n")
+	}
+	if len(d.Rows) > len(shown) {
+		fmt.Fprintf(&b, "\n_%d of %d rows shown; `mole dataset <session>` writes them all._\n",
+			len(shown), len(d.Rows))
+	}
+	if d.Contested() > 0 {
+		b.WriteString("\n⚠ marks a value the sources disagree about. Every value is kept; " +
+			"the JSON output carries all of them.\n")
+	}
+	return b.String()
+}
+
+// MarkdownRows caps the table in a stored report.
+const MarkdownRows = 50
+
+// escapePipes keeps a value from breaking the table it sits in.
+func escapePipes(s string) string { return strings.ReplaceAll(s, "|", "\\|") }
