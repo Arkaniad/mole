@@ -333,11 +333,6 @@ Stated plainly rather than left to be discovered:
   failed to parse, because the only reachable model is the same 3B local one
   that blocks M6. It returned a doubly-wrapped JSON array. So the pipeline is
   verified and the model's half of §12.3 is not. Same blocker, same fix: credit.
-- **`CodeRunner`'s interpreter path is unverified.** The container mechanism is
-  verified against a real runtime — read-only mount, output cap, wallclock kill,
-  exit codes — but with a shell script in a locally present image, because
-  `python:3.13-slim` could not be pulled where this was written. Nothing has run
-  actual Python against a connector database.
 - **The channel out of the sandbox is bounded, not zero.** Only names the plan
   declared come back, and only as finite numbers, so a script cannot return rows
   or labels. A determined model could still encode a value in the digits of a
@@ -972,6 +967,24 @@ confirm each one holds:
 
 That test skips without a runtime and never pulls an image — a suite that
 downloads 150MB on a cold cache is a suite people switch off.
+
+**And the interpreter itself is verified now**, not only the container around it.
+Every other container test runs a POSIX shell script, because the mechanism —
+mount, stdin, output cap, wallclock, exit code — is not interpreter-specific, and
+`python:3.13-slim` could not be pulled when the package was written. It can be
+now, so `DefaultCommand()` (`python3 -`) runs for real against
+`python:3.13-slim`: a script that opens the mounted database with Python's own
+`sqlite3` module and gets its declared metrics back; a script that tries
+`UPDATE … SET spend = 0` and cannot (the file is deliberately world-writable, so
+the read-only mount is the only thing left standing); `socket.getaddrinfo` and
+`urllib.request` both failing, which is `--network=none` observed by an
+interpreter that can actually try it, rather than a flag read back from a list;
+and a `raise` reported as a failed run with the traceback intact rather than as an
+empty result. The undeclared-key channel is checked from Python too — it
+serialises a row value as easily as a shell does, and the gate stops it.
+
+These skip where no python image is present locally (`docker pull
+python:3.13-slim`, or `MOLE_PYTHON_TEST_IMAGE`), for the same reason as above.
 
 ### `CodeRunner`: the boundary moves inside the container
 
