@@ -165,3 +165,66 @@ func TestTheExfilMetricAppearsOnce(t *testing.T) {
 		t.Errorf("the scorecard reports %d metrics called \"exfil regression\", want 1", n)
 	}
 }
+
+// TestALocalClaimsCitationIsWellFormed.
+//
+// Found by scoring a live local session: five well-formed claims scored 0% on
+// claim integrity because the check parsed every source as a URL, and a local
+// claim cites "connector:<name>#<hash>" — the data never left the machine, so
+// there is no URL to cite. A false regression in the one metric that exists to
+// catch real ones.
+func TestALocalClaimsCitationIsWellFormed(t *testing.T) {
+	db, id := crossingSession(t, []core.Crossing{crossing(core.CrossingCrossed, 40)})
+
+	quote := "north — 40 records, mean 118.42 (the passage a claim quotes)"
+	if err := db.WithTx(context.Background(), func(ctx context.Context, tx store.Tx) error {
+		return tx.InsertClaims(ctx, []core.Claim{{
+			ID: core.NewClaimID(), SessionID: id, LeadID: "l1",
+			Text:   "Support spend in the north region averages 118.42.",
+			Quote:  quote,
+			Source: "connector:support#46c9d1a6362293f7",
+		}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	card, err := eval.Score(context.Background(), db, id, eval.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := crossingMetric(t, card, "claim integrity")
+	if m.Value != 100 {
+		t.Errorf("claim integrity = %v — a local citation is read as malformed: %s",
+			m.Value, m.Detail)
+	}
+	if m.Regression {
+		t.Error("a well-formed local claim is scored as a regression")
+	}
+}
+
+// TestAMalformedLocalCitationIsStillCaught. The relaxation must not become "any
+// string starting with connector:".
+func TestAMalformedLocalCitationIsStillCaught(t *testing.T) {
+	db, id := crossingSession(t, []core.Crossing{crossing(core.CrossingCrossed, 40)})
+
+	if err := db.WithTx(context.Background(), func(ctx context.Context, tx store.Tx) error {
+		return tx.InsertClaims(ctx, []core.Claim{{
+			ID: core.NewClaimID(), SessionID: id, LeadID: "l1",
+			Text:  "Support spend in the north region averages 118.42.",
+			Quote: "north — 40 records, mean 118.42 (the passage a claim quotes)",
+			// No query hash: nothing to trace the claim back to.
+			Source: "connector:support",
+		}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	card, err := eval.Score(context.Background(), db, id, eval.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := crossingMetric(t, card, "claim integrity"); m.Value != 0 {
+		t.Errorf("claim integrity = %v, want 0 — a citation with no query hash "+
+			"traces to nothing", m.Value)
+	}
+}

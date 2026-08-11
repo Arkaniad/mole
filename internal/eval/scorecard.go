@@ -258,6 +258,31 @@ func holdsReleased(v budget.VerifyResult) Metric {
 // RetrievedAt is deliberately not checked: InsertClaims defaults it, so a
 // persisted claim cannot have a zero one. A check that can never fire implies
 // coverage this does not have.
+// resolvableSource reports whether a claim's source identifies where it came
+// from.
+//
+// Two shapes, because §4 defines two. A web or academic claim cites a URL. A LOCAL
+// claim cites "connector:<name>#<query hash>" — the data never left the machine, so
+// there is no URL to cite and the hash is what makes the claim traceable back to
+// the statement that produced it.
+//
+// This checked url.Parse().Host alone, so every local claim was counted as
+// malformed: a live local session scored claim integrity 0% with five perfectly
+// well-formed claims, and that metric is meant to mean "the pipeline emitted
+// something it should have rejected". A false regression in the one number that
+// exists to catch real ones.
+func resolvableSource(src string) bool {
+	if rest, ok := strings.CutPrefix(src, connectorScheme); ok {
+		name, hash, found := strings.Cut(rest, "#")
+		return found && name != "" && hash != ""
+	}
+	u, err := url.Parse(src)
+	return err == nil && u.Host != ""
+}
+
+// connectorScheme prefixes a local claim's citation (§4, §12.1).
+const connectorScheme = "connector:"
+
 func claimIntegrity(claims []*core.Claim) Metric {
 	m := Metric{Name: "claim integrity", Status: Measured, Unit: "%"}
 	if len(claims) == 0 {
@@ -279,7 +304,7 @@ func claimIntegrity(claims []*core.Claim) Metric {
 		if c.QuoteOffset < 0 {
 			why = append(why, "negative quote offset")
 		}
-		if u, err := url.Parse(c.Source); err != nil || u.Host == "" {
+		if !resolvableSource(c.Source) {
 			why = append(why, "unresolvable source")
 		}
 		// Both are 0-1. Confidence is 0 on an unverified claim, which is correct
