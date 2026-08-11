@@ -1,0 +1,244 @@
+package actors_test
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/lajosdeme/mole/internal/actors"
+	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/dataset"
+)
+
+// M9 slice 1.
+//
+// A row is a claim with columns, so the property that matters is the same one:
+// §11.5 drops anything whose quote is not in the text it came from. A CSV is more
+// likely to be believed without checking than a paragraph is — nobody reads a
+// spreadsheet sceptically — so these tests are about what the extractor REFUSES.
+
+const companyPage = `Acme Ltd, incorporated on 3 March 1998, reported revenue of
+$1.2m for the year ending December 2024. Its head office is in Leeds.
+
+Beta GmbH was founded in 2004 and had revenue of 900,000 euros last year.
+
+Gamma Inc did not disclose its revenue.`
+
+func rowSchema(t *testing.T) dataset.Schema {
+	t.Helper()
+	s, err := dataset.ParseSpec("company:text!,revenue:number,founded:date")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// rowModel replies with whatever JSON the test scripts.
+func rowModel(reply string) *fakeLLM {
+	return &fakeLLM{mineFunc: func(string) string { return reply }}
+}
+
+func mineRows(t *testing.T, reply string) actors.RowOutput {
+	t.Helper()
+	m := &actors.RowMiner{LLM: rowModel(reply), SessionID: "s1", Schema: rowSchema(t)}
+	out, err := m.Mine(context.Background(), actors.RowInput{
+		Lead:      core.Lead{ID: "l1", SessionID: "s1", Query: "company revenues"},
+		SourceURL: "https://example.org/a",
+		Text:      companyPage,
+	})
+	if err != nil {
+		t.Fatalf("Mine: %v", err)
+	}
+	return out
+}
+
+func TestRowsAreKeptWhenTheQuoteIsInThePage(t *testing.T) {
+	out := mineRows(t, `{"rows":[
+	  {"values":{"company":"Acme Ltd","revenue":"$1.2m","founded":"3 March 1998"},
+	   "quote":"Acme Ltd, incorporated on 3 March 1998, reported revenue of"},
+	  {"values":{"company":"Beta GmbH","revenue":"900,000","founded":"2004"},
+	   "quote":"Beta GmbH was founded in 2004 and had revenue of 900,000 euros last year."}
+	]}`)
+
+	if len(out.Rows) != 2 {
+		t.Fatalf("rows = %d, want 2; rejected %d", len(out.Rows), out.Rejected)
+	}
+	// Values are normalised at extraction, not at merge time: two sources that
+	// agree must not be recorded as disagreeing over punctuation.
+	first := out.Rows[0]
+	if got := first.Values["revenue"]; got != "1200000" {
+		t.Errorf("revenue = %q, want 1200000 — $1.2m was not normalised", got)
+	}
+	if got := first.Values["founded"]; got != "1998-03-03" {
+		t.Errorf("founded = %q, want 1998-03-03", got)
+	}
+	if got := out.Rows[1].Values["revenue"]; got != "900000" {
+		t.Errorf("revenue = %q, want 900000 — the thousands separator survived", got)
+	}
+	if got := out.Rows[1].Values["founded"]; got != "2004" {
+		t.Errorf("founded = %q, want the bare year the page gave", got)
+	}
+	// Provenance, because a table nobody can trace to a sentence is what §11.5
+	// exists to prevent.
+	for _, r := range out.Rows {
+		if r.Source != "https://example.org/a" || strings.TrimSpace(r.Quote) == "" {
+			t.Errorf("row has no usable provenance: %+v", r)
+		}
+		if !strings.Contains(companyPage, r.Quote) {
+			t.Errorf("the stored quote is not in the page: %q", r.Quote)
+		}
+	}
+	if out.HasCall == false || out.Call.Type != core.CallLLM {
+		t.Error("the model call was not recorded, so the extraction looks free")
+	}
+}
+
+func TestAFabricatedRowIsDropped(t *testing.T) {
+	out := mineRows(t, `{"rows":[
+	  {"values":{"company":"Delta plc","revenue":"5000000"},
+	   "quote":"Delta plc reported revenue of five million"}
+	]}`)
+
+	if len(out.Rows) != 0 {
+		t.Fatalf("a row whose quote is not in the page was kept: %+v", out.Rows)
+	}
+	if out.Rejected != 1 || out.Proposed != 1 {
+		t.Errorf("proposed = %d rejected = %d, want 1 and 1 — a model that invents "+
+			"every row must not look like one that found nothing",
+			out.Proposed, out.Rejected)
+	}
+}
+
+// TestARowWithNoKeyIsDropped. A row that identifies nothing can neither be
+// merged nor reported, and a page that produced one was not answering the
+// question.
+func TestARowWithNoKeyIsDropped(t *testing.T) {
+	out := mineRows(t, `{"rows":[
+	  {"values":{"revenue":"1200000"},
+	   "quote":"reported revenue of\n$1.2m for the year ending December 2024"}
+	]}`)
+	if len(out.Rows) != 0 {
+		t.Fatalf("a row with no key field was kept: %+v", out.Rows)
+	}
+	if out.Rejected != 1 {
+		t.Errorf("rejected = %d, want 1", out.Rejected)
+	}
+}
+
+// TestAValueTheTypeCannotHoldIsDroppedNotCarried. A number column holding
+// "roughly $1.2m" merges against nothing and renders as a value somebody will
+// sort.
+func TestAValueTheTypeCannotHoldIsDroppedNotCarried(t *testing.T) {
+	out := mineRows(t, `{"rows":[
+	  {"values":{"company":"Acme Ltd","revenue":"roughly one point two million",
+	             "founded":"some time in the nineties"},
+	   "quote":"Acme Ltd, incorporated on 3 March 1998, reported revenue of"}
+	]}`)
+	if len(out.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1 (the key is present)", len(out.Rows))
+	}
+	r := out.Rows[0]
+	if _, ok := r.Values["revenue"]; ok {
+		t.Errorf("an unparseable number was carried: %q", r.Values["revenue"])
+	}
+	if _, ok := r.Values["founded"]; ok {
+		t.Errorf("an unparseable date was carried: %q", r.Values["founded"])
+	}
+	if r.Values["company"] != "Acme Ltd" {
+		t.Errorf("the usable field was lost: %+v", r.Values)
+	}
+}
+
+// TestAFieldTheSourceDidNotStateIsAbsentNotEmpty. "Not stated" and "stated as
+// blank" are different facts about a source, and the merge treats them
+// differently.
+func TestAFieldTheSourceDidNotStateIsAbsentNotEmpty(t *testing.T) {
+	out := mineRows(t, `{"rows":[
+	  {"values":{"company":"Gamma Inc","revenue":""},
+	   "quote":"Gamma Inc did not disclose its revenue."}
+	]}`)
+	if len(out.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(out.Rows))
+	}
+	if _, present := out.Rows[0].Values["revenue"]; present {
+		t.Error("an empty value was recorded as a stated one")
+	}
+	if _, ok := out.Rows[0].Get("revenue"); ok {
+		t.Error("Get reports a value the source did not give")
+	}
+}
+
+// TestFieldsOutsideTheSchemaAreIgnored. The reply is model output; a key nobody
+// asked for is not a column, and carrying it would put text the model chose into
+// the header of a file somebody opens.
+func TestFieldsOutsideTheSchemaAreIgnored(t *testing.T) {
+	out := mineRows(t, `{"rows":[
+	  {"values":{"company":"Acme Ltd","ceo_home_address":"12 Elm Street"},
+	   "quote":"Acme Ltd, incorporated on 3 March 1998, reported revenue of"}
+	]}`)
+	if len(out.Rows) != 1 {
+		t.Fatalf("rows = %d", len(out.Rows))
+	}
+	if _, ok := out.Rows[0].Values["ceo_home_address"]; ok {
+		t.Error("a field outside the schema crossed into the dataset")
+	}
+	raw, _ := json.Marshal(out.Rows[0])
+	if strings.Contains(string(raw), "Elm Street") {
+		t.Errorf("text the model chose reached the row: %s", raw)
+	}
+}
+
+// TestARowCountCeilingBinds. One verbose page must not dominate the dataset, for
+// the same reason MaxClaimsPerSource exists.
+func TestARowCountCeilingBinds(t *testing.T) {
+	var rows []string
+	for i := 0; i < 40; i++ {
+		rows = append(rows, `{"values":{"company":"Acme Ltd"},
+		  "quote":"Acme Ltd, incorporated on 3 March 1998, reported revenue of"}`)
+	}
+	m := &actors.RowMiner{LLM: rowModel(`{"rows":[` + strings.Join(rows, ",") + `]}`),
+		SessionID: "s1", Schema: rowSchema(t)}
+	out, err := m.Mine(context.Background(), actors.RowInput{
+		Lead:      core.Lead{ID: "l1", SessionID: "s1"},
+		SourceURL: "https://example.org/a",
+		Text:      companyPage,
+		MaxRows:   5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Rows) != 5 {
+		t.Errorf("rows = %d, want the ceiling of 5", len(out.Rows))
+	}
+}
+
+// TestNumberFormsAPageActuallyUses. Dropping these would lose the fact rather
+// than the noise.
+func TestNumberFormsAPageActuallyUses(t *testing.T) {
+	s, _ := dataset.ParseSpec("k:text!,n:number")
+	for _, tc := range []struct{ in, want string }{
+		{"1,200,000", "1200000"},
+		{"$1.2m", "1200000"},
+		{"1.5bn", "1500000000"},
+		{"12k", "12000"},
+		{"(4500)", "-4500"},
+		{"98.6", "98.6"},
+		{"€900,000", "900000"},
+	} {
+		m := &actors.RowMiner{LLM: rowModel(`{"rows":[{"values":{"k":"x","n":"` + tc.in +
+			`"},"quote":"Acme Ltd, incorporated on 3 March 1998, reported revenue of"}]}`),
+			SessionID: "s1", Schema: s}
+		out, err := m.Mine(context.Background(), actors.RowInput{
+			Lead: core.Lead{ID: "l1"}, SourceURL: "u", Text: companyPage})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Rows) != 1 {
+			t.Fatalf("%q: rows = %d", tc.in, len(out.Rows))
+		}
+		if got := out.Rows[0].Values["n"]; got != tc.want {
+			t.Errorf("%q normalised to %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

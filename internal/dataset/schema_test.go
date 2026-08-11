@@ -203,8 +203,12 @@ func TestCSVCarriesTheDisagreementsItCannotHold(t *testing.T) {
 
 func TestCSVCellsSurviveASpreadsheet(t *testing.T) {
 	s, _ := dataset.ParseSpec("company:text!")
+	// Runs of whitespace as well as newlines and tabs: replacing the separators
+	// one for one leaves "as  Acme", which is what the collapse is for.
 	d := dataset.Dataset{Schema: s, Rows: []dataset.Merged{{
-		Cells: map[string]dataset.Cell{"company": {Text: "Acme\nLtd\ttrading as\r\nAcme"}},
+		Cells: map[string]dataset.Cell{
+			"company": {Text: "  Acme\nLtd\ttrading   as\r\n\nAcme  "},
+		},
 	}}}
 	var buf bytes.Buffer
 	if err := d.WriteCSV(&buf, false); err != nil {
