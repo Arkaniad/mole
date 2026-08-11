@@ -488,7 +488,20 @@ Stated plainly rather than left to be discovered:
   separates those two, and costs nothing now the cassettes exist.
 
   `mole pairs judge` re-judges the same pairs with a second model without touching
-  the graph, so inter-judge agreement is available label-free as a cross-check.
+  the graph, so inter-judge agreement is available label-free as a cross-check. Two
+  numbers came out of doing that, and both change how any of this should be read:
+
+  - **The adjudicator agrees with itself 80% of the time.** Same model, same ten
+    pairs, two runs, twice over: 8 of 10 verdicts match and both flips change the
+    graph. `--batch 1` gives the same 80%, so this is sampling nondeterminism rather
+    than batch neighbours. A precision figure over the 115 pairs therefore describes
+    one draw, and a re-run would move it.
+  - **Re-judging disagrees with the stored graph on 6 to 9 pairs out of 10** — far
+    more than run-to-run noise explains. The graph path and the `pairs judge` path
+    are therefore not equivalent, which undermines what `judge` is for: comparing a
+    different MODEL on the same pairs measures the path as well. Cause not yet
+    isolated. **Flagged rather than papered over** — it is the reason no
+    adjudicator number is quoted as settled anywhere in this document.
 
   The full §14.2 corpus is still deliberately not being built. Claim-precision
   labelling is ~2400 human judgements; if that number is ever needed, sample 200 and
