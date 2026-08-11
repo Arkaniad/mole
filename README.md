@@ -211,6 +211,7 @@ The role breakdown is a single `GROUP BY` over the ledger — the entire reason
 | `internal/compute/gate` | The aggregation gate — the only path from data to a model (§12.1) |
 | `internal/compute/hypothesis` | Templates: the only SQL that reaches a connector (§12.3) |
 | `internal/compute/stats` | Welch's t-test, effect size, and the verdict (§4) |
+| `internal/compute/sandbox` | Container runtime detection and §3.6's flags |
 | `internal/eval` | Mechanical scorecard, citation re-verification |
 | `internal/config` | Config file and environment resolution |
 | `cmd/mole` | CLI: `research`, `ask`, `serve`, `eval`, `connect`, `stats`, `trace`, `sessions`, `doctor`, `config`, `migrate`, `dev` |
@@ -315,7 +316,7 @@ The suites that carry weight:
 | M5 | Executor pool | **done**, real-run speedup unmeasured |
 | M6 | AcademicActor | **done**, claim extraction unverified on a real model |
 | M7 | MCP daemon + stdio shim | **done** |
-| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | **done**, planning unverified on a capable model |
+| M8 | LocalComputeActor (connector → sqlguard → aggregation gate → actor) | **done** except `CodeRunner`; planning unverified on a capable model |
 | M9 | Dataset mode | |
 
 ---
@@ -330,6 +331,14 @@ Stated plainly rather than left to be discovered:
   failed to parse, because the only reachable model is the same 3B local one
   that blocks M6. It returned a doubly-wrapped JSON array. So the pipeline is
   verified and the model's half of §12.3 is not. Same blocker, same fix: credit.
+- **`CodeRunner` is not built.** The sandbox is detected, its flags are written
+  down and verified against a real container, and `doctor` reports the
+  capability — but nothing executes model-authored code yet. Slice 7. Until then
+  the only local analysis is SQL, which needs no sandbox at all.
+- **The podman detection path is unverified against a real podman.** There is
+  none on the machine this was written on, so the podman branch is tested only
+  against a recorded reply. The docker branch is verified end to end, including
+  the container.
 - **Holdout stability is the one part of §4's row still missing.** n, effect
   size and significance are computed and enforced; "stable across 3 holdout
   windows" would mean re-running each comparison on deterministic subsets, which
@@ -614,7 +623,7 @@ and no built-in quantile or regression aggregates.
 `CodeRunner`, which executes model-authored Python against real data. Without
 podman or docker present, SQL analysis is unaffected and only code analysis is
 unavailable — `doctor` reports which, the same way it reports a missing contact
-email. mole itself is always a plain binary.
+email. mole itself is always a plain binary. See "The sandbox" below.
 
 ### `mole connect`
 
@@ -894,3 +903,53 @@ statistics library in a binary that is one static file on purpose. It is checked
 against published critical values at df = 2, 10, 20, 48 and ∞, and against the
 closed form `1 − |t|/√(t²+2)` at df = 2. The incomplete beta's two evaluation
 paths are asserted to agree, because that identity is what both of them rest on.
+
+### The sandbox: detected, measured, and never required
+
+§3.6 decides the technology before `CodeRunner` is written. `mole doctor`
+reports what it found:
+
+```
+✓ sandbox            docker 29.6.2, rootful, seccomp available, cgroup v2
+✓                      no network, read-only rootfs, all capabilities dropped,
+                       uid 65534, 1 cpu, 512MB, 64 pids, 30s wallclock
+```
+
+and when there is nothing:
+
+```
+! sandbox            no container runtime found (podman: not on PATH; docker: not on PATH)
+!                      local code analysis unavailable; install podman or docker to enable it
+!                      local SQL analysis is unaffected (§12.2)
+```
+
+**It is informational, and a test asserts that.** Running `doctor` with and
+without a runtime on `PATH` must produce the same verdict — anything else would
+tell every CI job and install script that a missing runtime breaks the install.
+The second line is the point of the check: "not found" says something is missing
+without saying whether it matters, and usually it does not.
+
+**A binary on PATH is not a runtime.** A Docker install with a stopped daemon
+has the binary and can run nothing, so detection asks the runtime about itself
+and reports what it says. Present-but-unusable is a third state with its own
+message, because "install a runtime" and "your runtime cannot filter syscalls"
+are different problems. Seccomp is required — without a syscall filter a
+container is a namespace trick around code somebody else wrote. cgroup v1 is a
+warning, not a disqualifier: memory and pid limits still apply.
+
+**The flags are verified, not described.** A `doctor` line claiming "netns
+disabled, seccomp default" while the runner forgot `--network=none` would be a
+check reporting a property nothing enforces, so the summary is rendered from the
+same flag list `CodeRunner` will pass — and a test runs a real container to
+confirm each one holds:
+
+| observed | from |
+|---|---|
+| `uid=65534(nobody)` | `--user=65534:65534` |
+| `Network unreachable` | `--network=none` |
+| `Read-only file system` | `--read-only` |
+| `/tmp` writable, `/tmp/e: Permission denied` | `--tmpfs=…,noexec` |
+| `CapEff: 0000000000000000` | `--cap-drop=ALL` |
+
+That test skips without a runtime and never pulls an image — a suite that
+downloads 150MB on a cold cache is a suite people switch off.

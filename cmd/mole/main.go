@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/lajosdeme/mole/internal/budget"
+	"github.com/lajosdeme/mole/internal/compute/sandbox"
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/llm"
@@ -230,6 +231,7 @@ func cmdDoctor(ctx context.Context, path string) error {
 	}
 
 	reportConfig(r)
+	reportSandbox(ctx, r)
 
 	if r.pending > 0 {
 		fmt.Println("\nsome checks are informational until their milestone lands")
@@ -273,6 +275,43 @@ func (c *checks) print(good bool, label, detail string) {
 		mark = "!"
 	}
 	fmt.Printf("%s %-18s %s\n", mark, label, detail)
+}
+
+// reportSandbox reports the container runtime (§3.6), and reports it as a
+// CAPABILITY rather than a requirement.
+//
+// note, not require: mole is one static binary and a container runtime is
+// needed by CodeRunner alone. The SQL path needs none — §12.2 says outright
+// that "the sandbox is not the control here" — so an absent runtime costs one
+// feature and must not fail a setup script.
+//
+// The second line is the point of the whole check. "sandbox: not found" tells
+// somebody something is missing without telling them whether it matters, and
+// the answer is that it usually does not.
+func reportSandbox(ctx context.Context, r *checks) {
+	rep := sandbox.Detect(ctx)
+
+	switch {
+	case rep.Usable:
+		r.note(true, "sandbox", rep.Detail)
+		r.print(true, "", "  "+sandbox.DefaultLimits().Summary())
+		if len(rep.Missing) > 0 {
+			// Usable and imperfect. Said out loud, because the alternative is a
+			// tick beside a runtime that cannot report memory limits reliably.
+			r.print(true, "", "  note: "+strings.Join(rep.Missing, "; "))
+		}
+	case rep.Found:
+		// Present and not trustworthy, which is a different problem from absent
+		// and needs a different sentence. Trusting it would be worse than
+		// having nothing.
+		r.note(false, "sandbox", rep.Detail)
+		r.print(false, "", "  cannot run model-authored code: "+strings.Join(rep.Missing, "; "))
+		r.print(false, "", "  local SQL analysis is unaffected (§12.2)")
+	default:
+		r.note(false, "sandbox", rep.Detail)
+		r.print(false, "", "  local code analysis unavailable; install podman or docker to enable it")
+		r.print(false, "", "  local SQL analysis is unaffected (§12.2)")
+	}
 }
 
 // reportConfig checks credentials and settings. These are the "verify at
