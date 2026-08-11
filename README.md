@@ -379,16 +379,13 @@ The suites that carry weight:
 
 Stated plainly rather than left to be discovered:
 
-- **M8's hypothesis planning works on a small local model; its QUALITY is
-  unmeasured.** This was blocked on "the only reachable model is a 3B local one
-  whose planning calls all fail to parse" — which the reasoning allowance above
-  unblocked, because the model that could do it was a reasoning model mole could
-  not talk to. Three live local-only sessions since: qwen3:4b chose templates and
-  columns that rendered, the gate answered, §4's holdout statement ran, and claims
-  were mined from the envelopes. What is NOT established is whether a small model
-  chooses *good* hypotheses — the claims a 3B miner wrote were mostly restatements
-  of the column statistics rather than assertions. That needs a capable model, and
-  the blocker there is still credit.
+- **M8's hypothesis planning is verified against a capable model.** Was blocked on
+  credit. DeepSeek (`deepseek-v4-flash`) planned a comparison over 400 rows, chose
+  `group_comparison` with the right column roles, and wrote eight claims that all
+  passed §11.5 and all reconciled — for **$0.0006**. The scorecard reads clean:
+  claim integrity 100%, verification coverage 100%, exfil regression 0% of 2
+  envelopes, no overshoot. What that run also found is below, and it was a hole in
+  the design rather than in the model.
 - **The channel out of the sandbox is bounded, not zero.** Only names the plan
   declared come back, and only as finite numbers, so a script cannot return rows
   or labels. A determined model could still encode a value in the digits of a
@@ -1022,11 +1019,38 @@ Three details that are the point rather than the implementation:
 A test pins the property the old restriction existed for: a result that is
 significant on its own stops being significant as one of fifteen.
 
-### What a live local run found
+### What live runs found
 
-Three sessions against real data (400 rows, four regions) with qwen3:4b planning
-and qwen2.5:3b mining, on this machine, over ollama. They cost nothing and found
-two bugs that every test in the repository had missed.
+Five sessions against real data (400 rows, four regions): three local, over
+ollama, and two against DeepSeek once credit existed. Between them they found
+three bugs that every test in the repository had missed.
+
+**A verbatim quote can drop every qualification in the sentence it came from.**
+This is the worst of the three, and it invalidated a claim made in four separate
+doc comments. The passage said:
+
+```
+the mean in "west" is higher than in "south" by 63.67 (means 141.97 and 78.30;
+n = 100 and 100); statistically significant (p = <0.001), Welch t = 24.49, effect
+size 3.46 (large), 95% CI 58.54 to 68.80, unadjusted p = <0.001 over 6 pairwise
+comparisons; the difference points the same way in all 3 holdout windows
+```
+
+and DeepSeek quoted it exactly as far as `(p = <0.001)`, then stopped. §11.5 passed,
+because a prefix *is* a verbatim substring. The Holm correction, the effect size and
+the holdout stability all vanished — from the claim, from the citation, and from the
+synthesized report, which then said "a statistically significant difference" with
+nothing qualifying it. Every comment in `internal/compute/stats` arguing a
+qualification is safe "because it is in the sentence a claim must quote" was resting
+on an assumption nobody had checked: that a quote covers the whole sentence.
+
+The fix widens a quote that lands inside a verdict line to the whole line, rather
+than refusing the claim — refusing throws away a true claim over its packaging, and
+the widened text is still verbatim, which is the property §11.5 exists to protect.
+The claim's own text is left alone: that is the model's assertion, and rewriting it
+would be mole putting words in its mouth. Verified by replaying the recorded
+cassette of the run that found it, so the same model output now produces the
+complete sentence.
 
 **Local claims were never persisted.** `WebActor` and `AcademicActor` each write
 their own claims; `LocalComputeActor` returned them in `Result` and wrote nothing,
@@ -1043,9 +1067,10 @@ a local one, because the data never left the machine. Five well-formed claims
 scored 0% on the one metric whose entire purpose is to catch claims the pipeline
 should have rejected.
 
-Both are the same lesson the M8 review wrote down and this milestone had to learn
-again: falsification tests the rules you wrote. Neither bug is a rule anyone wrote
-down — they are what happens between two components that were each tested alone.
+All three are the same lesson the M8 review wrote down and this milestone had to
+learn again: falsification tests the rules you wrote. None of them is a rule anyone
+wrote down — they are what happens between two components that were each tested
+alone, and no amount of testing either component alone would have found them.
 
 What the runs *did* confirm, having been unverifiable before: a model choosing a
 template and columns that render, the aggregation gate answering, §4's holdout

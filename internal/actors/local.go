@@ -184,7 +184,7 @@ func (a *LocalComputeActor) Run(ctx context.Context, lead core.Lead) (*Result, e
 				"connector", p.Connector, "err", err)
 			continue
 		}
-		res.Claims = append(res.Claims, note.cap(out.Claims)...)
+		res.Claims = append(res.Claims, note.cap(widenToQualifiedLine(text, out.Claims))...)
 		findings = append(findings, note.finding)
 		if p.Code != nil {
 			usedSandbox = true
@@ -243,6 +243,92 @@ func (a *LocalComputeActor) recordCrossings(ctx context.Context, crossings []cor
 		a.logger().ErrorContext(ctx, "the audit trail was not written; §12.1's record "+
 			"of what left this machine is incomplete", "crossings", len(crossings), "err", err)
 	}
+}
+
+// widenToQualifiedLine extends a quote that landed inside a statistical sentence to
+// the whole sentence.
+//
+// Found on the first live DeepSeek run, and it defeats the design as written. The
+// passage said:
+//
+//	the mean in "west" is higher than in "south" by 63.67 (means 141.97 and 78.30;
+//	n = 100 and 100); statistically significant (p = <0.001), Welch t = 20.13,
+//	effect size 2.85 (large), 95% CI 57.41 to 69.93, unadjusted p = <0.001 over 6
+//	pairwise comparisons; the difference points the same way in all 3 holdout windows
+//
+// and the model quoted it verbatim up to "(p = <0.001)" and stopped. §11.5 passed —
+// a prefix IS a verbatim substring — and the Holm correction, the effect size and
+// the holdout stability all vanished from the claim, from the citation, and from the
+// synthesized report. Every comment in stats/ claiming the qualification is safe
+// "because it is in the sentence a claim must quote" was resting on the assumption
+// that a quote covers the whole sentence. It does not.
+//
+// So the quote is widened rather than the claim refused. Refusing would throw away
+// a true claim over its packaging, and the widened text is still verbatim from the
+// passage — which is the property §11.5 exists to protect. The claim's own TEXT is
+// left alone: it is the model's assertion, and rewriting that would be mole putting
+// words in its mouth.
+//
+// Only lines carrying a verdict are widened. Widening every quote to its line would
+// change nothing about the bucket lines a reader is meant to check figure by figure,
+// and would make a short quote look like a long one for no gain.
+func widenToQualifiedLine(passage string, claims []core.Claim) []core.Claim {
+	if len(claims) == 0 {
+		return claims
+	}
+	out := make([]core.Claim, 0, len(claims))
+	for _, c := range claims {
+		if line, offset, ok := qualifiedLineFor(passage, c.Quote); ok {
+			c.Quote = TruncateQuote(line)
+			c.QuoteOffset = int64(offset)
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// qualifiedLineFor finds the verdict line a quote sits inside, when it sits inside
+// one and does not already carry the whole of it.
+func qualifiedLineFor(passage, quote string) (string, int, bool) {
+	quote = strings.TrimSpace(quote)
+	if quote == "" {
+		return "", 0, false
+	}
+	var at int
+	for _, raw := range strings.Split(passage, "\n") {
+		line := strings.TrimSpace(raw)
+		start := at
+		at += len(raw) + 1
+
+		if !carriesAVerdict(line) || len(line) <= len(quote) {
+			continue
+		}
+		i := strings.Index(line, quote)
+		if i < 0 {
+			continue
+		}
+		// The offset of the trimmed line within the passage.
+		return line, start + strings.Index(raw, line), true
+	}
+	return "", 0, false
+}
+
+// carriesAVerdict reports whether a line is one of stats' rendered sentences.
+//
+// Matched on the verdict wording rather than on a marker character, because the
+// wording is what stats.Sentence produces and a marker would be one more thing two
+// packages have to agree about.
+func carriesAVerdict(line string) bool {
+	for _, s := range []string{
+		"statistically significant",
+		"NOT distinguishable from chance",
+		"UNDERPOWERED",
+	} {
+		if strings.Contains(line, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // verdictNote is what a run learned about its own evidence, kept separately from
