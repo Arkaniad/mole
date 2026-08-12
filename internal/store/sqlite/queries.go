@@ -1389,6 +1389,84 @@ func (t *queries) ListRows(ctx context.Context, sessionID string) ([]dataset.Row
 	return out, rows.Err()
 }
 
+// DeleteSession removes a session and, by cascade, everything filed under it.
+//
+// The cascade is the point: listing the child tables here would be a list that
+// drifts the next time one is added. It depends on foreign_keys(1), which
+// sqlite.Open sets and TestDeletingASessionTakesItsDocuments verifies is actually
+// in force — an unenforced pragma would turn this into a row deletion that orphans
+// everything else.
+func (t *queries) DeleteSession(ctx context.Context, id string) error {
+	_, err := t.q.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("sqlite: delete session: %w", err)
+	}
+	return nil
+}
+
+// InsertDocument stores source text for later quote verification (toolkit mode).
+func (t *queries) InsertDocument(ctx context.Context, doc core.Document) error {
+	id := doc.ID
+	if id == "" {
+		id = core.NewDocumentID()
+	}
+	fetched := doc.FetchedAt
+	if fetched.IsZero() {
+		fetched = time.Now().UTC()
+	}
+	expires := doc.ExpiresAt
+	if expires.IsZero() {
+		expires = fetched.Add(core.DefaultDocumentTTL)
+	}
+	_, err := t.q.ExecContext(ctx, `
+		INSERT INTO documents (id, session_id, url, title, text, truncated, fetched_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, doc.SessionID, doc.URL, doc.Title, doc.Text, doc.Truncated,
+		toMicros(fetched), toMicros(expires))
+	return err
+}
+
+// Document reads stored source text, treating an expired row as absent.
+//
+// The expiry check is here rather than only in the sweep: a caller must not be
+// able to verify a quote against text that was supposed to be gone, whether or not
+// a background job has run recently.
+func (t *queries) Document(ctx context.Context, id string, now time.Time) (core.Document, bool, error) {
+	var (
+		d                core.Document
+		fetched, expires int64
+	)
+	err := t.q.QueryRowContext(ctx, `
+		SELECT id, session_id, url, title, text, truncated, fetched_at, expires_at
+		  FROM documents WHERE id = ?`, id).
+		Scan(&d.ID, &d.SessionID, &d.URL, &d.Title, &d.Text, &d.Truncated, &fetched, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return core.Document{}, false, nil
+	}
+	if err != nil {
+		return core.Document{}, false, fmt.Errorf("sqlite: read document: %w", err)
+	}
+	d.FetchedAt, d.ExpiresAt = fromMicros(fetched), fromMicros(expires)
+	if d.Expired(now) {
+		return core.Document{}, false, nil
+	}
+	return d, true, nil
+}
+
+// PurgeExpiredDocuments reclaims disk taken by source text past its TTL.
+func (t *queries) PurgeExpiredDocuments(ctx context.Context, now time.Time) (int64, error) {
+	res, err := t.q.ExecContext(ctx,
+		`DELETE FROM documents WHERE expires_at <= ?`, toMicros(now))
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: purge documents: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // InsertCrossings records what left the machine (§12.1).
 //
 // No value from the data is written: the statement, its hash, the counts and one

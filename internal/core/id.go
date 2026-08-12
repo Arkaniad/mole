@@ -37,6 +37,7 @@ func NewReservationID() string { return newID("rsv") }
 func NewRowID() string         { return newID("row") }
 func NewSpanID() string        { return newID("sp") }
 func NewCrossingID() string    { return newID("cr") }
+func NewDocumentID() string    { return newID("doc") }
 
 // PromptFence returns an unguessable delimiter suffix for wrapping untrusted
 // content in a prompt (§3.2).

@@ -124,6 +124,13 @@ type Queries interface {
 	// session, oldest first (§12.1, M8).
 	ListCrossings(ctx context.Context, sessionID string) ([]core.Crossing, error)
 
+	// Document reads stored source text by id, reporting false when it is absent
+	// or past its TTL (toolkit mode).
+	//
+	// Expiry is applied HERE as well as by the sweep, because a retention promise
+	// that depends on a background job having run is not a retention promise.
+	Document(ctx context.Context, id string, now time.Time) (core.Document, bool, error)
+
 	// RecentLeadCosts returns finished leads' settled costs with the actor type
 	// and depth that produced them, OLDEST first, across every session.
 	//
@@ -194,6 +201,22 @@ type Tx interface {
 	// leave the merge reasoning over evidence that was never fully recorded, and
 	// a dataset is precisely a thing somebody counts.
 	InsertRows(ctx context.Context, sessionID string, rows []dataset.Row) error
+
+	// DeleteSession removes a session and everything filed under it — claims,
+	// edges, rows, crossings, documents — by foreign-key cascade.
+	//
+	// Added with the document store, because "documents are deleted with their
+	// session" was not a promise anything could keep while nothing could delete a
+	// session.
+	DeleteSession(ctx context.Context, id string) error
+
+	// InsertDocument stores source text a quote can later be checked against.
+	InsertDocument(ctx context.Context, doc core.Document) error
+
+	// PurgeExpiredDocuments deletes source text past its TTL and reports how many
+	// rows went. Reclaims disk; correctness does not depend on it, since reads
+	// apply expiry themselves.
+	PurgeExpiredDocuments(ctx context.Context, now time.Time) (int64, error)
 
 	// InsertCrossings records what crossed the aggregation gate, and what was
 	// refused or withheld (§12.1).
