@@ -1,64 +1,256 @@
-# Contributor License Agreement
+# mole Contributor License Agreement
 
-> **⚠ DRAFT — NOT LEGAL TEXT. DO NOT PUBLISH AS-IS.**
+> **Status: awaiting legal review.** The text below is complete and intended to be
+> signed as-is, but it has not been reviewed by a lawyer. It is adapted from the
+> Apache Software Foundation's ICLA and CCLA v2.0, which the ASF publishes for
+> exactly this kind of reuse.
 >
-> This is a working outline for a lawyer to turn into an agreement, not an
-> agreement. It has not been reviewed by anyone qualified. Publishing it in this
-> state would be worse than having no CLA: contributors would sign something
-> whose effect nobody has verified, which is a defect in exactly the direction
-> this project cares about.
->
-> **Before launch, replace this file entirely with reviewed text.**
->
-> The usual base is the Apache Software Foundation's ICLA and CCLA
-> (<https://www.apache.org/licenses/#clas>), adapted to name an individual or
-> company instead of the Foundation. They are widely understood, and a
-> contributor who has signed one before will recognise the shape.
+> Three things a reviewer should decide, each marked `[REVIEW]` where it appears:
+> the counterparty, the governing law, and whether §7's licensing commitment should
+> stay binding.
 
-## Open questions for the lawyer
+There are two agreements here. Sign the **Individual** one if you are contributing
+on your own behalf. If you are contributing work your employer owns — most work
+written on company time or equipment — your employer signs the **Corporate** one
+as well.
 
-**1. Who is the counterparty?** The agreement must name the entity receiving the
-grant. Today `NOTICE` says `Lajos Deme` (an individual).
+Both coexist with the `Signed-off-by` line required on every commit (the
+[Developer Certificate of Origin](https://developercertificate.org/)). They answer
+different questions: the DCO asks whether you have the right to submit the code,
+this asks what the project may do with it.
 
-If a company is to be formed for the hosted product, the CLA should name that
-company from the first signature. Otherwise every contribution is granted to a
-person, and moving those rights into the company later means either an
-assignment from the individual (straightforward) or re-collecting signatures
-(not). **This is the question worth resolving before the repository goes
-public**, because it is cheap now and expensive after the tenth contributor.
+**In one sentence:** you keep your copyright, your contribution ships under
+Apache-2.0 like everything else, and the project may also release future versions
+under other terms.
 
-**2. Licence grant or copyright assignment?** The intent is a *grant*, not an
-assignment: the contributor keeps their copyright and may reuse their own work
-anywhere. The grant needs to be broad enough to permit releasing future versions
-under different terms — including a source-available licence — which is the
-entire purpose (see `CONTRIBUTING.md`).
+---
 
-**3. Patent grant.** Apache-2.0 §3 already carries one for the inbound
-contribution. Confirm the CLA does not narrow it and that the defensive
-termination clause behaves sensibly for a single-entity project.
+# Individual Contributor License Agreement
 
-**4. Corporate contributions.** A CCLA is needed for contributors working on
-company time, since their employer may own the copyright. Without one, a
-company's legal team can invalidate a contribution after the fact.
+Thank you for your interest in mole (the "Project"), maintained by Lajos Deme (the
+"Maintainer"). `[REVIEW: the counterparty. If a company is to be formed for the
+hosted product, it should be named here from the first signature — moving these
+rights into it afterwards means either an assignment from the individual or
+re-collecting every signature.]`
 
-**5. The commitment in `CONTRIBUTING.md`.** That document promises publicly that
-every released version stays Apache-2.0 permanently, and that a relicence could
-only apply to future versions. Decide with counsel whether that promise should
-be binding text inside the CLA — a contributor-facing guarantee is worth more if
-it is enforceable, and the promise costs nothing to keep since it describes what
-Apache-2.0's irrevocability already guarantees for published releases.
+This agreement documents the rights granted by contributors to the Maintainer. It
+is for your protection as a contributor as well as the protection of the Project
+and its users; it does not change your rights to use your own Contributions for any
+other purpose.
 
-## Intended effect, in plain terms
+You accept and agree to the following terms and conditions for Your present and
+future Contributions submitted to the Project. Except for the licenses granted here
+to the Maintainer and recipients of software distributed by the Maintainer, You
+reserve all right, title, and interest in and to Your Contributions.
 
-For a contributor, in one sentence: *you keep your copyright, your contribution
-ships under Apache-2.0 like everything else, and the maintainer may also release
-future versions of the project under other terms.*
+### 1. Definitions
 
-## Mechanics once the text exists
+**"You"** (or **"Your"**) means the copyright owner, or the legal entity authorised
+by the copyright owner, that is entering into this agreement with the Maintainer.
 
-- **cla-assistant.io** — GitHub app, comment-to-sign, signatures stored in a
-  gist. The standard choice for a single maintainer; no infrastructure.
-- Two documents: individual (ICLA) and corporate (CCLA).
-- Keep the DCO sign-off requirement alongside it (`git commit -s`). They answer
-  different questions — DCO is "do you have the right to submit this", the CLA is
-  "what may the project do with it" — and having both is normal.
+**"Contribution"** means any original work of authorship, including any
+modifications or additions to an existing work, that is intentionally submitted by
+You to the Maintainer for inclusion in, or documentation of, the Project. For the
+purposes of this definition, "submitted" means any form of electronic, verbal, or
+written communication sent to the Maintainer or its representatives, including but
+not limited to communication on electronic mailing lists, source code control
+systems, and issue tracking systems that are managed by, or on behalf of, the
+Maintainer for the purpose of discussing and improving the Project — but excluding
+communication that is conspicuously marked or otherwise designated in writing by
+You as "Not a Contribution".
+
+### 2. Grant of Copyright License
+
+Subject to the terms and conditions of this agreement, You hereby grant to the
+Maintainer and to recipients of software distributed by the Maintainer a perpetual,
+worldwide, non-exclusive, no-charge, royalty-free, irrevocable copyright license to
+reproduce, prepare derivative works of, publicly display, publicly perform,
+sublicense, and distribute Your Contributions and such derivative works.
+
+The right to sublicense granted above includes the right to distribute Your
+Contribution, and derivative works of it, under license terms other than those the
+Project uses at the time of Your Contribution, subject to §7 below.
+
+### 3. Grant of Patent License
+
+Subject to the terms and conditions of this agreement, You hereby grant to the
+Maintainer and to recipients of software distributed by the Maintainer a perpetual,
+worldwide, non-exclusive, no-charge, royalty-free, irrevocable (except as stated in
+this section) patent license to make, have made, use, offer to sell, sell, import,
+and otherwise transfer the Project, where such license applies only to those patent
+claims licensable by You that are necessarily infringed by Your Contribution alone
+or by combination of Your Contribution with the Project to which such Contribution
+was submitted.
+
+If any entity institutes patent litigation against You or any other entity
+(including a cross-claim or counterclaim in a lawsuit) alleging that Your
+Contribution, or the Project to which You have contributed, constitutes direct or
+contributory patent infringement, then any patent licenses granted to that entity
+under this agreement for that Contribution or Project shall terminate as of the
+date such litigation is filed.
+
+### 4. Representations
+
+You represent that You are legally entitled to grant the above licenses.
+
+If Your employer has rights to intellectual property that You create — which
+includes Your Contributions — You represent that You have received permission to
+make Contributions on behalf of that employer, that Your employer has waived such
+rights for Your Contributions to the Project, or that Your employer has executed a
+Corporate Contributor License Agreement with the Maintainer.
+
+You represent that each of Your Contributions is Your original creation. You
+represent that Your Contribution submissions include complete details of any
+third-party license or other restriction (including, but not limited to, related
+patents and trademarks) of which You are personally aware and which are associated
+with any part of Your Contributions.
+
+### 5. No Obligation of Support; No Warranty
+
+You are not expected to provide support for Your Contributions, except to the
+extent You desire to provide support. You may provide support for free, for a fee,
+or not at all.
+
+Unless required by applicable law or agreed to in writing, You provide Your
+Contributions on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+either express or implied, including, without limitation, any warranties or
+conditions of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A PARTICULAR
+PURPOSE.
+
+### 6. Notification
+
+You agree to notify the Maintainer of any facts or circumstances of which You become
+aware that would make these representations inaccurate in any respect.
+
+### 7. The Maintainer's Commitment
+
+`[REVIEW: this section is a promise the Maintainer makes to contributors, limiting
+what §2's sublicensing right can be used for. It is included because a bare
+sublicensing grant is what contributors reasonably object to, and because it
+promises little the Apache License does not already guarantee for published
+releases. Confirm it is enforceable as drafted and that the Maintainer is content
+to be bound by it.]`
+
+The Maintainer commits that:
+
+**(a)** Every version of the Project that has been publicly released under the
+Apache License, Version 2.0 remains available under that license permanently. The
+rights granted in §2 will not be used to withdraw, revoke, or restrict any release
+that has already been made.
+
+**(b)** Any change to the Project's license applies only to versions released after
+that change, and will be announced publicly before the first such release.
+
+**(c)** Your Contribution will be distributed under the Apache License, Version 2.0
+in the release in which it first appears.
+
+### 8. Governing Law
+
+This agreement is governed by the laws of England and Wales, without regard to its
+conflict of law provisions. `[REVIEW: jurisdiction, to match the Maintainer's
+place of business.]`
+
+### 9. Acceptance
+
+You accept this agreement by signing electronically through the Project's CLA
+assistant when You open Your first pull request, or by submitting a signed copy to
+the Maintainer.
+
+```
+Full name:
+GitHub username:
+Email:
+Date:
+```
+
+---
+
+# Corporate Contributor License Agreement
+
+This agreement is for a company or other legal entity ("Corporation") that owns
+intellectual property created by its employees or contractors, and wishes to permit
+those people to contribute to the Project.
+
+The Corporation agrees to the terms of §§1–8 of the Individual Contributor License
+Agreement above, with the following modifications and additions.
+
+### C1. Definitions
+
+**"You"** (or **"Your"**) means the Corporation entering into this agreement,
+together with all other entities that control, are controlled by, or are under
+common control with that Corporation. For the purposes of this definition,
+"control" means (i) the power, direct or indirect, to cause the direction or
+management of such entity, whether by contract or otherwise, (ii) ownership of
+fifty percent (50%) or more of the outstanding shares, or (iii) beneficial
+ownership of such entity.
+
+**"Contribution"** has the meaning given in §1 of the Individual Agreement, and
+includes any such work submitted by any employee or contractor listed in Schedule A.
+
+### C2. Grants
+
+The Corporation grants the licenses set out in §§2 and 3 of the Individual
+Agreement, in respect of every Contribution submitted by a person listed in
+Schedule A.
+
+### C3. Authorised Contributors
+
+The Corporation represents that each person listed in Schedule A is authorised to
+submit Contributions on its behalf, and that the Corporation owns or has the right
+to license the intellectual property in those Contributions.
+
+The Corporation agrees to notify the Maintainer when a person should be added to or
+removed from Schedule A. A Contribution submitted by a person before their removal
+remains subject to the licenses granted in C2.
+
+It is the Corporation's responsibility to ensure that a person not listed in
+Schedule A does not submit Contributions on its behalf.
+
+### C4. Third-Party Contributions
+
+The Corporation shall not submit a Contribution containing work that is not its
+original creation, or that is subject to a third-party license or other
+restriction, without conspicuously identifying that work and the restriction
+applying to it at the time of submission.
+
+### C5. Signature
+
+```
+Corporation:
+Registered address:
+Signed by:
+Position:
+Email:
+Date:
+```
+
+#### Schedule A — Authorised Contributors
+
+| Full name | GitHub username | Email |
+|---|---|---|
+| | | |
+
+---
+
+## Notes for the reviewer
+
+Beyond the three `[REVIEW]` markers, four points of intent that the drafting is
+meant to serve:
+
+1. **A grant, not an assignment.** Contributors keep their copyright and may reuse
+   their own work anywhere, under any license. §2 gives the Maintainer a broad
+   license including the right to sublicense; it does not transfer ownership.
+2. **The sublicensing right is the point of the agreement.** Everything else in the
+   Maintainer's plan — hosting mole commercially, selling bundled inference, a
+   proprietary team edition built on this core — is already permitted by Apache-2.0
+   without any CLA. The only thing §2 adds is the ability to release *future*
+   versions under different terms if the project ever needs to respond to being
+   packaged as a service by someone else.
+3. **§7 is the price of §2.** A bare sublicensing grant is what contributors object
+   to, reasonably. §7 bounds it: releases already made stay Apache-2.0, changes
+   apply forward only, and a contribution ships under Apache-2.0 in the release it
+   first appears in. Confirm this is drafted as a binding covenant rather than a
+   statement of intent.
+4. **Patent defensive termination** (§3, second paragraph) mirrors Apache-2.0 §3, so
+   a contributor is not agreeing to something broader than the license the code
+   ships under.

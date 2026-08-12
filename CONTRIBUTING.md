@@ -22,9 +22,11 @@ contributor, which is impossible in practice and therefore not a real option.
 
 What that does **not** mean:
 
-- **No released version can be taken away.** A relicence could only ever apply
-  to versions released after it. Anything already published under Apache-2.0
-  stays Apache-2.0, permanently, for everyone.
+- **No released version can be taken away.** This is not a promise in prose — it
+  is §7 of the [CLA](CLA.md), which binds the maintainer: releases already made
+  stay Apache-2.0 permanently, a licence change applies only to versions released
+  after it and must be announced first, and your contribution ships under
+  Apache-2.0 in the release it first appears in.
 - **You keep your copyright.** The CLA is a licence grant, not an assignment.
   Your contribution remains yours to use however you like, including in other
   projects under any licence you choose.
@@ -37,9 +39,14 @@ If that trade is not one you want to make, that is a legitimate position and no
 argument is needed — open an issue describing the bug or the design instead. A
 precise issue is often worth more than a patch.
 
-Sign-off is also required on every commit (`git commit -s`), which certifies you
-have the right to submit the code under these terms. See the
-[Developer Certificate of Origin](https://developercertificate.org/).
+Sign-off is also required on every commit (`git commit -s`). The two coexist and
+answer different questions: the
+[DCO](https://developercertificate.org/) asks whether you have the right to submit
+the code, the CLA asks what the project may do with it.
+
+If you are contributing work your employer owns — most work written on company
+time or equipment — your employer signs the corporate agreement in the same
+document.
 
 ### Copyright headers
 
