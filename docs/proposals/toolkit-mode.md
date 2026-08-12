@@ -206,10 +206,20 @@ mole.edge_add(session_id, pair_id, relation, rationale)     -> {edge_id}
 ```
 
 mole retrieves the candidate pairs (deterministic lexical retrieval); the agent
-adjudicates. The tool description should carry the measurement: a single judgement
-was 51% precise and two agreeing judgements 70%, so an agent that asks itself twice
-gets a better graph. mole cannot enforce that here — it can only tell the truth
-about it in the description.
+adjudicates. The tool description carries the measurement: a single judgement was
+51% precise and two agreeing judgements 70%, so an agent that asks itself twice gets
+a better graph. mole cannot enforce that here — requiring two `edge_add` calls would
+not reproduce the effect, because mole cannot tell an independent second judgement
+from the same assertion repeated, and an agent calling twice because the tool demands
+it has judged once. The measurement is advice a model can act on rather than a ritual
+it can perform.
+
+Two things deliberately not enforced, since both would cost more than they protect:
+`edge_add` does not require the pair to have come from `pairs_candidates` (lexical
+retrieval has no perfect recall, and refusing unproposed pairs would discard real
+contradictions), and it does not cap edges per session. What it does enforce is that
+both claims belong to the session — an edge nothing in the session explains is a
+graph defect the scorecard would silently absorb.
 
 Dataset mode reuses `claim_add`'s shape via `mole.rows_add` and `mole.dataset`, and
 is a later slice.
@@ -242,7 +252,7 @@ Each slice is usable on its own.
 | ~~1~~ | ~~`session_open/close`, `search`, `fetch`~~ **done** — plus server `Instructions`, behind `mole serve --toolkit` |
 | ~~2~~ | ~~`verify_quote`, `claim_add`, `claims_list`, `citations`~~ **done** — §11.5 now holds for someone else's model |
 | ~~3~~ | ~~`connect_list`, `aggregate`~~ **done** — pipeline extracted to internal/compute so both modes run one copy |
-| 4 | `pairs_candidates`, `edge_add` | medium |
+| ~~4~~ | ~~`pairs_candidates`, `edge_add`~~ **done** — the agent's edges land in the graph `mole eval` scores; the confirm pass is advice in the tool description, not a rule |
 | 5 | `rows_add`, `dataset` | medium |
 
 Roughly two to three weeks. Most of it is exposure of machinery that exists and is

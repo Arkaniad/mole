@@ -83,6 +83,20 @@ func (r *rig) tools(t *testing.T) []string {
 	return out
 }
 
+// toolDefs is tools() with the descriptions attached, for the tests that assert a
+// tool tells the model something it cannot be made to do — advice only helps if it
+// reaches the model, and the description is the only channel that carries it.
+func (r *rig) toolDefs(t *testing.T) []*mcp.Tool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := r.client.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	return res.Tools
+}
+
 func timeNow() time.Time { return time.Now().UTC() }
 
 // expireDocument backdates a stored document past its TTL, so a test can check what

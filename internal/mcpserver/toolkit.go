@@ -30,6 +30,7 @@ import (
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/tools/search"
+	"github.com/lajosdeme/mole/internal/verifier"
 )
 
 // MaxFetchChars bounds the text one fetch returns.
@@ -413,6 +414,24 @@ func registerToolkit(srv *mcp.Server, d Deps) {
 			"significance test), trend (movement over time). Buckets covering fewer than " +
 			"five records are suppressed and free-text columns are withheld.",
 	}, d.toolkitAggregate)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "mole.pairs_candidates",
+		Description: "Claim pairs worth comparing, retrieved by lexical similarity — no " +
+			"model call, and the same pairs every run. Judge each on two yes-or-no " +
+			"questions: are these the same assertion, and can both be true. Most pairs " +
+			"are neither.",
+	}, d.toolkitPairs)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "mole.edge_add",
+		Description: "Record how two claims relate: contradicts, duplicate_of, or " +
+			"neither. A contradiction lowers the confidence of both claims and is " +
+			"reported to the reader, so a wrong one misleads — measured on 149 labelled " +
+			"pairs, a single judgement is right 51% of the time and two agreeing " +
+			"judgements 70%. Judging a pair twice, independently, is worth the second " +
+			"call. \"neither\" writes no edge and is the right answer for most pairs.",
+	}, d.toolkitEdgeAdd)
 }
 
 // ---------------------------------------------------------------------------
@@ -780,4 +799,179 @@ func (d Deps) toolkitAggregate(ctx context.Context, _ *mcp.CallToolRequest, in a
 			"five records were suppressed. Cite this as connector:" + in.Connector +
 			"#" + res.Envelope.QueryHash[:16] + ".",
 	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// pairs_candidates / edge_add
+// ---------------------------------------------------------------------------
+//
+// mole retrieves which claims are worth comparing; the agent judges them. The
+// retrieval is lexical and deterministic, so it costs no model call and gives the
+// same pairs every run — which is what makes the resulting graph comparable
+// between sessions.
+//
+// One thing mole enforces in autonomous mode and CANNOT enforce here: the confirm
+// pass. Measured on 149 labelled pairs, a single judgement calls "contradicts"
+// correctly 51% of the time and two agreeing judgements 70%, so mole's own verifier
+// asks twice. Requiring two edge_add calls would not reproduce that. mole cannot
+// tell an independent second judgement from the same assertion repeated, and an
+// agent that calls twice because the tool demands it has judged once. The
+// measurement is in the tool description instead, where it is advice a model can
+// act on rather than a ritual it can perform.
+
+type pairsIn struct {
+	SessionID string `json:"session_id"`
+	Max       int    `json:"max,omitempty"`
+}
+
+type pairOut struct {
+	PairID  string `json:"pair_id"`
+	A       string `json:"a"`
+	B       string `json:"b"`
+	ASource string `json:"a_source"`
+	BSource string `json:"b_source"`
+}
+
+type pairsOut struct {
+	Pairs []pairOut `json:"pairs"`
+	Note  string    `json:"note"`
+}
+
+// MaxPairsReturned bounds one retrieval. Pairs go straight into an agent's context
+// window, and a session with two hundred claims has thousands of candidate pairs.
+const MaxPairsReturned = 50
+
+func (d Deps) toolkitPairs(ctx context.Context, _ *mcp.CallToolRequest, in pairsIn) (
+	*mcp.CallToolResult, pairsOut, error,
+) {
+	var claims []*core.Claim
+	if err := d.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		claims, err = q.ListClaims(ctx, in.SessionID, 0)
+		return err
+	}); err != nil {
+		return nil, pairsOut{}, err
+	}
+	if len(claims) < 2 {
+		return nil, pairsOut{Note: "fewer than two claims recorded; nothing to compare"}, nil
+	}
+
+	limit := in.Max
+	if limit <= 0 || limit > MaxPairsReturned {
+		limit = MaxPairsReturned
+	}
+	// The same retriever the verifier uses, so a toolkit graph and an autonomous
+	// one are built over the same candidate set rather than two notions of
+	// "related".
+	pairs, _, err := verifier.CandidatePairs(ctx, verifier.LexicalRetriever{},
+		claims, claims, verifier.DefaultMaxCandidates, nil)
+	if err != nil {
+		return nil, pairsOut{}, err
+	}
+
+	out := pairsOut{Note: "Judge each pair on two yes-or-no questions: are these the " +
+		"same assertion, and can both be true. Most pairs are neither — record only " +
+		"the ones that are not."}
+	for i, p := range pairs {
+		if i >= limit {
+			break
+		}
+		out.Pairs = append(out.Pairs, pairOut{
+			PairID:  p.Key(),
+			A:       p.A.Text,
+			B:       p.B.Text,
+			ASource: p.A.Source,
+			BSource: p.B.Source,
+		})
+	}
+	return nil, out, nil
+}
+
+type edgeAddIn struct {
+	SessionID  string  `json:"session_id"`
+	PairID     string  `json:"pair_id"`
+	Relation   string  `json:"relation" jsonschema:"contradicts, duplicate_of, or neither"`
+	Rationale  string  `json:"rationale,omitempty" jsonschema:"one clause on why, read by a person inspecting the graph"`
+	Confidence float64 `json:"confidence,omitempty"`
+}
+
+type edgeAddOut struct {
+	EdgeID   string `json:"edge_id,omitempty"`
+	Relation string `json:"relation"`
+	Note     string `json:"note"`
+}
+
+func (d Deps) toolkitEdgeAdd(ctx context.Context, _ *mcp.CallToolRequest, in edgeAddIn) (
+	*mcp.CallToolResult, edgeAddOut, error,
+) {
+	rel := verifier.Relation(strings.ToLower(strings.TrimSpace(in.Relation))).Normalize()
+	if !rel.Valid() {
+		return nil, edgeAddOut{}, fmt.Errorf(
+			"relation %q is not one of contradicts, duplicate_of, neither", in.Relation)
+	}
+
+	fromID, toID, ok := strings.Cut(in.PairID, "|")
+	if !ok || fromID == "" || toID == "" {
+		return nil, edgeAddOut{}, fmt.Errorf(
+			"pair_id %q is not a pair id from mole.pairs_candidates", in.PairID)
+	}
+	if fromID == toID {
+		return nil, edgeAddOut{}, fmt.Errorf("a claim cannot relate to itself")
+	}
+
+	// Both claims must be this session's. Otherwise an agent could relate claims
+	// across sessions and produce a graph whose edges nothing in the session
+	// explains.
+	if err := d.claimsInSession(ctx, in.SessionID, fromID, toID); err != nil {
+		return nil, edgeAddOut{}, err
+	}
+
+	if rel.EffectOf() == verifier.EffectInert {
+		// "neither" is the right answer for most pairs and writes no edge — mole's
+		// own graph stores only the relations something downstream acts on. Saying
+		// so beats silently accepting a call that changed nothing.
+		return nil, edgeAddOut{Relation: string(rel),
+			Note: "recorded as no relation; no edge was written, which is what " +
+				"\"neither\" means in this graph"}, nil
+	}
+
+	edge := core.ClaimEdge{
+		ID:        core.NewEdgeID(),
+		SessionID: in.SessionID,
+		FromID:    fromID,
+		ToID:      toID,
+		Kind:      core.EdgeKind(rel),
+		Weight:    clampStrength(in.Confidence),
+		CreatedBy: "toolkit",
+		Rationale: strings.TrimSpace(in.Rationale),
+	}
+	if err := d.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.InsertEdges(ctx, []core.ClaimEdge{edge})
+	}); err != nil {
+		return nil, edgeAddOut{}, err
+	}
+	return nil, edgeAddOut{EdgeID: edge.ID, Relation: string(rel),
+		Note: "edge recorded; it lowers the confidence of both claims if they " +
+			"contradict, and collapses them in the report if they duplicate"}, nil
+}
+
+// claimsInSession refuses ids that are not this session's claims.
+func (d Deps) claimsInSession(ctx context.Context, sessionID string, ids ...string) error {
+	want := map[string]bool{}
+	for _, id := range ids {
+		want[id] = true
+	}
+	return d.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		claims, err := q.ListClaims(ctx, sessionID, 0)
+		if err != nil {
+			return err
+		}
+		for _, c := range claims {
+			delete(want, c.ID)
+		}
+		for id := range want {
+			return fmt.Errorf("claim %q is not in session %s", id, sessionID)
+		}
+		return nil
+	})
 }
