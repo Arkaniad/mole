@@ -445,79 +445,57 @@ Stated plainly rather than left to be discovered:
   local one that cannot do structured mining, and the Anthropic key has no
   credit. So the pipeline is verified and the extraction quality is not, and
   that distinction is the honest state of it.
-- **Contradiction recall: the corpus is run, the labelling is not done.** The
-  Verifier's precision was checked once against a labelled 37-pair set that contained
-  no true contradictions, so recall had no denominator — it was `0/0`, not zero. That
-  is fixed as far as it can be without human judgement:
-  `testdata/corpus/contradictions.json` has been **recorded end to end** against
-  DeepSeek — ten questions chosen because sources genuinely disagree, 10/10 ran,
-  every claim well-formed, verification coverage 100%, **disagreement rate 32.4%**,
-  ~$0.18 for the lot. The cassettes are on disk, so re-running it is free and
-  deterministic.
+- **Contradiction detection is measured now, and the number is not flattering.**
+  The Verifier's precision had been checked once against a 37-pair set containing
+  no true contradictions, so recall was `0/0`. That is fixed:
+  `testdata/corpus/contradictions.json` was recorded end to end against DeepSeek
+  (10/10 questions, ~400 claims, ~$0.18, cassettes on disk), producing 1,865 judged
+  pairs — 115 `contradicts`, 146 `duplicate_of`, 1,604 `unrelated`. 159 of them were
+  labelled by hand: every `contradicts` pair, complete rather than sampled, plus 44
+  mechanically-shortlisted candidate misses. 149 got a label; 10 were skipped as
+  genuinely ambiguous.
 
-  What that produced: **1,865 judged pairs — 115 `contradicts`, 146 `duplicate_of`,
-  1,604 `unrelated`.** Labelling all of them is thousands of human judgements and is
-  deliberately not the plan. `testdata/pairs/contradictions.json` is the
-  bounded slice instead, 159 pairs:
+  | | value |
+  |---|---|
+  | adjudicator accuracy | **63%** (94 of 149) |
+  | `contradicts` precision | **51%** |
+  | `duplicate_of` precision | 64% |
+  | `neither` precision | 100% |
 
-  - **all 115 pairs the Verifier called `contradicts`** — complete, not sampled, so
-    precision comes out with an honest denominator;
-  - **44 candidate misses**, up to five per question, where the two claims state
-    different figures *of the same order of magnitude* about the same subject. The
-    rule is mechanical and encodes no opinion about what a contradiction looks like
-    beyond "different numbers for one quantity".
+  **Half the contradiction edges in a mole graph are wrong.** 50 of the 51 errors
+  that change the graph are the same mistake: calling `contradicts` on a pair that
+  is merely related. The judge almost never invents the opposite error — when it
+  says `neither` it is right every time in this set.
 
-  ```bash
-  # label the "label" field: contradicts | duplicate_of | neither
-  mole pairs score testdata/pairs/contradictions.json
-  ```
+  Recall is deliberately not quoted as a headline. The labelled set was drawn from
+  the judge's own positives plus a numeric shortlist, so a contradiction neither
+  found nor shortlisted is invisible to it; any recall computed here is an upper
+  bound on a biased sample.
 
-  Partial labelling works — the scorer counts skipped pairs rather than guessing
-  them — so a number is available after twenty minutes rather than only after all
-  159.
+- **A confirm pass trades the error away, and it is a dial rather than a fix.**
+  Re-judging the same pairs and keeping only confirmed edges (both arms recorded in
+  `testdata/pairs/batch-size-arms.json` before the labels existed, so neither could
+  be tuned to them):
 
-  Two limits to read the eventual number against. **Recall is an upper bound**: a
-  true contradiction outside the shortlist is invisible to the measurement. And pairs
-  are formed by the lexical retriever rather than exhaustively, so two contradicting
-  claims sharing few content words are never paired and never judged — a miss
-  indistinguishable from a judge error. Re-dumping at a raised `--max-candidates`
-  separates those two, and costs nothing now the cassettes exist.
+  | | edges kept | precision | recall\* | F1 |
+  |---|---|---|---|---|
+  | graph as shipped | 105 | 51% | 98% | 68% |
+  | confirmed by a second judgement | 53 | **70%** | 67% | 69% |
+  | confirmed by three | 20 | **80%** | 29% | 43% |
 
-  `mole pairs judge` re-judges the same pairs without touching the graph, which
-  makes reproducibility measurable without any labels. Doing that produced the most
-  uncomfortable number in this document.
+  \*on the biased sample described above.
 
-  **The adjudicator's verdicts depend on how it was called, not only on the pair.**
-  All 261 relation edges the corpus produced, re-judged by the same model that built
-  them:
+  F1 barely moves, so this is a choice about which error costs more, not a free
+  win. For a tool whose output annotates "sources disagree", a false contradiction
+  misleads a reader actively while a missed one is a silence — which argues for
+  precision. The default is unchanged pending that decision.
 
-  | | reproduces the stored verdict | answers `neither` |
-  |---|---|---|
-  | one pair per call (`--batch 1`) | **35%** | 63% |
-  | eight per call (`--batch 8`, the default the graph was built at) | **54%** | 44% |
-
-  The two arms agree with each other 69% of the time. Two things follow, and neither
-  is comfortable:
-
-  - **Batching changes the answer.** Nineteen points of reproduction and nineteen
-    points of `neither` move with batch size alone. The adjudication prompt already
-    warns that "`neither` is the right answer for most pairs" precisely to resist
-    this, and the warning is not sufficient — the more pairs share a call, the more
-    relations the model finds.
-  - **Even at the batch size the graph was built at, only 54% of its own edges
-    reproduce.** Half the contradiction and duplicate edges in a mole graph would not
-    be there if the same model judged the same pairs again.
-
-  Both arms are recorded in `testdata/pairs/batch-size-arms.json`, written *before*
-  any human label existed so neither can be tuned to them. Once the labels are in,
-  scoring both arms answers the question that matters: not which is more
-  reproducible, but which is more **accurate**. If one-per-call is both less
-  relation-happy and more accurate, batching is a cost optimisation that has been
-  quietly buying wrong answers, and `DefaultBatchSize` should change.
-
-  Until then, no adjudicator number in this document is quoted as settled, and the
-  disagreement rate above should be read as "the rate at batch 8" rather than as a
-  property of the claims.
+  **The reproducibility numbers did not predict this.** Judged one pair per call,
+  verdicts reproduce the stored graph only 35% of the time against 54% at batch 8,
+  which looked like an argument for `--batch 1`. Against the labels, batch 1 is
+  *worse* on both accuracy (54% vs 68%) and precision (64% vs 70%). Pre-registering
+  both arms before labelling is the only reason that hypothesis was tested rather
+  than shipped.
 
   The full §14.2 corpus is still deliberately not being built. Claim-precision
   labelling is ~2400 human judgements; if that number is ever needed, sample 200 and

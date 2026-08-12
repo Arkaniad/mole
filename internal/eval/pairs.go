@@ -286,7 +286,18 @@ func ScorePairs(ps *PairSet) PairScore {
 			s.Skipped++
 			continue
 		}
-		model := strings.ToLower(strings.TrimSpace(p.Model))
+		// Both sides NORMALIZED before comparison, because both carry the retired
+		// vocabulary. `pairs dump --all` writes "unrelated" for every pair the graph
+		// holds no edge for, and a labeller writes "neither" from the three words the
+		// prompt offers — the same verdict under two names, scored as an error 33
+		// times in 149 on the first real labelled set.
+		//
+		// Relation.Normalize exists for exactly this and says so ("nothing past the
+		// boundary has to know the old vocabulary existed"); the scorer was the one
+		// place downstream that skipped it, so the measurement built to check the
+		// judge was penalising it for a rename.
+		model := normalizeVerdict(p.Model)
+		label = normalizeVerdict(label)
 
 		s.Labelled++
 		said[model]++
@@ -315,6 +326,11 @@ func ScorePairs(ps *PairSet) PairScore {
 		}
 	}
 	return s
+}
+
+// normalizeVerdict folds a relation onto the live vocabulary for comparison.
+func normalizeVerdict(s string) string {
+	return string(verifier.Relation(strings.ToLower(strings.TrimSpace(s))).Normalize())
 }
 
 // Accuracy is the fraction of labelled, judged pairs the model got right.

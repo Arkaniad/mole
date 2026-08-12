@@ -143,3 +143,42 @@ func TestScoreSeparatesInertErrorsFromRealOnes(t *testing.T) {
 			p.Labelled, p.CorrectEffect)
 	}
 }
+
+// TestTheRetiredVocabularyIsNotScoredAsAnError.
+//
+// `pairs dump --all` writes "unrelated" for every pair the graph holds no edge
+// for; a labeller writes "neither", which is one of the three words the prompt
+// offers. Same verdict, two names — and the scorer compared raw strings, so on the
+// first real labelled set it charged the judge with 33 errors out of 149 for a
+// rename. Relation.Normalize exists precisely so nothing downstream has to know
+// the old vocabulary existed; this was the one place downstream that skipped it.
+func TestTheRetiredVocabularyIsNotScoredAsAnError(t *testing.T) {
+	set := &eval.PairSet{Pairs: []eval.LabelledPair{
+		{Pair: "a|b", Model: "unrelated", Label: "neither", Judged: true},
+		{Pair: "c|d", Model: "supports", Label: "neither", Judged: true},
+		{Pair: "e|f", Model: "refines", Label: "neither", Judged: true},
+		{Pair: "g|h", Model: "neither", Label: "neither", Judged: true},
+	}}
+	s := eval.ScorePairs(set)
+	if s.Correct != 4 {
+		t.Errorf("correct = %d of 4; a retired name is being scored as a wrong verdict",
+			s.Correct)
+	}
+	if got := s.Accuracy(); got != 1 {
+		t.Errorf("accuracy = %v, want 1", got)
+	}
+}
+
+// TestARealDisagreementIsStillAnError. The normalisation must fold names, not
+// verdicts: contradicts and neither are different answers whatever they are called.
+func TestARealDisagreementIsStillAnError(t *testing.T) {
+	set := &eval.PairSet{Pairs: []eval.LabelledPair{
+		{Pair: "a|b", Model: "contradicts", Label: "neither", Judged: true},
+		{Pair: "c|d", Model: "unrelated", Label: "contradicts", Judged: true},
+		{Pair: "e|f", Model: "duplicate_of", Label: "neither", Judged: true},
+	}}
+	s := eval.ScorePairs(set)
+	if s.Correct != 0 {
+		t.Errorf("correct = %d of 0; a real disagreement was folded away", s.Correct)
+	}
+}
