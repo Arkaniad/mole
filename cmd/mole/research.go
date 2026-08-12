@@ -76,6 +76,7 @@ type researchOpts struct {
 	asJSON      bool
 	quiet       bool
 	alwaysFetch bool
+	noConfirm   bool
 	maxDepth    int
 	workers     int
 	actorList   string
@@ -129,6 +130,10 @@ func newResearchCmd() *cobra.Command {
 	f.IntVar(&o.workers, "workers", executor.DefaultWorkers,
 		"leads to run at once; 1 is required when recording or replaying a cassette")
 	f.DurationVar(&o.timeout, "timeout", 5*time.Minute, "wall-clock ceiling for the whole session")
+	f.BoolVar(&o.noConfirm, "no-confirm-edges", false,
+		"write a contradiction or duplicate edge on a single judgement; the default "+
+			"asks twice and keeps only agreements, which measured 70% precision "+
+			"against 51%")
 	f.BoolVar(&o.asJSON, "json", false, "emit the result as JSON")
 	f.BoolVar(&o.quiet, "quiet", false, "suppress progress; print only the result")
 	f.IntVar(&o.maxDepth, "max-depth", planner.DefaultMaxDepth,
@@ -250,6 +255,7 @@ func cmdResearch(ctx context.Context, rawQuestion string, o researchOpts) error 
 		Local:             localActor,
 		VerifierModel:     cfg.LLM.VerifierModel,
 		VerifierBatchSize: cfg.LLM.VerifierBatchSize,
+		NoConfirmEdges:    o.noConfirm,
 		Owner:             "cli",
 		Notice:            func(msg string) { fmt.Fprintf(os.Stderr, "warning: %s\n", msg) },
 	}
