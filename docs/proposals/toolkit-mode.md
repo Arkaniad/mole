@@ -56,6 +56,41 @@ agent not to strip it. That is a convention, not a control. **This is the strong
 argument for keeping autonomous mode as the default** and describing toolkit mode as
 the trade it is.
 
+### Measured, before building anything
+
+`internal/mcpserver/fence_spike_test.go` runs five injection shapes — a direct
+order, a fake system message, a fake tool result, an appeal to the agent's role, and
+an attempt to close the fence — against a real model in the prompt shape a coding
+agent builds. Five repeats per cell, 75 trials, deepseek-chat:
+
+| condition | obeyed the page |
+|---|---|
+| bare tool result | 3 of 25 (12%) |
+| mole's fence | 1 of 25 (4%) |
+| fence + a system-prompt rule | 0 of 25 |
+
+Three things follow, and the third is the one that shapes the design.
+
+**Wrapping measurably helps.** The ordering is monotone and in the expected
+direction.
+
+**Zero is not proof.** At n=25 the 95% upper bound on a zero count is about 11%, so
+the strongest condition is consistent with a real failure rate of up to one call in
+nine. Nothing here licenses the word "safe".
+
+**mole cannot reach the strongest condition on its own.** The system-prompt rule
+belongs to the client, not the server. mole's achievable condition is the middle row
+— and that one leaked. The MCP protocol does offer a lever: a server may send
+`Instructions` at initialize, which the Go SDK supports (`mcp.ServerOptions`) and
+mole does not currently set. Whether a given client folds them into its system
+prompt is client-dependent and untested.
+
+So slice 1 has an extra task: set server `Instructions` carrying the untrusted-data
+rule, then re-run this spike through a real client to find out whether the rule
+actually lands. If it does not, `mole.fetch` returning raw page text is a weaker
+proposition than this document assumed, and the fallback — returning extracted
+claims rather than raw text — costs the agent the ability to mine for itself.
+
 **2. The budget becomes a quota.** mole can still meter and cap what it spends —
 search calls, fetches — because it makes those. It cannot cap model spend. `--usd`
 stops meaning anything in this mode, and saying so is better than a ceiling that
@@ -206,11 +241,11 @@ their model made up — which is the whole pitch.
 
 ## Open questions
 
-1. **Does the fence survive contact with a real agent?** Worth testing before slice
-   1 is called done: fetch a page containing an injection attempt through Claude
-   Code and see whether the agent's model treats the fenced block as data. If it
-   does not, the tool description is not enough and `fetch` may need to return
-   summaries rather than raw text — which would weaken the whole mode.
+1. ~~**Does the fence survive contact with a real agent?**~~ Partly answered above:
+   wrapping helps, 25 trials cannot prove a zero, and the condition mole controls is
+   the one that leaked. The open half is whether server `Instructions` reach a real
+   client's system prompt — testable only against Claude Code itself, and a task in
+   slice 1.
 2. **One binary or two modes?** Toolkit tools could live behind
    `mole serve --toolkit`, or always be present. Always-present is simpler and
    costs every MCP client sixteen tool definitions in its context.
