@@ -1,20 +1,14 @@
 // Package stats is the arithmetic behind §4's statistical-validity check.
 //
-// §4's actor table says a LocalComputeActor's claims are verified on "n, effect
-// size, significance, holdout stability" — where a web claim is checked for
-// credibility and a paper for venue signal. Nothing else in mole can supply
-// those numbers, because nothing else has a sample: a web page asserts, a paper
-// asserts, and a query over local data MEASURES.
+// A web page asserts and a paper asserts; a query over local data MEASURES, so a
+// local claim is verified on n, effect size, significance and holdout stability
+// rather than on credibility signals.
 //
-// That difference is why this exists rather than a call to a statistics
-// library. The whole computation is deterministic, runs on aggregates the
-// aggregation gate already carries, and produces a sentence a model can quote —
-// which is what makes a claim about a difference verifiable in the same way
-// §11.5 makes a claim about a page verifiable.
-//
-// Everything here works from group SUMMARIES. No sample is held, no row is
-// read: a count, a sum and a sum of squares are enough for a mean, a variance
-// and a two-sample test, and all three are aggregates §12.1 already permits.
+// Everything works from group SUMMARIES — a count, a sum and a sum of squares.
+// No sample is held and no row is read, which is what lets this sit behind the
+// aggregation gate at all. The output is a sentence a model can quote, so a
+// claim about a difference is checkable the way §11.5 makes a claim about a page
+// checkable.
 package stats
 
 import (
@@ -36,13 +30,10 @@ const (
 	SumSqColumn = "sum_sq_measure"
 	// CountColumn is the count of NON-NULL measure values.
 	//
-	// Required, and separate from COUNT(*). The test used COUNT(*) as n while
-	// Sum and SumSq came from SUM(measure), which skips NULL — so any NULL in
-	// the measure desynchronised them and the mean came out proportionally too
-	// low. Measured: two groups whose every non-null value was 10, one with half
-	// its measure NULL, reported "means 10 and 5 … significant, p<0.001, effect
-	// size 1.41 (large)". Every blank cell in a CSV becomes a NULL, so this was
-	// the default state of a real export.
+	// Required, and separate from COUNT(*): SUM skips NULL, so using COUNT(*) as n
+	// desynchronises them and every blank cell in a CSV drags the mean down. A
+	// group with half its measure NULL reported a mean half its real value, and a
+	// large significant difference from it.
 	CountColumn = "n_measure"
 	// OffsetColumn is the constant subtracted from the measure before summing.
 	// See Group.Offset — it is what keeps Σx² from cancelling.

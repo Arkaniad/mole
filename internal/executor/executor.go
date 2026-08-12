@@ -1,40 +1,13 @@
-// Package executor runs a research session: plan, dispatch, settle, replan.
+// Package executor runs a session's lead queue: dispatch, retry, replan, settle.
 //
-// This is §9.2's loop, running a per-session pool of workers (M5). The loop
-// leases a batch, runs it concurrently, and joins before replanning — so the
-// planner sees the batch in the order it queued it, whatever order the network
-// answered in.
+// One lead at a time per worker, each with its own budget reservation taken
+// before the work and settled after it, so a lead that overruns is visible as a
+// flagged overshoot rather than a silent overspend (§8.2).
 //
-// Effective concurrency is min(Workers, MaxWorkers, room before the next
-// replan, room before MaxLeads or MaxToolCalls). The replan bound is the one
-// that usually binds: nothing in production sets Planner.ReplanEvery, so it is
-// DefaultReplanEvery, and a default pool of four therefore runs three at a time.
-// See batchSize.
-//
-// What is safe here, audited rather than assumed: leases stop double dispatch;
-// reserve-before-dispatch bounds the money, and the lead counter is applied
-// inside that same transaction so MaxLeads binds too; WebActor assigns to no
-// receiver field, so one actor serves many concurrent leads; the rate limiter,
-// robots cache, artifact cache, estimator and pricing table all carry their own
-// locks; Planner and Verifier hold configuration only; planner.Digest is
-// mutex-guarded; leadQuestion is never handed to a worker; Result and the digest
-// are touched only by the coordinator, between batches.
-//
-// Digest's exported FIELDS are unguarded on purpose: BudgetRemaining and
-// Contradictions are written between batches, by the coordinator, which is where
-// they belong — both are current state read fresh for a planner call, not
-// something a lead produces.
-//
-// A worker goroutine recovers its own panics. The supervisor's recover cannot
-// see them, and before this a single malformed page could take the daemon down
-// and strand every other session's reservations.
-//
-// The invariant that matters most is unglamorous: every reservation is resolved
-// on every path. A settle that is skipped because a lead failed leaves budget
-// held forever — neither spent nor available — and the session runs out of
-// money it never used. Failure paths outnumber the success path here, which is
-// why the settle is arranged so it cannot be missed rather than repeated at
-// each exit.
+// The loop ends on a drained queue, a ceiling, a wall clock, or a fatal error.
+// A fatal error cancels the batch in flight and stops the loop leasing more —
+// so the blast radius is one batch rather than one lead, which is what
+// --workers 1 buys back.
 package executor
 
 import (

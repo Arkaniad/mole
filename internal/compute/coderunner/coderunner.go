@@ -1,38 +1,17 @@
-// Package coderunner runs model-authored analysis inside the sandbox and
-// decides what may come back (M8, §12.1).
+// Package coderunner executes model-authored analysis inside the sandbox (§12.1).
 //
-// §12.1 is explicit about when this exists: "Where analysis genuinely needs
-// row-level data (regression, seasonality decomposition), the computation
-// happens inside the sandbox and only its output envelope crosses the gate."
+// For the analyses SQL cannot express — regression, seasonality, anything needing
+// row-level access. The boundary moves rather than opening: inside the container
+// there is no model to protect the data from, so the script may read every row,
+// and only a declared, numeric output envelope crosses back.
 //
-// So the sandbox is where the privacy boundary moves to. Inside it there is no
-// boundary at all — the script sees the connector's database, read-only, in
-// full, because it has no network, no writable filesystem, no capabilities and
-// no way out except stdout. Handing it the whole database rather than an
-// extracted subset is deliberate: an extract would be a second copy of the
-// user's data on the host, written by mole, for no gain.
+// What constrains this is the container and the output contract, not the
+// aggregation gate. A name the plan did not declare does not cross, and an
+// undeclared key is counted rather than repeated — a key is text the script chose,
+// and repeating it would make the key itself a channel.
 //
-// # The channel out is the whole design
-//
-// The script's output is UNTRUSTED. It was written by a model, and a model
-// reading a prompt-injected page is the threat §3.2 already assumes. So stdout
-// is not parsed as "whatever the script wanted to say" — it is matched against
-// names the plan DECLARED before the script ran, and values that are finite
-// numbers. An undeclared key is dropped and reported; a string value is
-// dropped and reported.
-//
-// That mirrors §12.3's choice for SQL: the model declares, mole looks up.
-// Declaring `mean_gap` and emitting `{"ada@example.org": 1}` gets nothing out,
-// because the key is not on the list rather than because something inspected it
-// for personal data.
-//
-// # What that does not stop
-//
-// A determined model could encode a value in the digits of a declared number.
-// The channel is bounded — a fixed set of names, one float each — but it is not
-// zero, and calling it zero would be the kind of claim this package exists to
-// avoid making. What it stops is the realistic case: a script that prints its
-// input, or an output shape nobody constrained.
+// The verdict on a statistical result is derived here, never taken from the
+// script: a model reporting its own significance is a model grading its own work.
 package coderunner
 
 import (

@@ -1,27 +1,10 @@
-// Package planner decides what to research next.
+// Package planner decomposes a question into leads and replans as evidence
+// arrives.
 //
-// §9.1's problem: rev 1 passed every summary to the planner on every replan.
-// Summaries accumulate, so planner input grew with lead count and total planner
-// cost was quadratic in leads — worst precisely when research goes deep, which
-// is the case the whole design exists to serve.
-//
-// The fix is the Digest: a fixed-size structured state that is updated
-// incrementally and compacted when it exceeds its budget, so planner input is
-// O(1) in lead count no matter how long a session runs.
-//
-// Two properties of this implementation are worth stating up front.
-//
-// The digest is maintained and compacted MECHANICALLY — no model call. Paying a
-// model to compact the structure that exists to control model cost is
-// self-defeating, and compaction is a policy question ("what does the planner
-// stop needing?") that has a defensible answer in code: answered questions
-// first, then old dead ends.
-//
-// It also carries no page-derived text. Sub-question wording is the planner's
-// own prior output, dead-end causes are a fixed enum, and everything else is a
-// count. So untrusted content never reaches the planner at all, which is
-// stronger than fencing it (§3.2) — there is nothing to fence. The cost is
-// real and stated in Replan: the planner reasons about coverage, not findings.
+// The digest is what the planner sees between rounds: a rolling summary of which
+// sub-questions have evidence and which do not. It is bounded on purpose — the
+// planner reads it every replan, so an unbounded digest makes planning cost grow
+// with the length of the run.
 package planner
 
 import (

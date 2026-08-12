@@ -1,35 +1,15 @@
-// Package gate is the aggregation gate: the only way anything derived from a
-// connector may reach a model (M8, §12.1).
+// Package gate is §12.1's aggregation boundary: the only path by which anything
+// derived from local data reaches a model.
 //
-// Rev 1 of the sketch said "data never leaves the local machine; only
-// aggregates reach the LLM". §12.1 makes that a mechanism instead of a comment,
-// and the mechanism is a type: nothing crosses except an AggregateEnvelope.
+// Every field of an AggregateEnvelope is a count, a moment, a bound, or a bucket
+// covering at least KFloor records. There is deliberately no field that can hold
+// a row.
 //
-// # Enforced structurally
-//
-// This package exposes no function that returns rows. Aggregate reads the
-// result set, computes statistics from it, and returns the statistics; the rows
-// exist only inside that call and are unreachable from anywhere else. A caller
-// cannot ask for them, forget to summarize them, or log them by accident —
-// there is no API through which to obtain one.
-//
-// That is the difference between this and a convention. A `Query` that returned
-// rows plus a `Summarize` that turned them into an envelope would enforce
-// nothing: the privacy property would hold only while every caller remembered
-// to call the second function, and §12.1 exists precisely because "only
-// aggregates reach the LLM" was already being remembered rather than enforced.
-//
-// # What crosses
-//
-//   - counts, null rates, distinct counts
-//   - min, max, mean, standard deviation and quartiles of numeric columns
-//   - top-K buckets, each covering at least KFloor records
-//
-// and what does not:
-//
-//   - any row
-//   - any value from a column that looks like prose or a personal identifier
-//   - any bucket small enough to identify the records in it
+// Three controls, in order: the statement must be a single aggregate SELECT
+// (sqlguard), buckets below the k-anonymity floor are suppressed, and free-text
+// columns are withheld entirely. Before an envelope is returned it is checked
+// against the rows it came from, and one carrying a value it should not is
+// withheld rather than reported.
 package gate
 
 import (

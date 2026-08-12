@@ -1,22 +1,14 @@
-// Package dataset is §13's dataset output mode (M9).
+// Package dataset is §13's dataset output mode: a table instead of prose.
 //
-// §13 gives the pipeline in one line — "user-defined or inferred schema →
-// per-lead row extraction → cross-source merge/dedup by fuzzy key → CSV/JSON" —
-// and §15 gives the warning that shapes the whole milestone: "Schema inference
-// plus cross-source fuzzy merge is the hardest quality problem in this
-// document."
+// Schema, then per-lead row extraction, then a cross-source merge by fuzzy key,
+// then CSV or JSON. Each part is separated by how confidently it can be judged. A
+// schema is a declaration and can be validated. An extracted row carries a
+// verbatim quote and dies the same way a fabricated claim does (§11.5). A MERGE is
+// a judgement, so it is the one part with precision and recall attached to it.
 //
-// So the parts are separated by how confidently each can be judged. A schema is
-// a declaration and can be validated. An extracted row is quote-verified exactly
-// as a claim is (§11.5), so a fabricated one dies the same way. A MERGE is a
-// judgement, and the only honest thing to do with a judgement is measure it —
-// which is why the merge is the one part of M9 with precision and recall attached
-// to it, on ground truth that needs no model.
-//
-// What this package deliberately does not do is scrape. §13: "For bulk
-// structured extraction at scale, point users at an official API or a paid
-// extraction service rather than shipping a maintained scraper." Rows come from
-// the same fetch-and-extract path the WebActor already uses.
+// This deliberately does not scrape. Rows come from the same fetch-and-extract
+// path the web actor already uses; for bulk structured extraction at scale, an
+// official API is the right tool.
 package dataset
 
 import (

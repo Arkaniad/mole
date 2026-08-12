@@ -1,34 +1,15 @@
-// Package sqlguard decides whether a statement may run against a connector
-// (M8, §12.2).
+// Package sqlguard is §12.2's parse gate: the check every statement passes
+// before it reaches a connector database.
 //
-// §12.2 lists four defenses and says all four are required. This is the second:
-// "parse the statement; permit a single SELECT or WITH … SELECT; reject DDL,
-// DML, multiple statements, COPY, and any dialect escape hatch to the
-// filesystem or shell."
+// Two passes over one parsed statement. The SHAPE must be a single SELECT — not
+// a script, not a write, not a PRAGMA. The VOCABULARY must be on an allowlist,
+// read from the token stream rather than the parse tree, because a walk misses
+// CTE bodies and subqueries and a comment can sit between a function name and
+// its parenthesis.
 //
-// It is a gate, not a sanitizer. Nothing here rewrites a statement into a safe
-// one — a rejected statement is rejected, and the caller's job is to not build
-// that statement in the first place. §12.3 already says the model cannot author
-// SQL: templates render it. So every rejection here is a bug in mole, not a
-// blocked attack, and the error text is written for whoever has to find it.
-//
-// # Two checks, deliberately independent
-//
-// The statement SHAPE is checked against the parse tree. The function
-// VOCABULARY is checked against the token stream, and that split is not a
-// stylistic choice — it is forced.
-//
-// github.com/rqlite/sql's Walk does not descend into CTE bodies or into
-// subquery expressions. Measured, and pinned by TestWalkIsNotAnExhaustive
-// Traversal: for
-//
-//	WITH m AS (SELECT readfile('/etc/passwd') FROM s) SELECT COUNT(*) FROM m
-//
-// a Walk sees COUNT and the reference to m, and never sees readfile at all. An
-// AST-based function check would therefore have a hole in exactly the place an
-// attacker would put the call. The token stream has no such gaps: the scanner
-// emits every token in the statement, so a rule expressed over tokens is
-// complete by construction even though it knows nothing about grammar.
+// An allowlist and not a denylist: every function SQLite adds, and every
+// extension a future build links in, would otherwise be permitted until somebody
+// remembered to deny it.
 package sqlguard
 
 import (

@@ -1,30 +1,15 @@
-// Package sandbox detects a container runtime and describes what it can
-// enforce (M8, §3.6).
+// Package sandbox detects a container runtime and runs code inside one (§3.6).
 //
-// §3.6 decides the technology before CodeRunner is written: "OCI container, no
-// network namespace, read-only rootfs, tmpfs scratch, dropped capabilities,
-// seccomp default profile, non-root uid, and hard CPU/memory/wallclock/pid
-// limits." This package is the half of that which can be answered before any
-// code runs — is there a runtime, does it work, and does it enforce the things
-// the list depends on.
+// Detection reports what a runtime IS rather than that it exists: version,
+// rootless or not, seccomp, cgroup version. Seccomp is required — without a
+// syscall filter a container is a namespace trick — and cgroup v1 is a warning
+// rather than a disqualifier.
 //
-// # Nothing here is required for mole to run
+// The flags are rendered from one list, which is also what `mole doctor` prints,
+// so a summary cannot claim a property the runner does not pass.
 //
-// mole is one static binary and stays one. A container runtime is needed by
-// CodeRunner alone — the component that executes model-authored Python against
-// real data — and that is one feature, not the tool. The SQL path needs no
-// sandbox at all: §12.2 says outright that "the sandbox is not the control
-// here", and the aggregation gate is what makes local analysis safe.
-//
-// So Detect reports a capability. It never fails a startup, and `doctor` prints
-// what is missing alongside what still works without it.
-//
-// # Measured, not assumed
-//
-// A binary on PATH is not a working runtime: a Docker install with a wedged
-// daemon has the binary and cannot run anything. Detect asks the runtime about
-// itself and reports what it says — version, rootless, seccomp, cgroup version
-// — rather than inferring capability from a file existing.
+// A runtime is never required to run mole. Its absence costs code analysis and
+// nothing else.
 package sandbox
 
 import (
