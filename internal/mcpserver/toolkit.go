@@ -1084,6 +1084,8 @@ func (d Deps) toolkitAggregate(ctx context.Context, _ *mcp.CallToolRequest, in a
 type pairsIn struct {
 	SessionID string `json:"session_id"`
 	Max       int    `json:"max,omitempty"`
+	// Offset pages through a session with more candidates than one call returns.
+	Offset int `json:"offset,omitempty" jsonschema:"skip this many pairs; use the offset the note gives you"`
 }
 
 type pairOut struct {
@@ -1096,7 +1098,13 @@ type pairOut struct {
 
 type pairsOut struct {
 	Pairs []pairOut `json:"pairs"`
-	Note  string    `json:"note"`
+	// Total is how many candidates there are, so a caller can tell a short list
+	// from a complete one.
+	Total int `json:"total"`
+	// Decided is how many pairs mole settled itself this call — identical
+	// assertions, which need no judgement.
+	Decided int    `json:"decided,omitempty"`
+	Note    string `json:"note"`
 }
 
 // AllClaims is the limit to pass when every claim of a session is wanted.
@@ -1131,22 +1139,56 @@ func (d Deps) toolkitPairs(ctx context.Context, _ *mcp.CallToolRequest, in pairs
 	if limit <= 0 || limit > MaxPairsReturned {
 		limit = MaxPairsReturned
 	}
-	// The same retriever the verifier uses, so a toolkit graph and an autonomous
-	// one are built over the same candidate set rather than two notions of
-	// "related".
-	pairs, _, err := verifier.CandidatePairs(ctx, verifier.LexicalRetriever{},
-		claims, claims, verifier.DefaultMaxCandidates, nil)
+
+	// Pairs already judged are not offered again. Without this a second call
+	// returns the same pairs as the first, and an agent working through a large
+	// session never reaches the end of the list.
+	judged, err := d.judgedPairs(ctx, in.SessionID)
 	if err != nil {
 		return nil, pairsOut{}, err
 	}
 
-	out := pairsOut{Note: "Judge each pair on two yes-or-no questions: are these the " +
-		"same assertion, and can both be true. Most pairs are neither — record only " +
-		"the ones that are not."}
-	for i, p := range pairs {
-		if i >= limit {
-			break
+	// The same retriever the verifier uses, so a toolkit graph and an autonomous
+	// one are built over the same candidate set rather than two notions of
+	// "related".
+	pairs, decided, err := verifier.CandidatePairs(ctx, verifier.LexicalRetriever{},
+		claims, claims, verifier.DefaultMaxCandidates, func(key string) bool {
+			return judged[key]
+		})
+	if err != nil {
+		return nil, pairsOut{}, err
+	}
+
+	// The mechanically-decided ones are duplicates by construction — byte-identical
+	// assertions, or the same quote span of the same source — and autonomous mode
+	// writes them as edges without a model call. They used to be discarded here:
+	// never offered to the agent, so it had no pair_id for them, and never
+	// recorded, so two copies of one finding counted as two independent sources.
+	out := pairsOut{}
+	if len(decided) > 0 {
+		edges := make([]core.ClaimEdge, 0, len(decided))
+		for _, j := range decided {
+			edges = append(edges, core.ClaimEdge{
+				ID: core.NewEdgeID(), SessionID: in.SessionID,
+				FromID: j.A.ID, ToID: j.B.ID, Kind: core.EdgeKind(j.Relation),
+				Weight: j.Weight, CreatedBy: j.DecidedBy, Rationale: j.Rationale,
+			})
 		}
+		if err := d.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+			return tx.InsertEdges(ctx, edges)
+		}); err != nil {
+			return nil, pairsOut{}, err
+		}
+		out.Decided = len(edges)
+	}
+
+	out.Total = len(pairs)
+	from := in.Offset
+	if from < 0 {
+		from = 0
+	}
+	for i := from; i < len(pairs) && len(out.Pairs) < limit; i++ {
+		p := pairs[i]
 		out.Pairs = append(out.Pairs, pairOut{
 			PairID:  p.Key(),
 			A:       p.A.Text,
@@ -1155,7 +1197,46 @@ func (d Deps) toolkitPairs(ctx context.Context, _ *mcp.CallToolRequest, in pairs
 			BSource: p.B.Source,
 		})
 	}
+	out.Note = "Judge each pair on two yes-or-no questions: are these the same " +
+		"assertion, and can both be true. Most pairs are neither — record only the " +
+		"ones that are not."
+	if out.Decided > 0 {
+		out.Note += fmt.Sprintf(" %d pair(s) were identical and have already been "+
+			"recorded as duplicates; they are not in this list.", out.Decided)
+	}
+	if from+len(out.Pairs) < out.Total {
+		// Said rather than left to arithmetic. Silent truncation reads as "that is
+		// every pair", and an agent that believes it reports no contradictions
+		// having never seen most of the candidates.
+		out.Note += fmt.Sprintf(" Showing %d-%d of %d; call again with offset %d for "+
+			"the rest.", from+1, from+len(out.Pairs), out.Total, from+len(out.Pairs))
+	}
 	return nil, out, nil
+}
+
+// judgedPairs is the set of pair keys this session already has an edge for.
+func (d Deps) judgedPairs(ctx context.Context, sessionID string) (map[string]bool, error) {
+	out := map[string]bool{}
+	err := d.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		edges, err := q.ListEdges(ctx, sessionID, 0)
+		if err != nil {
+			return err
+		}
+		for _, e := range edges {
+			if e == nil {
+				continue
+			}
+			// Pair keys are canonical — the lower claim id first — so both
+			// orderings of an edge map onto the one key.
+			a, b := e.FromID, e.ToID
+			if a > b {
+				a, b = b, a
+			}
+			out[a+"|"+b] = true
+		}
+		return nil
+	})
+	return out, err
 }
 
 type edgeAddIn struct {
@@ -1215,7 +1296,13 @@ func (d Deps) toolkitEdgeAdd(ctx context.Context, _ *mcp.CallToolRequest, in edg
 		FromID:    fromID,
 		ToID:      toID,
 		Kind:      core.EdgeKind(rel),
-		Weight:    clampStrength(in.Confidence),
+		// An unstated confidence is 1.0, which is what verifier.Edges uses and
+		// what the store fills in for a zero. clampStrength was reused here and
+		// its 0.5 default means "unstated" for a CLAIM's assertion strength —
+		// carried onto an edge it halved the contradiction penalty, so the same
+		// contradiction found through the toolkit left both claims more confident
+		// than the autonomous one did.
+		Weight:    edgeWeight(in.Confidence),
 		CreatedBy: "toolkit",
 		Rationale: strings.TrimSpace(in.Rationale),
 	}
@@ -1224,9 +1311,54 @@ func (d Deps) toolkitEdgeAdd(ctx context.Context, _ *mcp.CallToolRequest, in edg
 	}); err != nil {
 		return nil, edgeAddOut{}, err
 	}
-	return nil, edgeAddOut{EdgeID: edge.ID, Relation: string(rel),
-		Note: "edge recorded; it lowers the confidence of both claims if they " +
-			"contradict, and collapses them in the report if they duplicate"}, nil
+
+	// Read the id back rather than reporting the one just generated. claim_edges
+	// is unique on (from, to, kind) and InsertEdges upserts, keeping the original
+	// row's id — so judging a pair twice, which the tool description asks for,
+	// returned an id matching nothing in the database.
+	stored, err := d.edgeID(ctx, in.SessionID, fromID, toID, core.EdgeKind(rel))
+	if err != nil {
+		return nil, edgeAddOut{}, err
+	}
+	note := "edge recorded; it lowers the confidence of both claims if they " +
+		"contradict, and collapses them in the report if they duplicate"
+	if stored != edge.ID {
+		note = "this pair already had an edge of that kind; the judgement was " +
+			"updated rather than duplicated"
+	}
+	return nil, edgeAddOut{EdgeID: stored, Relation: string(rel), Note: note}, nil
+}
+
+// edgeWeight is the confidence an edge carries, defaulting the way the verifier
+// does.
+func edgeWeight(v float64) float64 {
+	switch {
+	case v <= 0:
+		return 1.0
+	case v > 1:
+		return 1.0
+	default:
+		return v
+	}
+}
+
+// edgeID finds the row an upsert landed on.
+func (d Deps) edgeID(ctx context.Context, sessionID, from, to string, kind core.EdgeKind) (string, error) {
+	var id string
+	err := d.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		edges, err := q.ListEdges(ctx, sessionID, 0)
+		if err != nil {
+			return err
+		}
+		for _, e := range edges {
+			if e != nil && e.FromID == from && e.ToID == to && e.Kind == kind {
+				id = e.ID
+				return nil
+			}
+		}
+		return nil
+	})
+	return id, err
 }
 
 // claimsInSession refuses ids that are not this session's claims.

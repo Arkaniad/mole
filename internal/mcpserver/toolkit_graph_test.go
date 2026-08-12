@@ -2,6 +2,7 @@ package mcpserver_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -265,4 +266,191 @@ func TestAToolkitEdgeIsScoredByEval(t *testing.T) {
 		return
 	}
 	t.Fatal("eval reported no disagreement rate at all")
+}
+
+// Review findings on the graph tools.
+
+// TestIdenticalClaimsAreRecordedAsDuplicatesWithoutBeingAsked.
+//
+// CandidatePairs settles byte-identical assertions itself and returns them
+// separately from the pairs that need judging. The toolkit discarded that return:
+// the pair was never offered, so the agent had no pair_id for it, and never
+// written — so one finding republished by two sources counted as two independent
+// ones in every corroboration number downstream.
+func TestIdenticalClaimsAreRecordedAsDuplicatesWithoutBeingAsked(t *testing.T) {
+	r := connectToolkitStubFetch(t, testPage)
+	sess, doc := openWithDoc(t, r)
+	doc2 := fetchAnother(t, r, sess, "https://example.org/republished")
+
+	const same = "Fasting reduced fasting glucose in adults with prediabetes."
+	for _, d := range []string{doc, doc2} {
+		res := r.call(t, "mole.claim_add", map[string]any{
+			"session_id": sess, "doc_id": d, "text": same, "quote": realQuote}, nil)
+		if res.IsError {
+			t.Fatalf("claim refused: %s", errText(res))
+		}
+	}
+
+	var pairs struct {
+		Decided int    `json:"decided"`
+		Note    string `json:"note"`
+	}
+	r.call(t, "mole.pairs_candidates", map[string]any{"session_id": sess}, &pairs)
+	if pairs.Decided == 0 {
+		t.Error("mole decided nothing; the identical pair was dropped on the floor")
+	}
+
+	var edges []*core.ClaimEdge
+	if err := r.db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		var err error
+		edges, err = q.ListEdges(ctx, sess, 0)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(edges) != 1 || edges[0].Kind != core.EdgeDuplicateOf {
+		t.Fatalf("edges = %+v, want one duplicate_of", edges)
+	}
+	if edges[0].Weight != 1 {
+		t.Errorf("weight = %v, want the mechanical decision's own 1.0", edges[0].Weight)
+	}
+}
+
+// TestAJudgedPairIsNotOfferedAgain, or an agent working through a long session
+// keeps being handed the pairs it has already answered and never reaches the end.
+func TestAJudgedPairIsNotOfferedAgain(t *testing.T) {
+	r := connectToolkitStubFetch(t, testPage)
+	sess, pairID := twoClaims(t, r)
+
+	r.call(t, "mole.edge_add", map[string]any{
+		"session_id": sess, "pair_id": pairID, "relation": "contradicts"}, nil)
+
+	var again struct {
+		Pairs []struct {
+			PairID string `json:"pair_id"`
+		} `json:"pairs"`
+	}
+	r.call(t, "mole.pairs_candidates", map[string]any{"session_id": sess}, &again)
+	for _, p := range again.Pairs {
+		if p.PairID == pairID {
+			t.Fatal("a pair that already has an edge was offered again")
+		}
+	}
+}
+
+// TestTruncatedCandidatesSayHowManyThereAre.
+//
+// The list was cut at fifty with no total and no note, in an order derived from
+// random claim ids — so an agent could judge an arbitrary fifty of four hundred
+// pairs and report "no contradictions" having never seen the rest.
+func TestTruncatedCandidatesSayHowManyThereAre(t *testing.T) {
+	r := connectToolkitStubFetch(t, testPage)
+	sess, doc := openWithDoc(t, r)
+	// Distinct quote spans, one per claim. Claims sharing a source, a quote and an
+	// offset are settled mechanically as duplicates and never become candidates —
+	// the first version of this fixture reused one quote and produced no pairs
+	// at all.
+	text := storedText(t, r, doc)
+	const window = 60
+	for i := 0; i < 20; i++ {
+		start := i * window
+		if start+window > len(text) {
+			t.Fatalf("fixture too short for %d claims", i)
+		}
+		res := r.call(t, "mole.claim_add", map[string]any{
+			"session_id": sess, "doc_id": doc,
+			"text":  fmt.Sprintf("Fasting affected glucose in cohort %d of the review.", i),
+			"quote": text[start : start+window]}, nil)
+		if res.IsError {
+			t.Fatalf("claim %d refused: %s", i, errText(res))
+		}
+	}
+
+	var page1 struct {
+		Pairs []struct {
+			PairID string `json:"pair_id"`
+		} `json:"pairs"`
+		Total int    `json:"total"`
+		Note  string `json:"note"`
+	}
+	r.call(t, "mole.pairs_candidates", map[string]any{
+		"session_id": sess, "max": 5}, &page1)
+
+	if page1.Total <= len(page1.Pairs) {
+		t.Fatalf("total = %d with %d shown; the fixture is not truncating",
+			page1.Total, len(page1.Pairs))
+	}
+	if !strings.Contains(page1.Note, "offset") {
+		t.Errorf("the note does not say how to see the rest: %q", page1.Note)
+	}
+
+	var page2 struct {
+		Pairs []struct {
+			PairID string `json:"pair_id"`
+		} `json:"pairs"`
+	}
+	r.call(t, "mole.pairs_candidates", map[string]any{
+		"session_id": sess, "max": 5, "offset": 5}, &page2)
+	if len(page2.Pairs) == 0 {
+		t.Fatal("the second page is empty")
+	}
+	if page2.Pairs[0].PairID == page1.Pairs[0].PairID {
+		t.Error("offset did nothing; the same pairs came back")
+	}
+}
+
+// TestJudgingAPairTwiceReturnsTheEdgeThatExists.
+//
+// The tool description asks the agent to judge a pair twice, and the second call
+// returned a freshly generated id while the upsert kept the original row's — an
+// id matching nothing in the database.
+func TestJudgingAPairTwiceReturnsTheEdgeThatExists(t *testing.T) {
+	r := connectToolkitStubFetch(t, testPage)
+	sess, pairID := twoClaims(t, r)
+
+	var first, second struct {
+		EdgeID string `json:"edge_id"`
+		Note   string `json:"note"`
+	}
+	args := map[string]any{
+		"session_id": sess, "pair_id": pairID, "relation": "contradicts"}
+	r.call(t, "mole.edge_add", args, &first)
+	r.call(t, "mole.edge_add", args, &second)
+
+	if second.EdgeID != first.EdgeID {
+		t.Errorf("second judgement reports edge %q, but the stored row is %q",
+			second.EdgeID, first.EdgeID)
+	}
+	if !strings.Contains(second.Note, "already") {
+		t.Errorf("the caller is not told this pair was already judged: %q", second.Note)
+	}
+}
+
+// TestAnUnstatedEdgeConfidenceIsFull.
+//
+// clampStrength was reused from claim assertion strength, whose 0.5 default means
+// "unstated". On an edge that halves the contradiction penalty, so the same
+// contradiction left both claims more confident here than in autonomous mode.
+func TestAnUnstatedEdgeConfidenceIsFull(t *testing.T) {
+	r := connectToolkitStubFetch(t, testPage)
+	sess, pairID := twoClaims(t, r)
+
+	r.call(t, "mole.edge_add", map[string]any{
+		"session_id": sess, "pair_id": pairID, "relation": "contradicts"}, nil)
+
+	var edges []*core.ClaimEdge
+	if err := r.db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		var err error
+		edges, err = q.ListEdges(ctx, sess, 0)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(edges) != 1 {
+		t.Fatalf("%d edges, want 1", len(edges))
+	}
+	if edges[0].Weight != 1 {
+		t.Errorf("weight = %v; an edge with no confidence stated is a full-weight "+
+			"edge everywhere else in mole", edges[0].Weight)
+	}
 }
