@@ -14,6 +14,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/lajosdeme/mole/internal/compute/connector"
+	"github.com/lajosdeme/mole/internal/compute/gate"
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/daemon"
@@ -106,6 +108,19 @@ type serveOpts struct {
 	dbPath      string
 }
 
+// toolkitConnectors loads the connector registry for the toolkit's aggregate
+// tools, or nil when nothing is registered.
+//
+// Nil rather than an error: a daemon serving an agent that never touches local data
+// should still start, and mole.aggregate says what is missing when it is called.
+func toolkitConnectors(dbPath string) *connector.Registry {
+	reg, err := connector.LoadRegistry(connectorRegistryPath(dbPath))
+	if err != nil || len(reg.List()) == 0 {
+		return nil
+	}
+	return reg
+}
+
 func cmdServe(ctx context.Context, o serveOpts) error {
 	cfg, err := config.Load()
 	if err != nil && !errors.Is(err, config.ErrNotConfigured) {
@@ -175,6 +190,13 @@ func cmdServe(ctx context.Context, o serveOpts) error {
 		Search:  actor.Search,
 		Fetch:   actor.Fetch,
 		Extract: actor.Extract,
+		// Registered local data, if any. Absent leaves the aggregate tools saying
+		// so rather than failing at call time.
+		Connectors: toolkitConnectors(o.dbPath),
+		// §12.1's audit trail goes to its own sink at its own level, for the reason
+		// buildLocalActor gives: research logging is diagnostics somebody turns
+		// down, and this is the record of what left the machine.
+		Gate: gate.Options{Log: auditLogger()},
 	})
 
 	srv := &daemon.Server{

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/lajosdeme/mole/internal/actors"
+	"github.com/lajosdeme/mole/internal/compute/connector"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/llm"
 	"github.com/lajosdeme/mole/internal/mcpserver"
@@ -58,6 +60,10 @@ type rig struct {
 	// pageURL is a local page the toolkit's fetch tool can read, so those tests
 	// exercise the real fetch and extract path without touching the network.
 	pageURL string
+	// lastJSON is the raw result of the most recent call, so a test can assert on
+	// what a client would actually receive rather than on a decoded struct that
+	// silently drops fields.
+	lastJSON string
 }
 
 // tools lists what the server advertises, which is how the toolkit tests check
@@ -132,6 +138,44 @@ func connectToolkitStubFetch(t *testing.T, body string) *rig {
 	r.pageURL = "https://example.org/review"
 	return r
 }
+
+// connectToolkitLocal registers a small CSV so the aggregate tools have real data
+// behind them — the same ingest path `mole connect add` uses, so the profile and
+// the free-text flags are the real ones rather than a fixture's idea of them.
+func connectToolkitLocal(t *testing.T) *rig {
+	t.Helper()
+	dir := t.TempDir()
+	csv := filepath.Join(dir, "tickets.csv")
+	var b strings.Builder
+	b.WriteString("region,tickets,spend,note\n")
+	for i := 0; i < 40; i++ {
+		region := "north"
+		if i%2 == 1 {
+			region = "south"
+		}
+		fmt.Fprintf(&b, "%s,%d,%d,\"Shipment held at the depot until the quarter opened\"\n",
+			region, i%9+1, 100+i)
+	}
+	if err := os.WriteFile(csv, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := connector.Ingest(context.Background(), "sales", csv, filepath.Join(dir, "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	connectorsForTest = registryOf{c}
+	t.Cleanup(func() { connectorsForTest = nil })
+	return connectToolkitActor(t, &actors.WebActor{LLM: idlePlanner{}, Search: emptySearch{}})
+}
+
+// connectorsForTest is set by connectToolkitLocal, the same way toolkitOn is: Deps
+// are built inside connectActor before a rig exists to hang them off.
+var connectorsForTest interface{ List() []connector.Connector }
+
+type registryOf []connector.Connector
+
+func (r registryOf) List() []connector.Connector { return r }
 
 type stubFetcher struct{ body string }
 
@@ -249,6 +293,7 @@ func connectActor(
 	srv := mcpserver.New(mcpserver.Deps{
 		Supervisor:       sup,
 		Toolkit:          toolkitOn,
+		Connectors:       connectorsForTest,
 		Search:           actor.Search,
 		Fetch:            actor.Fetch,
 		Extract:          actor.Extract,
@@ -289,6 +334,9 @@ func (r *rig) call(t *testing.T, name string, args any, out any) *mcp.CallToolRe
 	}
 	if res.IsError {
 		return res
+	}
+	if raw, err := json.Marshal(res.StructuredContent); err == nil {
+		r.lastJSON = string(raw)
 	}
 	if out != nil {
 		raw, err := json.Marshal(res.StructuredContent)

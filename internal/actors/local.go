@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/lajosdeme/mole/internal/compute"
 	"github.com/lajosdeme/mole/internal/compute/coderunner"
 	"github.com/lajosdeme/mole/internal/compute/connector"
 	"github.com/lajosdeme/mole/internal/compute/gate"
@@ -422,56 +423,15 @@ func (a *LocalComputeActor) runQuery(
 ) (string, string, verdictNote, error) {
 	var note verdictNote
 
-	query, err := hypothesis.Render(c, p)
-	if err != nil {
-		// Recorded, even though nothing was executed and nothing crossed.
-		//
-		// A trail that began at the gate would show only the questions that got as
-		// far as a statement, and the ones refused earlier — a free-text column
-		// asked to be a group, a template whose slots the model filled wrongly —
-		// are exactly the attempts a user auditing this would want to see. There is
-		// no statement to record because none was built, so the hash is over the
-		// plan instead.
-		note.add(a.crossing(lead, c, planDescriptor(p), gate.Record{},
-			core.CrossingRefused, err.Error()))
-		return "", "", note, err
-	}
-	// hypothesis.Render only emits statements from its own templates, so this
-	// cannot fail — which is exactly why it is called. §12.2 asks for the parse
-	// gate on the path to the database, not on the paths thought likely to
-	// carry something bad.
-	if err := sqlguard.Check(query); err != nil {
-		note.add(a.crossing(lead, c, query, gate.Record{},
-			core.CrossingRefused, err.Error()))
-		return "", "", note, err
-	}
-
-	db, err := c.Open()
-	if err != nil {
-		note.add(a.crossing(lead, c, query, gate.Record{},
-			core.CrossingRefused, err.Error()))
-		return "", "", note, err
-	}
-	defer db.Close()
-
+	// The pipeline lives in internal/compute so toolkit mode runs the identical
+	// one. Two copies would be two places for §12's rules to drift.
 	opts := a.Gate
-	opts.Log = a.logger()
-	opts.FreeTextColumns = freeTextColumns(c)
-
-	env, err := gate.Aggregate(ctx, db, query, opts)
-	if err != nil {
-		// Recorded, with the outcomes kept apart: a refusal is the gate working,
-		// and ErrLeak is a rule upstream having broken in a way the backstop
-		// caught. §14.3's number is the count of the second, and folding them
-		// together would make it unmeasurable.
-		outcome := core.CrossingRefused
-		if errors.Is(err, gate.ErrLeak) {
-			outcome = core.CrossingWithheld
-		}
-		note.add(a.crossing(lead, c, query, gate.Record{}, outcome, err.Error()))
-		return "", "", note, err
+	res := compute.Run(ctx, c, p, opts, a.logger())
+	note.add(res.Crossing(lead.SessionID, lead.ID, c.Name))
+	if res.Err != nil {
+		return "", "", note, res.Err
 	}
-	note.add(a.crossing(lead, c, query, gate.Describe(env), core.CrossingCrossed, ""))
+	env := res.Envelope
 
 	// §4's fourth column, when there is a comparison to check.
 	//

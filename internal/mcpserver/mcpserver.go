@@ -21,6 +21,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/lajosdeme/mole/internal/compute/connector"
+	"github.com/lajosdeme/mole/internal/compute/gate"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/pricing"
 	"github.com/lajosdeme/mole/internal/session"
@@ -91,6 +93,12 @@ type Deps struct {
 	Search  search.Provider
 	Fetch   fetch.Fetcher
 	Extract extract.Extractor
+
+	// Connectors is the registered local data, for the toolkit's aggregate tools.
+	// Nil leaves them reporting that nothing is registered.
+	Connectors interface{ List() []connector.Connector }
+	// Gate tunes the aggregation gate. The zero value is §12.1's defaults.
+	Gate gate.Options
 
 	// Toolkit registers the toolkit tool surface. Off by default: those tools cost
 	// every client their definitions in its context window, and a caller who wants

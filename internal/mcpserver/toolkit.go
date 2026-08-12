@@ -24,6 +24,9 @@ import (
 
 	"github.com/lajosdeme/mole/internal/actors"
 	"github.com/lajosdeme/mole/internal/budget"
+	"github.com/lajosdeme/mole/internal/compute"
+	"github.com/lajosdeme/mole/internal/compute/connector"
+	"github.com/lajosdeme/mole/internal/compute/hypothesis"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/tools/search"
@@ -392,6 +395,24 @@ func registerToolkit(srv *mcp.Server, d Deps) {
 			"[1], [2] and so on. Every quote listed has been verified against the stored " +
 			"document.",
 	}, d.toolkitCitations)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "mole.connect_list",
+		Description: "List the local files the user registered with `mole connect`, with " +
+			"their tables and column names, types and shape. Column VALUES are never " +
+			"listed — use mole.aggregate to ask a question of the data.",
+	}, d.toolkitConnectList)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "mole.aggregate",
+		Description: "Ask a question of the user's local data. You choose a template and " +
+			"which columns fill its slots; mole writes and runs the SQL — you cannot " +
+			"supply a statement, and no row ever reaches you. Templates: distribution " +
+			"(how records split across a column), overview (the shape of one numeric " +
+			"column), group_comparison (does a measure differ between groups, with a " +
+			"significance test), trend (movement over time). Buckets covering fewer than " +
+			"five records are suppressed and free-text columns are withheld.",
+	}, d.toolkitAggregate)
 }
 
 // ---------------------------------------------------------------------------
@@ -632,4 +653,131 @@ func (d Deps) toolkitCitations(ctx context.Context, _ *mcp.CallToolRequest, in c
 	out.Note = "Every quote here was checked against the stored document. Cite by " +
 		"number; a claim mole refused is not in this list."
 	return nil, out, err
+}
+
+// ---------------------------------------------------------------------------
+// connect_list / aggregate
+// ---------------------------------------------------------------------------
+//
+// §12's boundary, exposed to somebody else's model. This part of mole is strictly
+// better in toolkit mode than in autonomous mode, because the boundary does not
+// care which model is on the other side of it: the agent picks a template and
+// column names, mole renders and runs the SQL, and only aggregates come back.
+//
+// The rule that makes it safe is §12.3's — the model never writes SQL. There is no
+// parameter here that accepts one.
+
+type connectListOut struct {
+	Connectors []connectorOut `json:"connectors"`
+	Note       string         `json:"note"`
+}
+
+type connectorOut struct {
+	Name   string     `json:"name"`
+	Tables []tableOut `json:"tables"`
+}
+
+type tableOut struct {
+	Name    string      `json:"name"`
+	Rows    int64       `json:"rows"`
+	Columns []columnOut `json:"columns"`
+}
+
+type columnOut struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+	// Distinct and Nulls describe shape, not content. A column's VALUES never
+	// appear here: the profile is what a caller needs to choose a template, and
+	// listing values would be the leak the aggregation gate exists to prevent.
+	Distinct int64 `json:"distinct,omitempty"`
+	Nulls    int64 `json:"nulls,omitempty"`
+	FreeText bool  `json:"free_text,omitempty"`
+}
+
+func (d Deps) toolkitConnectList(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (
+	*mcp.CallToolResult, connectListOut, error,
+) {
+	out := connectListOut{Note: "Column values are deliberately absent. Use " +
+		"mole.aggregate to ask a question of the data; only aggregates cross."}
+	if d.Connectors == nil {
+		return nil, out, nil
+	}
+	for _, c := range d.Connectors.List() {
+		co := connectorOut{Name: c.Name}
+		for _, t := range c.Tables {
+			to := tableOut{Name: t.Name, Rows: t.Rows}
+			for _, col := range t.Columns {
+				to.Columns = append(to.Columns, columnOut{
+					Name: col.Name, Type: string(col.Type),
+					Distinct: col.Distinct, Nulls: col.Nulls, FreeText: col.FreeText,
+				})
+			}
+			co.Tables = append(co.Tables, to)
+		}
+		out.Connectors = append(out.Connectors, co)
+	}
+	return nil, out, nil
+}
+
+type aggregateIn struct {
+	SessionID string            `json:"session_id"`
+	Connector string            `json:"connector"`
+	Table     string            `json:"table"`
+	Template  string            `json:"template" jsonschema:"one of: distribution, overview, group_comparison, trend"`
+	Columns   map[string]string `json:"columns" jsonschema:"column name per template slot, e.g. {\"key\":\"region\",\"measure\":\"spend\"}"`
+}
+
+type aggregateOut struct {
+	Text  string `json:"text"`
+	Query string `json:"query"`
+	Note  string `json:"note"`
+}
+
+func (d Deps) toolkitAggregate(ctx context.Context, _ *mcp.CallToolRequest, in aggregateIn) (
+	*mcp.CallToolResult, aggregateOut, error,
+) {
+	if d.Connectors == nil || len(d.Connectors.List()) == 0 {
+		return nil, aggregateOut{}, fmt.Errorf(
+			"no local data is registered (mole connect add <name> <path>)")
+	}
+	var found connector.Connector
+	var ok bool
+	for _, c := range d.Connectors.List() {
+		if c.Name == in.Connector {
+			found, ok = c, true
+			break
+		}
+	}
+	if !ok {
+		return nil, aggregateOut{}, fmt.Errorf(
+			"no connector named %q; mole.connect_list shows what is registered", in.Connector)
+	}
+
+	res := compute.Run(ctx, found, hypothesis.Plan{
+		Connector: in.Connector, Table: in.Table,
+		Template: hypothesis.Kind(in.Template), Columns: in.Columns,
+	}, d.Gate, d.Log)
+
+	// Recorded whatever happened, including the refusals — `mole crossings` is the
+	// user's answer to "what did this agent send about my data", and a trail of
+	// successes only would let them conclude the questions that worked are all it
+	// tried.
+	crossing := res.Crossing(in.SessionID, toolkitLeadID, in.Connector)
+	if err := d.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.InsertCrossings(ctx, []core.Crossing{crossing})
+	}); err != nil {
+		d.Log.ErrorContext(ctx, "the audit trail was not written; §12.1's record of "+
+			"what left this machine is incomplete", "err", err)
+	}
+	if res.Err != nil {
+		return nil, aggregateOut{}, res.Err
+	}
+
+	return nil, aggregateOut{
+		Text:  res.Envelope.Text(),
+		Query: res.Query,
+		Note: "These are aggregates. No row crossed, and buckets covering fewer than " +
+			"five records were suppressed. Cite this as connector:" + in.Connector +
+			"#" + res.Envelope.QueryHash[:16] + ".",
+	}, nil
 }
