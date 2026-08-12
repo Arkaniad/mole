@@ -150,9 +150,11 @@ func (d Deps) toolkitSessionOpen(ctx context.Context, _ *mcp.CallToolRequest, in
 	}
 
 	sess, err := budget.New(d.Store, budget.DefaultConfig()).CreateSession(ctx, budget.SessionSpec{
-		Prompt:     in.Question,
-		Mode:       mode,
-		ActorTypes: []core.ActorType{core.ActorWeb},
+		Prompt: in.Question,
+		Mode:   mode,
+		// Web, because the agent's fetches go through the web actor's components,
+		// plus the marker that says mole runs nothing here itself.
+		ActorTypes: []core.ActorType{core.ActorWeb, core.ActorToolkit},
 		BudgetUnit: unit,
 		Budget:     amount,
 		// A ceiling on calls, not only on money, because in a token-budget session
@@ -194,14 +196,37 @@ type sessionCloseOut struct {
 	SessionID string `json:"session_id"`
 	Documents int    `json:"documents"`
 	Claims    int    `json:"claims"`
-	Spent     string `json:"spent"`
+	// Edges and Contradictions describe the graph the agent built, which is what
+	// the session is FOR — reporting documents and claims alone said nothing
+	// about the judgements.
+	Edges          int `json:"edges"`
+	Contradictions int `json:"contradictions"`
+	// Scored is how many claims had their confidence derived on the way out.
+	Scored int    `json:"scored"`
+	Spent  string `json:"spent"`
 }
 
 func (d Deps) toolkitSessionClose(ctx context.Context, _ *mcp.CallToolRequest, in sessionCloseIn) (
 	*mcp.CallToolResult, sessionCloseOut, error,
 ) {
+	sess, err := d.requireSession(ctx, in.SessionID)
+	if err != nil {
+		return nil, sessionCloseOut{}, err
+	}
+	// Only a session this surface opened. Closing takes a running session to
+	// done, and pointed at an autonomous one it stopped a live run: every lead's
+	// reservation was then refused with "session is done", research.status
+	// reported success, and research.result returned an empty report with no
+	// explanation.
+	if !sess.Toolkit() {
+		return nil, sessionCloseOut{}, fmt.Errorf(
+			"session %s is not a toolkit session — it belongs to a research run. "+
+				"Closing it would stop that run; use research.cancel if that is what "+
+				"you meant.", in.SessionID)
+	}
+
 	out := sessionCloseOut{SessionID: in.SessionID}
-	err := d.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
+	err = d.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
 		sess, err := q.GetSession(ctx, in.SessionID)
 		if err != nil {
 			return err
@@ -217,17 +242,72 @@ func (d Deps) toolkitSessionClose(ctx context.Context, _ *mcp.CallToolRequest, i
 			return err
 		}
 		out.Documents = len(docs)
+		edges, err := q.ListEdges(ctx, in.SessionID, 0)
+		if err != nil {
+			return err
+		}
+		out.Edges = len(edges)
+		for _, e := range edges {
+			if e != nil && e.Kind == core.EdgeContradicts {
+				out.Contradictions++
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		return nil, sessionCloseOut{}, err
 	}
+	// Confidence is derived here, from the graph the agent built.
+	//
+	// Autonomous mode derives it in the Verifier, which toolkit mode never runs —
+	// so every claim kept confidence 0 and verified_at NULL, and `mole eval` said
+	// "0 of 20 claims verified — every graph number below is measured over
+	// nothing" directly above a disagreement rate measured over something.
+	// Deriving needs no model: it is arithmetic over claims and edges, which is
+	// exactly what this session has by now.
+	scored, err := d.scoreSession(ctx, in.SessionID)
+	if err != nil {
+		return nil, sessionCloseOut{}, err
+	}
+	out.Scored = scored
+
 	if err := d.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
 		return tx.SetSessionStatus(ctx, in.SessionID, core.StatusDone)
 	}); err != nil {
 		return nil, sessionCloseOut{}, err
 	}
 	return nil, out, nil
+}
+
+// scoreSession derives confidence from the session's own graph and records it.
+func (d Deps) scoreSession(ctx context.Context, sessionID string) (int, error) {
+	var (
+		claims []*core.Claim
+		edges  []*core.ClaimEdge
+	)
+	if err := d.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		if claims, err = q.ListClaims(ctx, sessionID, AllClaims); err != nil {
+			return err
+		}
+		edges, err = q.ListEdges(ctx, sessionID, 0)
+		return err
+	}); err != nil {
+		return 0, err
+	}
+	if len(claims) == 0 {
+		return 0, nil
+	}
+	scores, _ := verifier.DeriveConfidence(claims, edges)
+	if len(scores) == 0 {
+		return 0, nil
+	}
+	if err := d.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		return tx.ScoreClaims(ctx, scores)
+	}); err != nil {
+		return 0, err
+	}
+	return len(scores), nil
 }
 
 // requireSession refuses a session id that names no session.

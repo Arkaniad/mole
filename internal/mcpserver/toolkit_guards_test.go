@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lajosdeme/mole/internal/actors"
 	"github.com/lajosdeme/mole/internal/core"
@@ -308,5 +309,104 @@ func TestASessionOverFiveHundredClaimsStillWorks(t *testing.T) {
 		"relation": "duplicate_of"}, nil)
 	if res.IsError {
 		t.Errorf("an edge onto claim %d was refused: %s", n, errText(res))
+	}
+}
+
+// TestClosingAnAutonomousSessionIsRefused.
+//
+// session_close took any session id and set it to done. Pointed at a running
+// research session — by mistake, or because the agent lost track of which id was
+// which — it stopped that run: every subsequent lead reservation was refused with
+// "session is done", research.status reported done, and research.result returned
+// an empty report with no note saying why.
+func TestClosingAnAutonomousSessionIsRefused(t *testing.T) {
+	r := connectToolkitStubFetch(t, testPage)
+
+	var started struct {
+		SessionID string `json:"session_id"`
+	}
+	res := r.call(t, "research.report", map[string]any{
+		"prompt": "does fasting help",
+		"budget": map[string]any{"unit": "usd", "amount": "0.50"},
+	}, &started)
+	if res.IsError {
+		t.Fatalf("could not start a research session: %s", errText(res))
+	}
+
+	res = r.call(t, "mole.session_close", map[string]any{
+		"session_id": started.SessionID}, nil)
+	if !res.IsError {
+		t.Fatal("the toolkit closed a research session out from under the runner")
+	}
+	if !strings.Contains(errText(res), "research") {
+		t.Errorf("the refusal does not say what the session is: %s", errText(res))
+	}
+}
+
+// TestAToolkitSessionSurvivesTheAbandonmentSweep.
+//
+// The sweep marks running sessions whose PROCESS is gone. A toolkit session has
+// no mole process — the agent is the process — so thirty idle minutes is a person
+// thinking, not a crash. It was being marked failed underneath a live session.
+func TestAToolkitSessionSurvivesTheAbandonmentSweep(t *testing.T) {
+	r := connectToolkitStubFetch(t, testPage)
+	sess, _ := openWithDoc(t, r)
+
+	// Backdate it past the sweep's idle window.
+	if err := r.db.WithTx(context.Background(), func(ctx context.Context, tx store.Tx) error {
+		_, err := tx.SweepAbandonedSessions(ctx, time.Now().Add(24*time.Hour))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var got *core.Session
+	if err := r.db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		var err error
+		got, err = q.GetSession(ctx, sess)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != core.StatusRunning {
+		t.Errorf("status = %q after the sweep; a live toolkit session was marked dead",
+			got.Status)
+	}
+}
+
+// TestClosingASessionDerivesConfidence.
+//
+// Nothing in toolkit mode ran the Verifier, so confidence stayed 0 and verified_at
+// NULL however thoroughly the agent judged the graph. `mole eval` then reported
+// "0 of N claims verified — every graph number below is measured over nothing"
+// directly above numbers measured over something. Deriving needs no model call.
+func TestClosingASessionDerivesConfidence(t *testing.T) {
+	r := connectToolkitStubFetch(t, testPage)
+	sess, pairID := twoClaims(t, r)
+	r.call(t, "mole.edge_add", map[string]any{
+		"session_id": sess, "pair_id": pairID, "relation": "contradicts"}, nil)
+
+	var closed struct {
+		Scored         int `json:"scored"`
+		Edges          int `json:"edges"`
+		Contradictions int `json:"contradictions"`
+	}
+	r.call(t, "mole.session_close", map[string]any{"session_id": sess}, &closed)
+
+	if closed.Scored == 0 {
+		t.Error("no claim was scored on the way out")
+	}
+	if closed.Edges != 1 || closed.Contradictions != 1 {
+		t.Errorf("close reports %d edge(s), %d contradiction(s); want 1 and 1",
+			closed.Edges, closed.Contradictions)
+	}
+
+	for _, c := range storedClaims(t, r, sess) {
+		if c.VerifiedAt == nil {
+			t.Errorf("claim %s is still unverified after close", c.ID)
+		}
+		if c.Confidence == 0 {
+			t.Errorf("claim %s has confidence 0; the graph says otherwise", c.ID)
+		}
 	}
 }

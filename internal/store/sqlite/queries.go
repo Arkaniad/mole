@@ -938,10 +938,17 @@ func (t *queries) ReleaseLease(ctx context.Context, leadID, owner string) error 
 // definition, and idleSince has to be well past the lease TTL or a slow-but-
 // working run gets marked dead underneath itself.
 func (t *queries) SweepAbandonedSessions(ctx context.Context, idleSince time.Time) (int, error) {
+	// Toolkit sessions are excluded, and the reason is what the sweep is for: it
+	// marks sessions whose PROCESS is gone. A toolkit session has no mole process
+	// — an external agent drives it — so thirty idle minutes means the agent is
+	// thinking, or the person went to lunch, not that anything died. Marking it
+	// failed broke a live session: every later reservation was refused with
+	// "session is done" while claim_add kept succeeding.
 	res, err := t.q.ExecContext(ctx, `
 		UPDATE sessions SET status = 'failed', updated_at = ?
 		 WHERE status = 'running'
 		   AND updated_at < ?
+		   AND actor_types NOT LIKE '%toolkit%'
 		   AND id NOT IN (
 		       SELECT session_id FROM leads
 		        WHERE status = 'leased' AND lease_expires IS NOT NULL AND lease_expires > ?

@@ -52,11 +52,16 @@ const (
 	ActorWeb          ActorType = "web"
 	ActorAcademic     ActorType = "academic"
 	ActorLocalCompute ActorType = "local_compute"
+	// ActorToolkit marks a session an external agent drives through the toolkit
+	// tools. No actor of this type exists — that is the point. mole dispatches no
+	// lead for it, so the executor, the planner and the abandonment sweep all
+	// have to be able to tell it apart from a session mole is running itself.
+	ActorToolkit ActorType = "toolkit"
 )
 
 func (a ActorType) Valid() bool {
 	switch a {
-	case ActorWeb, ActorAcademic, ActorLocalCompute:
+	case ActorWeb, ActorAcademic, ActorLocalCompute, ActorToolkit:
 		return true
 	}
 	return false
@@ -221,6 +226,22 @@ func (s *Session) Available() int64 {
 }
 
 // HitCeiling reports whether any unit-independent limit has been reached.
+// Toolkit reports whether this session is driven by an external agent rather
+// than by mole's own executor.
+//
+// It changes what several things mean. No lead is ever dispatched, so an idle
+// session is not an abandoned one; nothing mole runs writes to it, so the
+// executor's assumptions about tool calls and leads do not hold; and closing it
+// is the agent's job rather than a runner's.
+func (s *Session) Toolkit() bool {
+	for _, a := range s.ActorTypes {
+		if a == ActorToolkit {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Session) HitCeiling(now time.Time) (bool, string) {
 	if s.MaxToolCalls > 0 && s.ToolCallCount >= s.MaxToolCalls {
 		return true, "max_tool_calls"
