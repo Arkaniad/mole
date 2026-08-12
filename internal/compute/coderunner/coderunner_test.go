@@ -326,7 +326,15 @@ func localShellImage(t *testing.T, runtime string) string {
 		if name == "" || strings.HasSuffix(name, ":<none>") {
 			continue
 		}
-		if strings.Contains(name, "alpine") || strings.Contains(name, "busybox") {
+		// Matched on the repository component for the reason pythonImage gives:
+		// podman lists `docker.io/library/alpine:latest` and docker lists `alpine`,
+		// and a helper written against one runtime's format skips silently on the
+		// other.
+		repo := name
+		if i := strings.LastIndex(repo, "/"); i >= 0 {
+			repo = repo[i+1:]
+		}
+		if strings.HasPrefix(repo, "alpine") || strings.HasPrefix(repo, "busybox") {
 			return name
 		}
 	}

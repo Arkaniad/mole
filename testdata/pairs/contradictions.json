@@ -1016,7 +1016,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1028,7 +1028,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1040,7 +1040,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1052,7 +1052,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1064,7 +1064,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1076,7 +1076,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1100,7 +1100,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1112,7 +1112,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1124,7 +1124,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1136,7 +1136,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1148,7 +1148,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1160,7 +1160,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1172,7 +1172,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1903,7 +1903,7 @@
    "source_b": "https://jorgeperezperez.com/files/PerezMinimumWagePricesMetaanalysis.pdf",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3DC3Q1JR0N80",
    "why": "different figures of the same magnitude about the same subject ([0.03, 0.11] vs [0.1]), judged unrelated \u2014 label it to measure RECALL"
   },

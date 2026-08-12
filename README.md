@@ -391,10 +391,6 @@ Stated plainly rather than left to be discovered:
   or labels. A determined model could still encode a value in the digits of a
   declared number. Stated because calling it zero would be the kind of claim the
   package exists to avoid making.
-- **The podman detection path is unverified against a real podman.** There is
-  none on the machine this was written on, so the podman branch is tested only
-  against a recorded reply. The docker branch is verified end to end, including
-  the container.
 - ~~**Dataset extraction is unverified against a capable model.**~~ **Closed.** One
   DeepSeek run over "the largest UK supermarket chains and their annual revenue":
   27 extractions from 3 sources became 9 merged rows, 8 corroborated by more than
@@ -1246,6 +1242,20 @@ serialises a row value as easily as a shell does, and the gate stops it.
 
 These skip where no python image is present locally (`docker pull
 python:3.13-slim`, or `MOLE_PYTHON_TEST_IMAGE`), for the same reason as above.
+
+**Both runtimes are verified now, and podman found a bug in the tests rather than
+in mole.** `Order()` prefers podman, so installing it made podman the detected
+runtime — rootless, seccomp available, cgroup v2 — and every container test above
+passes under it, including `--user=65534:65534` inside a user namespace and the
+read-only mount holding against a deliberately world-writable database file.
+
+What did not pass was the *helper*: podman lists images fully qualified
+(`docker.io/library/python:3.13-slim`) where docker lists them short, and the
+helper matched a bare `python:` prefix against the whole reference. So every Python
+test **skipped silently** on a podman machine while the suite reported green. It
+matches the repository component now. The lesson is the one this project keeps
+relearning in a new costume: a test that skips is not a test that passes, and a
+helper written against one runtime's output format encodes that runtime.
 
 ### `CodeRunner`: the boundary moves inside the container
 

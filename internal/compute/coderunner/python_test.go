@@ -64,8 +64,17 @@ func pythonImage(t *testing.T, runtime string) string {
 		if name == "" || strings.HasSuffix(name, ":<none>") {
 			continue
 		}
-		// Repository must start with python, so `mypython-tools` does not qualify.
-		if strings.HasPrefix(name, "python:") || strings.HasPrefix(name, "python@") {
+		// The REPOSITORY component, not the whole reference. podman lists images
+		// fully qualified — `docker.io/library/python:3.13-slim` — so a prefix test
+		// against the whole string skipped every Python test on a podman machine
+		// while reporting the suite green. Docker lists them short, which is why it
+		// went unnoticed: the helper encoded one runtime's output format.
+		repo := name
+		if i := strings.LastIndex(repo, "/"); i >= 0 {
+			repo = repo[i+1:]
+		}
+		// Still anchored, so `mypython-tools` does not qualify.
+		if strings.HasPrefix(repo, "python:") || strings.HasPrefix(repo, "python@") {
 			return name
 		}
 	}
