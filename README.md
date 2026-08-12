@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="banner-dark.png">
-    <img src="banner.png" alt="Mole — a deep research agent in Go, exposed over MCP" width="820">
-  </picture>
+  <img src="https://raw.githubusercontent.com/lajosdeme/mole/main/banner.png" alt="Mole — a deep research agent in Go, exposed over MCP" width="820">
 </p>
 
 <p align="center">
@@ -20,7 +17,7 @@ It runs as a single static binary on your machine, uses your own API keys, and
 speaks MCP so a coding agent can drive it.
 
 <p align="center">
-  <img src="demo.svg" alt="mole researching a question: planning, 39 claims, two contradictions found, $0.0149 spent" width="900">
+  <img src="https://raw.githubusercontent.com/lajosdeme/mole/main/demo.svg" alt="mole researching a question: planning, 39 claims, two contradictions found, $0.0149 spent" width="900">
 </p>
 
 ---
