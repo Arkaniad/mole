@@ -1,7 +1,14 @@
-# mole
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="banner-dark.png">
+    <img src="banner.png" alt="Mole — a deep research agent in Go, exposed over MCP" width="820">
+  </picture>
+</p>
 
-A deep-research agent that will not spend more than you allowed, and will not
-tell you anything it cannot show you the sentence for.
+<p align="center">
+  <em>A deep-research agent with an enforced budget, verified quotes, and a privacy
+  boundary for local data.</em>
+</p>
 
 Ask a question. mole decomposes it, searches, reads sources, extracts claims,
 checks each claim against the text it came from, looks for contradictions between
@@ -12,32 +19,20 @@ it hits.
 It runs as a single static binary on your machine, uses your own API keys, and
 speaks MCP so a coding agent can drive it.
 
-```console
-$ mole research "what does the evidence say about intermittent fasting and insulin sensitivity?" --usd 0.50
+<p align="center">
+  <img src="demo.svg" alt="mole researching a question: planning, 39 claims, two contradictions found, $0.0149 spent" width="900">
+</p>
 
- [    0s] planning: decomposing the question…
- [    1s] plan ready: 4 sub-question(s) queued
- [ 1m36s]     14 claim(s)
- [ 7m36s]     graph: 14 claim(s) verified, 0 contradiction(s)
-   grounding: 5 claim(s) re-read — 4 confirmed, 1 unsupported
-
-One systematic review of ten randomised controlled trials with 599 participants
-found that time-restricted eating reduced fasting blood glucose in individuals
-with prediabetes or type 2 diabetes [1]. The same meta-analysis found no overall
-effect on HbA1c [1]. A separate source states the effects on insulin sensitivity
-were inconclusive, but that finding is flagged as failing a source re-read, so it
-should not be relied upon [1].
-
-## Sources
-[1] https://pubmed.ncbi.nlm.nih.gov/42507108/ (2025-11-14)
-    > In the pooled analysis, TRE reduced fasting blood glucose…
-
- spent $0.0030 / $0.5000 · 14 claim(s)
-```
+<p align="center">
+  <sub>A real run, trimmed for length — five sections of the answer and three of its
+  five sources are cut. Note what it does with a disagreement: it reports both sides
+  rather than picking one. $0.0149 is DeepSeek pricing; the same run on a frontier
+  model costs more.</sub>
+</p>
 
 ---
 
-## Why another research agent
+## Why mole
 
 Three things mole does that a chat interface with web search does not.
 
@@ -213,30 +208,30 @@ unproven — is in [docs/DESIGN.md](docs/DESIGN.md).
 
 ---
 
-## What is measured, and what is not
+## Honest numbers
 
-mole scores itself. `mole eval <session-id>` prints a scorecard, and metrics that
-cannot be computed say so rather than reading zero.
+mole grades its own runs. `mole eval <session-id>` prints a scorecard, and any
+metric it cannot compute says so instead of quietly reading zero.
 
 | | |
 |---|---|
-| budget overshoot | **0%** across the corpus |
-| claim integrity | **100%** — every stored claim carries a source and verbatim quote |
-| citation accuracy | **100%** of quotes found in the source they cite |
-| grounding rate | **80%** of re-read claims confirmed by their own source |
-| contradiction precision | **51%** on a single judgement, **70%** with the confirm pass |
+| budget overshoot | **0%** — no run has exceeded its ceiling |
+| claim integrity | **100%** — every stored claim carries a source and a verbatim quote |
+| citation accuracy | **100%** — every quote found in the source it cites |
+| grounding rate | **80%** — of claims re-read against their source, confirmed |
+| contradiction precision | **70%** with the confirm pass, 51% without |
 | merge precision / recall | **1.000 / 1.000** on constructed ground truth |
 
-The contradiction number is the one to read carefully. On 149 hand-labelled pairs,
-a single model judgement calls "contradicts" correctly about half the time, so mole
-requires a second, agreeing judgement before writing the edge — which raises
-precision to 70% and keeps roughly half as many edges. Disable it with
-`--no-confirm-edges` if you would rather have the recall.
+Contradiction detection is the weakest link, and mole is built to treat it as one.
+A single model judgement calls two claims contradictory correctly about half the
+time — so an edge is only written when a second judgement agrees, which raises
+precision to 70% and keeps roughly half as many edges. `--no-confirm-edges` if you
+would rather have the recall.
 
-**Not measured yet:** claim precision against labelled answers, contradiction
-recall (the labelled set is drawn from the judge's own positives, so any recall
-computed from it is an upper bound), and staleness detection. These need a larger
-labelled corpus and are named rather than estimated.
+Three things are not measured: claim precision against labelled answers,
+contradiction recall, and staleness detection. All three need a bigger labelled
+corpus than exists today, so they are reported as unmeasured rather than estimated
+from something easier to count.
 
 ---
 
@@ -262,6 +257,3 @@ go test ./...   # must be clean, and no new skips
 ## Licence
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
-
-Every dependency is permissively licensed — 17 MIT, 16 BSD-3, 1 BSD-2, 4
-Apache-2.0, nothing copyleft.
