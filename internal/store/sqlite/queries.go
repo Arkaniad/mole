@@ -1453,6 +1453,37 @@ func (t *queries) Document(ctx context.Context, id string, now time.Time) (core.
 	return d, true, nil
 }
 
+// DocumentsForSession lists a session's live documents.
+//
+// Expiry is applied here for the same reason it is applied in Document: a caller
+// must not see text the retention rule says is gone, sweep or no sweep.
+func (t *queries) DocumentsForSession(ctx context.Context, sessionID string, now time.Time) ([]core.Document, error) {
+	rows, err := t.q.QueryContext(ctx, `
+		SELECT id, url, title, text, truncated, fetched_at, expires_at
+		  FROM documents WHERE session_id = ? AND expires_at > ?
+		 ORDER BY fetched_at, id`, sessionID, toMicros(now))
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list documents: %w", err)
+	}
+	defer rows.Close()
+
+	var out []core.Document
+	for rows.Next() {
+		var (
+			d                core.Document
+			fetched, expires int64
+		)
+		if err := rows.Scan(&d.ID, &d.URL, &d.Title, &d.Text, &d.Truncated,
+			&fetched, &expires); err != nil {
+			return nil, err
+		}
+		d.SessionID = sessionID
+		d.FetchedAt, d.ExpiresAt = fromMicros(fetched), fromMicros(expires)
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // PurgeExpiredDocuments reclaims disk taken by source text past its TTL.
 func (t *queries) PurgeExpiredDocuments(ctx context.Context, now time.Time) (int64, error) {
 	res, err := t.q.ExecContext(ctx,

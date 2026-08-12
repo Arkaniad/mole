@@ -226,7 +226,7 @@ Each slice is usable on its own.
 | slice | contents | size |
 |---|---|---|
 | 0 | `documents` table, retention, migration | small |
-| 1 | `session_open/close`, `search`, `fetch` | small — wraps existing components |
+| ~~1~~ | ~~`session_open/close`, `search`, `fetch`~~ **done** — plus server `Instructions`, behind `mole serve --toolkit` |
 | 2 | `verify_quote`, `claim_add`, `claims_list`, `citations` | **the milestone** — §11.5 for someone else's model |
 | 3 | `connect_list`, `aggregate` | small — the gate is built |
 | 4 | `pairs_candidates`, `edge_add` | medium |

@@ -131,6 +131,10 @@ type Queries interface {
 	// that depends on a background job having run is not a retention promise.
 	Document(ctx context.Context, id string, now time.Time) (core.Document, bool, error)
 
+	// DocumentsForSession lists a session's stored source text, newest last and
+	// excluding anything past its TTL.
+	DocumentsForSession(ctx context.Context, sessionID string, now time.Time) ([]core.Document, error)
+
 	// RecentLeadCosts returns finished leads' settled costs with the actor type
 	// and depth that produced them, OLDEST first, across every session.
 	//

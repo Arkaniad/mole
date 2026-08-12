@@ -52,6 +52,7 @@ func defaultSocket() string {
 
 func newServeCmd() *cobra.Command {
 	var (
+		toolkit     bool
 		socket      string
 		maxSessions int
 		workers     int
@@ -74,6 +75,7 @@ func newServeCmd() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmdServe(cmd.Context(), serveOpts{
+				toolkit:     toolkit,
 				socket:      socket,
 				maxSessions: maxSessions,
 				workers:     workers,
@@ -82,6 +84,9 @@ func newServeCmd() *cobra.Command {
 			})
 		},
 	}
+	c.Flags().BoolVar(&toolkit, "toolkit", false,
+		"also expose the toolkit tools, which let a coding agent do the reasoning with "+
+			"its own model while mole supplies search, fetch and verification")
 	c.Flags().StringVar(&socket, "socket", defaultSocket(), "unix socket to listen on")
 	c.Flags().IntVar(&maxSessions, "max-sessions", session.DefaultMaxConcurrent,
 		"sessions to run at once; past this, new requests are refused rather than queued")
@@ -93,6 +98,7 @@ func newServeCmd() *cobra.Command {
 }
 
 type serveOpts struct {
+	toolkit     bool
 	socket      string
 	maxSessions int
 	workers     int
@@ -162,6 +168,13 @@ func cmdServe(ctx context.Context, o serveOpts) error {
 		Log:              actor.Log,
 		Version:          version,
 		Workers:          o.workers,
+		// Toolkit mode reuses the actor's own components, so a fetch made by an
+		// agent goes through the same SSRF guard, robots handling and rate limiter
+		// as one mole makes itself.
+		Toolkit: o.toolkit,
+		Search:  actor.Search,
+		Fetch:   actor.Fetch,
+		Extract: actor.Extract,
 	})
 
 	srv := &daemon.Server{

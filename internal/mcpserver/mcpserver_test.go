@@ -3,6 +3,9 @@ package mcpserver_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -20,6 +23,8 @@ import (
 	"github.com/lajosdeme/mole/internal/session"
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/store/sqlite"
+	"github.com/lajosdeme/mole/internal/tools/extract"
+	"github.com/lajosdeme/mole/internal/tools/fetch"
 	"github.com/lajosdeme/mole/internal/tools/search"
 )
 
@@ -50,6 +55,83 @@ type rig struct {
 	client *mcp.ClientSession
 	db     store.Store
 	sup    *session.Supervisor
+	// pageURL is a local page the toolkit's fetch tool can read, so those tests
+	// exercise the real fetch and extract path without touching the network.
+	pageURL string
+}
+
+// tools lists what the server advertises, which is how the toolkit tests check
+// that the surface is gated rather than inspecting the Deps they set themselves.
+func (r *rig) tools(t *testing.T) []string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := r.client.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	var out []string
+	for _, tool := range res.Tools {
+		out = append(out, tool.Name)
+	}
+	return out
+}
+
+func timeNow() time.Time { return time.Now().UTC() }
+
+// connectToolkit brings up the server with the toolkit surface enabled and a local
+// HTTP page to fetch.
+func connectToolkit(t *testing.T) *rig {
+	t.Helper()
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><head><title>A review</title></head><body><article>`+
+			`<p>Across ten randomised trials, intermittent fasting reduced fasting `+
+			`glucose in adults with prediabetes. Effects on HbA1c were inconsistent.</p>`+
+			`<p>Limitations include short follow-up and heterogeneous eating windows.</p>`+
+			`</article></body></html>`)
+	}))
+	t.Cleanup(page.Close)
+
+	r := connectToolkitActor(t, &actors.WebActor{
+		LLM:     idlePlanner{},
+		Search:  emptySearch{},
+		Fetch:   fetch.NewHTTP(fetch.Config{UserAgent: "mole-test"}, fetch.Options{}),
+		Extract: extract.New(),
+	})
+	r.pageURL = page.URL
+	return r
+}
+
+// connectToolkitStubFetch is connectToolkit with the network step stubbed.
+//
+// The real fetcher refuses a loopback address on a high port, which is the egress
+// guard doing its job and is asserted directly in TestFetchIsBehindTheEgressGuard.
+// Tests about what happens AFTER a successful fetch — storage, fencing, the
+// document count — need a fetch that succeeds, so they replace the fetcher and keep
+// the real extractor.
+func connectToolkitStubFetch(t *testing.T, body string) *rig {
+	t.Helper()
+	r := connectToolkitActor(t, &actors.WebActor{
+		LLM:     idlePlanner{},
+		Search:  emptySearch{},
+		Fetch:   stubFetcher{body: body},
+		Extract: extract.New(),
+	})
+	r.pageURL = "https://example.org/review"
+	return r
+}
+
+type stubFetcher struct{ body string }
+
+func (s stubFetcher) Fetch(_ context.Context, rawURL string) (*fetch.Result, error) {
+	return &fetch.Result{
+		Content:     []byte(s.body),
+		ContentType: "text/html",
+		Outcome:     fetch.OutcomeOK,
+		StatusCode:  200,
+		FinalURL:    rawURL,
+	}, nil
 }
 
 // connect wires a real MCP client to the server over an in-memory transport.
@@ -118,6 +200,20 @@ func connectFull(t *testing.T, maxUSD, maxTokens int64, answerer llm.Provider) *
 		&actors.WebActor{LLM: idlePlanner{}, Search: emptySearch{}})
 }
 
+// connectToolkitActor is connectActor with the toolkit surface registered and a
+// real fetcher and extractor, so those tools run the path they run in production.
+func connectToolkitActor(t *testing.T, actor *actors.WebActor) *rig {
+	t.Helper()
+	toolkitOn = true
+	t.Cleanup(func() { toolkitOn = false })
+	return connectActor(t, 0, 0, nil, actor)
+}
+
+// toolkitOn gates registration for the test rig. A package-level flag rather than
+// another parameter on four constructors, and reset by Cleanup so it cannot leak
+// between tests.
+var toolkitOn bool
+
 func connectActor(
 	t *testing.T, maxUSD, maxTokens int64, answerer llm.Provider, actor *actors.WebActor,
 ) *rig {
@@ -141,6 +237,10 @@ func connectActor(
 
 	srv := mcpserver.New(mcpserver.Deps{
 		Supervisor:       sup,
+		Toolkit:          toolkitOn,
+		Search:           actor.Search,
+		Fetch:            actor.Fetch,
+		Extract:          actor.Extract,
 		Store:            db,
 		LLM:              answerer,
 		Pricing:          stubPricing(),

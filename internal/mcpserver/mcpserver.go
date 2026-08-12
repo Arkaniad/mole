@@ -25,6 +25,9 @@ import (
 	"github.com/lajosdeme/mole/internal/pricing"
 	"github.com/lajosdeme/mole/internal/session"
 	"github.com/lajosdeme/mole/internal/store"
+	"github.com/lajosdeme/mole/internal/tools/extract"
+	"github.com/lajosdeme/mole/internal/tools/fetch"
+	"github.com/lajosdeme/mole/internal/tools/search"
 )
 
 // MaxClaimsReturned caps how many claims research.result hands back.
@@ -83,6 +86,17 @@ type Deps struct {
 	MaxLeads   int
 	Timeout    time.Duration
 
+	// Search, Fetch and Extract back toolkit mode. Nil leaves the matching tool
+	// reporting that it is not configured rather than failing at call time.
+	Search  search.Provider
+	Fetch   fetch.Fetcher
+	Extract extract.Extractor
+
+	// Toolkit registers the toolkit tool surface. Off by default: those tools cost
+	// every client their definitions in its context window, and a caller who wants
+	// autonomous research should not read past them to find research.report.
+	Toolkit bool
+
 	Log *slog.Logger
 }
 
@@ -99,7 +113,15 @@ func New(d Deps) *mcp.Server {
 		Name:    "mole",
 		Title:   "mole — deep research",
 		Version: d.version(),
-	}, nil)
+	}, &mcp.ServerOptions{
+		// Sent at initialize. In a client that folds these into the model's system
+		// context, this is mole's only lever on a prompt it does not assemble —
+		// and the measured difference between a fenced document alone and a fenced
+		// document plus a system-side rule was one injection in twenty-five
+		// against none. Whether a given client honours it is untested per client,
+		// so the fence is applied regardless.
+		Instructions: serverInstructions,
+	})
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "research.report",
@@ -143,6 +165,9 @@ func New(d Deps) *mcp.Server {
 			"session id again after your own context has been compacted.",
 	}, d.listSessions)
 
+	if d.Toolkit {
+		registerToolkit(srv, d)
+	}
 	return srv
 }
 
