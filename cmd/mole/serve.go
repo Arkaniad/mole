@@ -59,7 +59,7 @@ func newServeCmd() *cobra.Command {
 	)
 	c := &cobra.Command{
 		Use:   "serve",
-		Short: "Run the local daemon (§5)",
+		Short: "Run the local daemon for MCP clients",
 		Long: "Holds session, claim and budget state for callers that outlive a single\n" +
 			"command — coding agents over MCP, principally. Research runs past an hour;\n" +
 			"a bare stdio subprocess dies when the editor session closes, so the work\n" +

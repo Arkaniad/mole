@@ -12,6 +12,7 @@ package pricing
 
 import (
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -158,6 +159,34 @@ func (t *Table) Register(model string, r Rates) {
 // RegisterFree registers a model that costs nothing — a local or self-hosted
 // model whose tokens should still be counted and budgeted.
 func (t *Table) RegisterFree(model string) { t.Register(model, Rates{}) }
+
+// RegisterLocal prices every model served by a local runtime at zero.
+//
+// A self-hosted model costs electricity, not tokens, and mole's own logs said so
+// several hundred times per run: every call against ollama emitted "model not in
+// pricing table; USD cost recorded as zero", which is true, unhelpful, and drowns
+// the warning it shares a channel with — the one about a HOSTED model nobody
+// registered, where zero cost really does mean an unenforceable ceiling.
+//
+// Registered by base URL rather than by name, because a local runtime serves
+// whatever the user pulled and the names are theirs. The rates stay zero and the
+// TOKENS are still counted, which is what makes --tokens meaningful for somebody
+// paying no money at all.
+func (t *Table) RegisterLocal(model string) { t.RegisterFree(model) }
+
+// IsLocalEndpoint reports whether a base URL is a loopback address.
+//
+// Deliberately narrow: loopback only. A model served from another machine on the
+// network may well be metered by whoever runs it, and silently pricing it at zero
+// would be mole deciding somebody else's costs are zero.
+func IsLocalEndpoint(baseURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
+}
 
 // Lookup finds rates for a model, falling back to its undated base ID.
 //

@@ -12,7 +12,6 @@ import (
 	"github.com/lajosdeme/mole/internal/config"
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/mcpserver"
-	"github.com/lajosdeme/mole/internal/pricing"
 	"github.com/lajosdeme/mole/internal/record"
 	"github.com/spf13/cobra"
 )
@@ -39,7 +38,7 @@ func newAskCmd() *cobra.Command {
 
 	c := &cobra.Command{
 		Use:   "ask <session-id> <question>",
-		Short: "Answer a follow-up question from a finished session's claims (§13)",
+		Short: "Ask a follow-up against a finished session's evidence",
 		Long: "Answers a new question from research that already happened. Retrieval and\n" +
 			"one model call over stored claims — nothing is searched or fetched, so it\n" +
 			"costs cents and takes seconds.\n\n" +
@@ -103,7 +102,7 @@ func cmdAsk(ctx context.Context, w io.Writer, o askOpts) error {
 	deps := mcpserver.Deps{
 		Store:         db,
 		LLM:           model,
-		Pricing:       pricing.NewTable(),
+		Pricing:       pricingFor(cfg),
 		MaxSessionUSD: cfg.MaxSessionUSD,
 		Log:           slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 	}

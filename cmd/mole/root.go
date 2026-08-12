@@ -113,24 +113,40 @@ func newRootCmd() *cobra.Command {
 		},
 	})
 
+	// The product surface. Development commands are added separately below, hidden
+	// from `mole --help`, so a first-time reader sees the six commands that do the
+	// work rather than the machinery that measures it.
 	root.AddCommand(
 		newResearchCmd(),
 		newAskCmd(),
 		newServeCmd(),
-		newEvalCmd(),
-		newCorpusCmd(),
+
 		newConnectCmd(),
 		newDatasetCmd(),
 		newCrossingsCmd(),
-		newPairsCmd(),
 		newMigrateCmd(),
 		newConfigCmd(),
 		newDoctorCmd(),
 		newSessionsCmd(),
 		newStatsCmd(),
 		newTraceCmd(),
-		newDevCmd(),
 	)
+
+	// Development and evaluation commands.
+	//
+	// Hidden rather than removed or build-tagged. They are how this project is
+	// measured — `eval` produces the scorecard the README quotes, `corpus` and
+	// `pairs` produce the labelled numbers behind it — so a reader checking a claim
+	// must be able to run them from a release binary. What they must not do is
+	// greet a new user: `mole dev seed` against a real database is a bad first
+	// impression, and a help screen listing eleven commands teaches nothing about
+	// which six matter.
+	for _, c := range []*cobra.Command{
+		newEvalCmd(), newCorpusCmd(), newPairsCmd(), newDevCmd(),
+	} {
+		c.Hidden = true
+		root.AddCommand(c)
+	}
 	return root
 }
 

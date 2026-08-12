@@ -33,7 +33,7 @@ func newDatasetCmd() *cobra.Command {
 
 	c := &cobra.Command{
 		Use:   "dataset <session-id>",
-		Short: "Write out a dataset session's rows (§13)",
+		Short: "Write a dataset session's rows as CSV or JSON",
 		Long: "Assembles the rows a dataset session extracted into CSV or JSON.\n\n" +
 			"The merge runs on read, not at collection time, so a later fix to the\n" +
 			"matching rules improves datasets already gathered.\n\n" +

@@ -568,12 +568,11 @@ Deliberately deferred, tracked here rather than in a scratch file:
   reasoned about in the open — every non-obvious decision carries its argument.
   Some of that is scaffolding for the build rather than for a reader, and should
   be cut once the shape has stopped moving.
-- **Separate the dev commands from the product.** `mole dev`, `corpus`, `pairs`
-  and parts of `eval` exist to build and check this thing, not to use it. They
-  should be behind a build tag or a hidden group before the CLI is presented as
-  a stable surface — an accidental `mole dev seed` against a real database is a
-  bad first impression. `cmd/fixorphans` is a one-off repair for a mistake that
-  can no longer happen and should simply go.
+- ~~**Separate the dev commands from the product.**~~ Done. `eval`, `corpus`,
+  `pairs` and `dev` are hidden rather than removed or build-tagged: they are how
+  the numbers in this document are produced, so a reader checking a claim must be
+  able to run them from a release binary — they just must not greet a new user.
+  `cmd/fixorphans` is deleted.
 - **Finish the CLA.** The licence is settled — Apache-2.0, with `LICENSE`,
   `NOTICE` and `CONTRIBUTING.md` in place. `CLA.md` is a draft outline for a
   lawyer, explicitly not legal text, and it must be replaced with reviewed text

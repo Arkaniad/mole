@@ -22,7 +22,7 @@ import (
 func newConnectCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "connect",
-		Short: "Register local data for the LocalComputeActor (§12)",
+		Short: "Register a local file or folder for analysis",
 		Long: "Registers a file, a folder of files, or an existing SQLite database\n" +
 			"as a named source that research can query.\n\n" +
 			"Rows never reach a model. Queries run through a read-only handle and\n" +

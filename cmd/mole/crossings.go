@@ -28,7 +28,7 @@ func newCrossingsCmd() *cobra.Command {
 	var verbose bool
 	c := &cobra.Command{
 		Use:   "crossings <session-id>",
-		Short: "Show what local data left this machine (§12.1)",
+		Short: "Audit what local data left this machine",
 		Long: "Every aggregate that crossed the gate for a session, plus every one that\n" +
 			"was refused or withheld.\n\n" +
 			"Refusals are the interesting half: they are the gate doing the thing it\n" +

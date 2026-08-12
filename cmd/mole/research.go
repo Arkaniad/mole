@@ -408,7 +408,7 @@ func buildWebActor(
 		}),
 		Extract: extract.New(),
 		LLM:     model,
-		Pricing: pricing.NewTable(),
+		Pricing: pricingFor(cfg),
 		Log:     log,
 		Budget: actors.Budget{
 			MaxSources:         maxSources,
@@ -439,6 +439,29 @@ func checkUSDIsEnforceable(p llm.Provider) error {
 			"would be ledgered at $0.00 and the ceiling would never bind.\n"+
 			"Use --tokens N instead, which counts what the provider reports.",
 		strings.Join(missing, ", "))
+}
+
+// pricingFor builds the rate table for the configured provider.
+//
+// A model served from loopback is registered at zero rather than left unpriced.
+// Both cost nothing in the ledger, and the difference is what mole SAYS about it:
+// an unpriced model warns on every call, which for a local run means several
+// hundred lines saying that a self-hosted model is free. That noise shares a
+// channel with the warning that matters — a HOSTED model nobody registered, where
+// zero cost really does mean the --usd ceiling cannot bind.
+//
+// Loopback only. A model served from another machine may well be metered by
+// whoever runs it.
+func pricingFor(cfg *config.Config) *pricing.Table {
+	t := pricing.NewTable()
+	if cfg != nil && pricing.IsLocalEndpoint(cfg.LLM.BaseURL) {
+		for _, m := range []string{cfg.LLM.Model, cfg.LLM.CheapModel, cfg.LLM.VerifierModel} {
+			if m != "" {
+				t.RegisterLocal(m)
+			}
+		}
+	}
+	return t
 }
 
 func userAgent() string {
