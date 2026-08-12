@@ -1,14 +1,5 @@
 # mole Contributor License Agreement
 
-> **Status: awaiting legal review.** The text below is complete and intended to be
-> signed as-is, but it has not been reviewed by a lawyer. It is adapted from the
-> Apache Software Foundation's ICLA and CCLA v2.0, which the ASF publishes for
-> exactly this kind of reuse.
->
-> Three things a reviewer should decide, each marked `[REVIEW]` where it appears:
-> the counterparty, the governing law, and whether §7's licensing commitment should
-> stay binding.
-
 There are two agreements here. Sign the **Individual** one if you are contributing
 on your own behalf. If you are contributing work your employer owns — most work
 written on company time or equipment — your employer signs the **Corporate** one
@@ -28,10 +19,7 @@ under other terms.
 # Individual Contributor License Agreement
 
 Thank you for your interest in mole (the "Project"), maintained by Lajos Deme (the
-"Maintainer"). `[REVIEW: the counterparty. If a company is to be formed for the
-hosted product, it should be named here from the first signature — moving these
-rights into it afterwards means either an assignment from the individual or
-re-collecting every signature.]`
+"Maintainer").
 
 This agreement documents the rights granted by contributors to the Maintainer. It
 is for your protection as a contributor as well as the protection of the Project
@@ -124,13 +112,6 @@ aware that would make these representations inaccurate in any respect.
 
 ### 7. The Maintainer's Commitment
 
-`[REVIEW: this section is a promise the Maintainer makes to contributors, limiting
-what §2's sublicensing right can be used for. It is included because a bare
-sublicensing grant is what contributors reasonably object to, and because it
-promises little the Apache License does not already guarantee for published
-releases. Confirm it is enforceable as drafted and that the Maintainer is content
-to be bound by it.]`
-
 The Maintainer commits that:
 
 **(a)** Every version of the Project that has been publicly released under the
@@ -147,8 +128,7 @@ in the release in which it first appears.
 ### 8. Governing Law
 
 This agreement is governed by the laws of England and Wales, without regard to its
-conflict of law provisions. `[REVIEW: jurisdiction, to match the Maintainer's
-place of business.]`
+conflict of law provisions. 
 
 ### 9. Acceptance
 
@@ -231,26 +211,3 @@ Date:
 | | | |
 
 ---
-
-## Notes for the reviewer
-
-Beyond the three `[REVIEW]` markers, four points of intent that the drafting is
-meant to serve:
-
-1. **A grant, not an assignment.** Contributors keep their copyright and may reuse
-   their own work anywhere, under any license. §2 gives the Maintainer a broad
-   license including the right to sublicense; it does not transfer ownership.
-2. **The sublicensing right is the point of the agreement.** Everything else in the
-   Maintainer's plan — hosting mole commercially, selling bundled inference, a
-   proprietary team edition built on this core — is already permitted by Apache-2.0
-   without any CLA. The only thing §2 adds is the ability to release *future*
-   versions under different terms if the project ever needs to respond to being
-   packaged as a service by someone else.
-3. **§7 is the price of §2.** A bare sublicensing grant is what contributors object
-   to, reasonably. §7 bounds it: releases already made stay Apache-2.0, changes
-   apply forward only, and a contribution ships under Apache-2.0 in the release it
-   first appears in. Confirm this is drafted as a binding covenant rather than a
-   statement of intent.
-4. **Patent defensive termination** (§3, second paragraph) mirrors Apache-2.0 §3, so
-   a contributor is not agreeing to something broader than the license the code
-   ships under.
