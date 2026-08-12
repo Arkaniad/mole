@@ -487,21 +487,41 @@ Stated plainly rather than left to be discovered:
   indistinguishable from a judge error. Re-dumping at a raised `--max-candidates`
   separates those two, and costs nothing now the cassettes exist.
 
-  `mole pairs judge` re-judges the same pairs with a second model without touching
-  the graph, so inter-judge agreement is available label-free as a cross-check. Two
-  numbers came out of doing that, and both change how any of this should be read:
+  `mole pairs judge` re-judges the same pairs without touching the graph, which
+  makes reproducibility measurable without any labels. Doing that produced the most
+  uncomfortable number in this document.
 
-  - **The adjudicator agrees with itself 80% of the time.** Same model, same ten
-    pairs, two runs, twice over: 8 of 10 verdicts match and both flips change the
-    graph. `--batch 1` gives the same 80%, so this is sampling nondeterminism rather
-    than batch neighbours. A precision figure over the 115 pairs therefore describes
-    one draw, and a re-run would move it.
-  - **Re-judging disagrees with the stored graph on 6 to 9 pairs out of 10** — far
-    more than run-to-run noise explains. The graph path and the `pairs judge` path
-    are therefore not equivalent, which undermines what `judge` is for: comparing a
-    different MODEL on the same pairs measures the path as well. Cause not yet
-    isolated. **Flagged rather than papered over** — it is the reason no
-    adjudicator number is quoted as settled anywhere in this document.
+  **The adjudicator's verdicts depend on how it was called, not only on the pair.**
+  All 261 relation edges the corpus produced, re-judged by the same model that built
+  them:
+
+  | | reproduces the stored verdict | answers `neither` |
+  |---|---|---|
+  | one pair per call (`--batch 1`) | **35%** | 63% |
+  | eight per call (`--batch 8`, the default the graph was built at) | **54%** | 44% |
+
+  The two arms agree with each other 69% of the time. Two things follow, and neither
+  is comfortable:
+
+  - **Batching changes the answer.** Nineteen points of reproduction and nineteen
+    points of `neither` move with batch size alone. The adjudication prompt already
+    warns that "`neither` is the right answer for most pairs" precisely to resist
+    this, and the warning is not sufficient — the more pairs share a call, the more
+    relations the model finds.
+  - **Even at the batch size the graph was built at, only 54% of its own edges
+    reproduce.** Half the contradiction and duplicate edges in a mole graph would not
+    be there if the same model judged the same pairs again.
+
+  Both arms are recorded in `testdata/pairs/batch-size-arms.json`, written *before*
+  any human label existed so neither can be tuned to them. Once the labels are in,
+  scoring both arms answers the question that matters: not which is more
+  reproducible, but which is more **accurate**. If one-per-call is both less
+  relation-happy and more accurate, batching is a cost optimisation that has been
+  quietly buying wrong answers, and `DefaultBatchSize` should change.
+
+  Until then, no adjudicator number in this document is quoted as settled, and the
+  disagreement rate above should be read as "the rate at batch 8" rather than as a
+  property of the claims.
 
   The full §14.2 corpus is still deliberately not being built. Claim-precision
   labelling is ~2400 human judgements; if that number is ever needed, sample 200 and

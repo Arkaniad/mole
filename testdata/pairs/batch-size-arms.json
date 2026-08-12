@@ -1,0 +1,2625 @@
+{
+ "what": "the graph's own pairs re-judged by the SAME model at two batch sizes, recorded before any human label existed so neither arm can be tuned to the labels",
+ "model": "deepseek-chat (deepseek-v4-flash)",
+ "measured": {
+  "pairs": 261,
+  "batch1_reproduces_stored": "35%",
+  "batch8_reproduces_stored": "54%",
+  "batch1_says_neither": "63%",
+  "batch8_says_neither": "44%",
+  "batch1_agrees_with_batch8": "69%"
+ },
+ "how_to_use": "label these the same way as contradictions.json, then score each arm against the labels: whichever is more ACCURATE should be the default batch size",
+ "pairs": [
+  {
+   "pair": "c_06FZ39AAYCCWW30R|c_06FZ39AAYDRR7KX4",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The total estimated global influenza pandemic excess mortality for 1918\u20131919, excluding British India, was 11.24 million deaths.",
+   "b": "The total estimated global influenza pandemic excess mortality for 1918\u20131919, including British India, was 17.41 million deaths.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYCVP48EC|c_06FZ39AAYE482G2H",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The 1918 flu pandemic killed more than 50 million people worldwide, as stated in the article's title.",
+   "b": "The death toll of the 1918 Spanish flu pandemic is unknown but generally considered to be more than 50 million people worldwide.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYCVP48EC|c_06FZ39AAYH2TY6XV",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The 1918 flu pandemic killed more than 50 million people worldwide, as stated in the article's title.",
+   "b": "The more recent study by Spreeuwenberg et al. (2018) concluded that earlier estimates have been too high, with their own estimate being 17.4 million deaths.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYCVP48EC|c_06FZ39AAYJ1C5R55",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The 1918 flu pandemic killed more than 50 million people worldwide, as stated in the article's title.",
+   "b": "The number of deaths from the 1918 influenza pandemic was estimated to be at least 50 million worldwide.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYCVP48EC|c_06FZ39AAYKR9SRXH",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The 1918 flu pandemic killed more than 50 million people worldwide, as stated in the article's title.",
+   "b": "The 1918 influenza pandemic killed between 20 and 50 million people, making it one of the deadliest natural disasters in human history.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYCZD9DDR|c_06FZ39AAYDKEQ2KB",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The best estimate for global influenza pandemic deaths in 1918, including India, is 15 million deaths.",
+   "b": "Recent estimates for the global death toll of the 1918 influenza pandemic range from 50 to 100 million.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYCZD9DDR|c_06FZ39AAYDRR7KX4",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The best estimate for global influenza pandemic deaths in 1918, including India, is 15 million deaths.",
+   "b": "The total estimated global influenza pandemic excess mortality for 1918\u20131919, including British India, was 17.41 million deaths.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYCZD9DDR|c_06FZ39AAYEZ011YX",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The best estimate for global influenza pandemic deaths in 1918, including India, is 15 million deaths.",
+   "b": "The total estimated global death toll for the 1918\u20131919 influenza pandemic, including India, is 17.4 million deaths.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYCZD9DDR|c_06FZ39AAYJ8K922B",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The best estimate for global influenza pandemic deaths in 1918, including India, is 15 million deaths.",
+   "b": "An infographic in the document states that estimated global deaths from the 1918-19 influenza pandemic ranged from 25 to 50 million.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYDKEQ2KB|c_06FZ39AAYEM1ZV37",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "Recent estimates for the global death toll of the 1918 influenza pandemic range from 50 to 100 million.",
+   "b": "Around 50 to 100 million people were killed worldwide by the 1918 influenza pandemic, according to Amesh Adalja.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYDKEQ2KB|c_06FZ39AAYEYR8NWJ",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "Recent estimates for the global death toll of the 1918 influenza pandemic range from 50 to 100 million.",
+   "b": "Recent estimates have suggested that there were 50 million to 100 million deaths worldwide from the 1918 influenza pandemic.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYDKEQ2KB|c_06FZ39AAYEZ011YX",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "Recent estimates for the global death toll of the 1918 influenza pandemic range from 50 to 100 million.",
+   "b": "The total estimated global death toll for the 1918\u20131919 influenza pandemic, including India, is 17.4 million deaths.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYDKEQ2KB|c_06FZ39AAYG6Q4XJ2",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "Recent estimates for the global death toll of the 1918 influenza pandemic range from 50 to 100 million.",
+   "b": "Older estimates say the 1918 influenza pandemic killed 40\u201350 million people, while current estimates say 50\u2013100 million people worldwide were killed.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYDKEQ2KB|c_06FZ39AAYH2TY6XV",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "Recent estimates for the global death toll of the 1918 influenza pandemic range from 50 to 100 million.",
+   "b": "The more recent study by Spreeuwenberg et al. (2018) concluded that earlier estimates have been too high, with their own estimate being 17.4 million deaths.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYDKEQ2KB|c_06FZ39AAYJ1C5R55",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "Recent estimates for the global death toll of the 1918 influenza pandemic range from 50 to 100 million.",
+   "b": "The number of deaths from the 1918 influenza pandemic was estimated to be at least 50 million worldwide.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYDKEQ2KB|c_06FZ39AAYJ8K922B",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "Recent estimates for the global death toll of the 1918 influenza pandemic range from 50 to 100 million.",
+   "b": "An infographic in the document states that estimated global deaths from the 1918-19 influenza pandemic ranged from 25 to 50 million.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYDR89Q32|c_06FZ39AAYGEHKQAK",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The death rate from the 1918 flu pandemic was somewhere between 2 and 2.5 percent, according to history professor Nancy Bristow.",
+   "b": "The death rate from the 1918 influenza pandemic was about 1 to 2 percent globally, according to Amesh Adalja.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYDRR7KX4|c_06FZ39AAYEZ011YX",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The total estimated global influenza pandemic excess mortality for 1918\u20131919, including British India, was 17.41 million deaths.",
+   "b": "The total estimated global death toll for the 1918\u20131919 influenza pandemic, including India, is 17.4 million deaths.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYDRR7KX4|c_06FZ39AAYJE2Z161",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The total estimated global influenza pandemic excess mortality for 1918\u20131919, including British India, was 17.41 million deaths.",
+   "b": "The influenza pandemic of 1918\u20131919 resulted in an estimated 25 million deaths.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYE482G2H|c_06FZ39AAYEYR8NWJ",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The death toll of the 1918 Spanish flu pandemic is unknown but generally considered to be more than 50 million people worldwide.",
+   "b": "Recent estimates have suggested that there were 50 million to 100 million deaths worldwide from the 1918 influenza pandemic.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYE482G2H|c_06FZ39AAYJ1C5R55",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The death toll of the 1918 Spanish flu pandemic is unknown but generally considered to be more than 50 million people worldwide.",
+   "b": "The number of deaths from the 1918 influenza pandemic was estimated to be at least 50 million worldwide.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYEFBDM13|c_06FZ39AAYJGNXK79",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The 1918 influenza pandemic killed 675,000 people in the United States.",
+   "b": "About 675,000 deaths from the 1918 influenza pandemic occurred in the United States.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYEM1ZV37|c_06FZ39AAYEYR8NWJ",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "Around 50 to 100 million people were killed worldwide by the 1918 influenza pandemic, according to Amesh Adalja.",
+   "b": "Recent estimates have suggested that there were 50 million to 100 million deaths worldwide from the 1918 influenza pandemic.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYEM1ZV37|c_06FZ39AAYKR9SRXH",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "Around 50 to 100 million people were killed worldwide by the 1918 influenza pandemic, according to Amesh Adalja.",
+   "b": "The 1918 influenza pandemic killed between 20 and 50 million people, making it one of the deadliest natural disasters in human history.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYEYR8NWJ|c_06FZ39AAYG6Q4XJ2",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "Recent estimates have suggested that there were 50 million to 100 million deaths worldwide from the 1918 influenza pandemic.",
+   "b": "Older estimates say the 1918 influenza pandemic killed 40\u201350 million people, while current estimates say 50\u2013100 million people worldwide were killed.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYEYR8NWJ|c_06FZ39AAYJ1C5R55",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "Recent estimates have suggested that there were 50 million to 100 million deaths worldwide from the 1918 influenza pandemic.",
+   "b": "The number of deaths from the 1918 influenza pandemic was estimated to be at least 50 million worldwide.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYEZ011YX|c_06FZ39AAYH2TY6XV",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The total estimated global death toll for the 1918\u20131919 influenza pandemic, including India, is 17.4 million deaths.",
+   "b": "The more recent study by Spreeuwenberg et al. (2018) concluded that earlier estimates have been too high, with their own estimate being 17.4 million deaths.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYEZ011YX|c_06FZ39AAYJ8K922B",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The total estimated global death toll for the 1918\u20131919 influenza pandemic, including India, is 17.4 million deaths.",
+   "b": "An infographic in the document states that estimated global deaths from the 1918-19 influenza pandemic ranged from 25 to 50 million.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYEZ011YX|c_06FZ39AAYJE2Z161",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The total estimated global death toll for the 1918\u20131919 influenza pandemic, including India, is 17.4 million deaths.",
+   "b": "The influenza pandemic of 1918\u20131919 resulted in an estimated 25 million deaths.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYFRG0YSH|c_06FZ39AAYGQG917T",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "One-third of the world's population became infected with the Spanish flu pandemic in 1918.",
+   "b": "The 1918 influenza pandemic caused about 500 million infections, or one-third of the world's population at the time.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYG6Q4XJ2|c_06FZ39AAYJ1C5R55",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "Older estimates say the 1918 influenza pandemic killed 40\u201350 million people, while current estimates say 50\u2013100 million people worldwide were killed.",
+   "b": "The number of deaths from the 1918 influenza pandemic was estimated to be at least 50 million worldwide.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYG6Q4XJ2|c_06FZ39AAYKR9SRXH",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "Older estimates say the 1918 influenza pandemic killed 40\u201350 million people, while current estimates say 50\u2013100 million people worldwide were killed.",
+   "b": "The 1918 influenza pandemic killed between 20 and 50 million people, making it one of the deadliest natural disasters in human history.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYGEHKQAK|c_06FZ39AAYHX42VX3",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The death rate from the 1918 influenza pandemic was about 1 to 2 percent globally, according to Amesh Adalja.",
+   "b": "Some researchers have estimated the death rate from the 1918 influenza pandemic to be as high as 10 to 20 percent.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYGEHKQAK|c_06FZ39AAYJNP5X0A",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The death rate from the 1918 influenza pandemic was about 1 to 2 percent globally, according to Amesh Adalja.",
+   "b": "If the Spanish flu death toll was 100 million, as Johnson and Mueller suggest, then the global death rate would have been 5.4%.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYGFQ6R6F|c_06FZ39AAYJ1C5R55",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The widely cited study by Johnson and Mueller (2002) arrives at a very high estimate of at least 50 million global deaths from the Spanish flu, but the authors suggest that this could be an underestimation and that the true death toll was as high as 100 million.",
+   "b": "The number of deaths from the 1918 influenza pandemic was estimated to be at least 50 million worldwide.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYHX42VX3|c_06FZ39AAYKNFNE5H",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "Some researchers have estimated the death rate from the 1918 influenza pandemic to be as high as 10 to 20 percent.",
+   "b": "The global mortality rate from the 1918/1919 pandemic is not known, but an estimated 10% to 20% of those who were infected died.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYJ1C5R55|c_06FZ39AAYJGNXK79",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The number of deaths from the 1918 influenza pandemic was estimated to be at least 50 million worldwide.",
+   "b": "About 675,000 deaths from the 1918 influenza pandemic occurred in the United States.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39AAYJE2Z161|c_06FZ39AAYK4NME1T",
+   "session": "s_06FZ395TJ4Z4K25W",
+   "a": "The influenza pandemic of 1918\u20131919 resulted in an estimated 25 million deaths.",
+   "b": "Some researchers have projected that the 1918\u20131919 influenza pandemic caused as many as 40\u201350 million deaths.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQX95NSAN|c_06FZ39QKQZFV821H",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The 2024 edition of the United Nations' World Population Prospects brought the peak of world population forward to 2084, with the population topping at 10.3 billion.",
+   "b": "The 2024 edition of the UN's World Population Prospects brought the peak forward to 2084, with the population topping at 10.3 billion.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQX95NSAN|c_06FZ39QKR0GZSBJ3",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The 2024 edition of the United Nations' World Population Prospects brought the peak of world population forward to 2084, with the population topping at 10.3 billion.",
+   "b": "The UN's 2022 medium-variant projections indicate the world population, 8 billion as of 2023, would peak around the year 2084 at about 10.3 billion and then start a slow decline.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQX95NSAN|c_06FZ39QKR0MN9FY9",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The 2024 edition of the United Nations' World Population Prospects brought the peak of world population forward to 2084, with the population topping at 10.3 billion.",
+   "b": "The UN Population Division report of 2022 projects world population to start a slow decline to about 10.3 billion in 2100.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQX95NSAN|c_06FZ39QKR0NJWCBS",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The 2024 edition of the United Nations' World Population Prospects brought the peak of world population forward to 2084, with the population topping at 10.3 billion.",
+   "b": "The UN's 2024 medium-variant projection has the world population peaking at 10.3 billion in 2084 and declining to 10.2 billion in 2100.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQX95NSAN|c_06FZ39QKR242ZY19",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The 2024 edition of the United Nations' World Population Prospects brought the peak of world population forward to 2084, with the population topping at 10.3 billion.",
+   "b": "The UN projected that the world population would peak around the year 2084 at about 10.3 billion.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQXWAAK1H|c_06FZ39QKQZFV821H",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The 2022 revision of the UN's World Population Prospects report projected a population peak of 10.4 billion in 2086 in the medium scenario.",
+   "b": "The 2024 edition of the UN's World Population Prospects brought the peak forward to 2084, with the population topping at 10.3 billion.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQXWAAK1H|c_06FZ39QKQZZJS6CW",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The 2022 revision of the UN's World Population Prospects report projected a population peak of 10.4 billion in 2086 in the medium scenario.",
+   "b": "The UN Population Division report of 2022 projects world population to peak at 10.4 billion in 2086.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQXWAAK1H|c_06FZ39QKR26PVMCG",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The 2022 revision of the UN's World Population Prospects report projected a population peak of 10.4 billion in 2086 in the medium scenario.",
+   "b": "The UN Population Division report of 2022 projects world population to peak at 10.4 billion in 2086.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQXWAAK1H|c_06FZ39QKR2KMGAC7",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The 2022 revision of the UN's World Population Prospects report projected a population peak of 10.4 billion in 2086 in the medium scenario.",
+   "b": "In its 2022 publication, the UN estimated that, in its medium scenario, the global population would peak in 2086 at around 10.4 billion people.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQZFV821H|c_06FZ39QKR0GZSBJ3",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The 2024 edition of the UN's World Population Prospects brought the peak forward to 2084, with the population topping at 10.3 billion.",
+   "b": "The UN's 2022 medium-variant projections indicate the world population, 8 billion as of 2023, would peak around the year 2084 at about 10.3 billion and then start a slow decline.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQZFV821H|c_06FZ39QKR0MN9FY9",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The 2024 edition of the UN's World Population Prospects brought the peak forward to 2084, with the population topping at 10.3 billion.",
+   "b": "The UN Population Division report of 2022 projects world population to start a slow decline to about 10.3 billion in 2100.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQZFV821H|c_06FZ39QKR0NJWCBS",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The 2024 edition of the UN's World Population Prospects brought the peak forward to 2084, with the population topping at 10.3 billion.",
+   "b": "The UN's 2024 medium-variant projection has the world population peaking at 10.3 billion in 2084 and declining to 10.2 billion in 2100.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQZFV821H|c_06FZ39QKR242ZY19",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The 2024 edition of the UN's World Population Prospects brought the peak forward to 2084, with the population topping at 10.3 billion.",
+   "b": "The UN projected that the world population would peak around the year 2084 at about 10.3 billion.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQZFV821H|c_06FZ39QKR26PVMCG",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The 2024 edition of the UN's World Population Prospects brought the peak forward to 2084, with the population topping at 10.3 billion.",
+   "b": "The UN Population Division report of 2022 projects world population to peak at 10.4 billion in 2086.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQZZJS6CW|c_06FZ39QKR242ZY19",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN Population Division report of 2022 projects world population to peak at 10.4 billion in 2086.",
+   "b": "The UN projected that the world population would peak around the year 2084 at about 10.3 billion.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQZZJS6CW|c_06FZ39QKR26PVMCG",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN Population Division report of 2022 projects world population to peak at 10.4 billion in 2086.",
+   "b": "The UN Population Division report of 2022 projects world population to peak at 10.4 billion in 2086.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQZZJS6CW|c_06FZ39QKR2KMGAC7",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN Population Division report of 2022 projects world population to peak at 10.4 billion in 2086.",
+   "b": "In its 2022 publication, the UN estimated that, in its medium scenario, the global population would peak in 2086 at around 10.4 billion people.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKQZZJS6CW|c_06FZ39QKR2WVB7AJ",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN Population Division report of 2022 projects world population to peak at 10.4 billion in 2086.",
+   "b": "The UN's 2022 medium-variant projection has the world population peaking at 10.4 billion in 2086 and declining to 10.4 billion in 2100.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0B1H5PY|c_06FZ39QKR0MN9FY9",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN Medium Variant projects a world population of 10.9 billion in 2100.",
+   "b": "The UN Population Division report of 2022 projects world population to start a slow decline to about 10.3 billion in 2100.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0B1H5PY|c_06FZ39QKR0NJWCBS",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN Medium Variant projects a world population of 10.9 billion in 2100.",
+   "b": "The UN's 2024 medium-variant projection has the world population peaking at 10.3 billion in 2084 and declining to 10.2 billion in 2100.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0B1H5PY|c_06FZ39QKR0VQ0YBF",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN Medium Variant projects a world population of 10.9 billion in 2100.",
+   "b": "The UN's medium-variant projections show the world population peaking at around 10.18 billion in 2100, but the document does not specify a peak year or size within the 21st century.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0B1H5PY|c_06FZ39QKR1H8WY8P",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN Medium Variant projects a world population of 10.9 billion in 2100.",
+   "b": "The UN's projections to 2100 range from 6.8 billion (low) to 10.9 billion (medium) to 16.6 billion (high).",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0B1H5PY|c_06FZ39QKR2WVB7AJ",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN Medium Variant projects a world population of 10.9 billion in 2100.",
+   "b": "The UN's 2022 medium-variant projection has the world population peaking at 10.4 billion in 2086 and declining to 10.4 billion in 2100.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0CNF5G1|c_06FZ39QKR0QG5PMQ",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN's 2012 Revision projects world population in 2050 under the medium variant at 9.6 billion.",
+   "b": "The United Nations' 2012 Revision projection puts world population at 9.6 billion in 2050, up from the 9.3 billion projected in the 2010 Revision.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0CNF5G1|c_06FZ39QKR3YNDBP5",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN's 2012 Revision projects world population in 2050 under the medium variant at 9.6 billion.",
+   "b": "The United Nations Population Division's 2012 Revision projects a global population of 9.6 billion in 2050 under the medium variant, up from 9.3 billion in the 2010 Revision.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0GZSBJ3|c_06FZ39QKR0NJWCBS",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN's 2022 medium-variant projections indicate the world population, 8 billion as of 2023, would peak around the year 2084 at about 10.3 billion and then start a slow decline.",
+   "b": "The UN's 2024 medium-variant projection has the world population peaking at 10.3 billion in 2084 and declining to 10.2 billion in 2100.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0GZSBJ3|c_06FZ39QKR0VQ0YBF",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN's 2022 medium-variant projections indicate the world population, 8 billion as of 2023, would peak around the year 2084 at about 10.3 billion and then start a slow decline.",
+   "b": "The UN's medium-variant projections show the world population peaking at around 10.18 billion in 2100, but the document does not specify a peak year or size within the 21st century.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0GZSBJ3|c_06FZ39QKR242ZY19",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN's 2022 medium-variant projections indicate the world population, 8 billion as of 2023, would peak around the year 2084 at about 10.3 billion and then start a slow decline.",
+   "b": "The UN projected that the world population would peak around the year 2084 at about 10.3 billion.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0GZSBJ3|c_06FZ39QKR2KMGAC7",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN's 2022 medium-variant projections indicate the world population, 8 billion as of 2023, would peak around the year 2084 at about 10.3 billion and then start a slow decline.",
+   "b": "In its 2022 publication, the UN estimated that, in its medium scenario, the global population would peak in 2086 at around 10.4 billion people.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0GZSBJ3|c_06FZ39QKR2WVB7AJ",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN's 2022 medium-variant projections indicate the world population, 8 billion as of 2023, would peak around the year 2084 at about 10.3 billion and then start a slow decline.",
+   "b": "The UN's 2022 medium-variant projection has the world population peaking at 10.4 billion in 2086 and declining to 10.4 billion in 2100.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0K9XYVF|c_06FZ39QKR0MN9FY9",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The world population is projected to be 9,664 million (9.664 billion) in 2050 and 10,180 million (10.18 billion) in 2100.",
+   "b": "The UN Population Division report of 2022 projects world population to start a slow decline to about 10.3 billion in 2100.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0K9XYVF|c_06FZ39QKR0VQ0YBF",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The world population is projected to be 9,664 million (9.664 billion) in 2050 and 10,180 million (10.18 billion) in 2100.",
+   "b": "The UN's medium-variant projections show the world population peaking at around 10.18 billion in 2100, but the document does not specify a peak year or size within the 21st century.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0K9XYVF|c_06FZ39QKR2WVB7AJ",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The world population is projected to be 9,664 million (9.664 billion) in 2050 and 10,180 million (10.18 billion) in 2100.",
+   "b": "The UN's 2022 medium-variant projection has the world population peaking at 10.4 billion in 2086 and declining to 10.4 billion in 2100.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0MN9FY9|c_06FZ39QKR242ZY19",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN Population Division report of 2022 projects world population to start a slow decline to about 10.3 billion in 2100.",
+   "b": "The UN projected that the world population would peak around the year 2084 at about 10.3 billion.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0MN9FY9|c_06FZ39QKR26PVMCG",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN Population Division report of 2022 projects world population to start a slow decline to about 10.3 billion in 2100.",
+   "b": "The UN Population Division report of 2022 projects world population to peak at 10.4 billion in 2086.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0MN9FY9|c_06FZ39QKR2WVB7AJ",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN Population Division report of 2022 projects world population to start a slow decline to about 10.3 billion in 2100.",
+   "b": "The UN's 2022 medium-variant projection has the world population peaking at 10.4 billion in 2086 and declining to 10.4 billion in 2100.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0NJWCBS|c_06FZ39QKR0VQ0YBF",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN's 2024 medium-variant projection has the world population peaking at 10.3 billion in 2084 and declining to 10.2 billion in 2100.",
+   "b": "The UN's medium-variant projections show the world population peaking at around 10.18 billion in 2100, but the document does not specify a peak year or size within the 21st century.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0NJWCBS|c_06FZ39QKR242ZY19",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN's 2024 medium-variant projection has the world population peaking at 10.3 billion in 2084 and declining to 10.2 billion in 2100.",
+   "b": "The UN projected that the world population would peak around the year 2084 at about 10.3 billion.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0NJWCBS|c_06FZ39QKR2WVB7AJ",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN's 2024 medium-variant projection has the world population peaking at 10.3 billion in 2084 and declining to 10.2 billion in 2100.",
+   "b": "The UN's 2022 medium-variant projection has the world population peaking at 10.4 billion in 2086 and declining to 10.4 billion in 2100.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0QG5PMQ|c_06FZ39QKR3YNDBP5",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The United Nations' 2012 Revision projection puts world population at 9.6 billion in 2050, up from the 9.3 billion projected in the 2010 Revision.",
+   "b": "The United Nations Population Division's 2012 Revision projects a global population of 9.6 billion in 2050 under the medium variant, up from 9.3 billion in the 2010 Revision.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0VQ0YBF|c_06FZ39QKR242ZY19",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN's medium-variant projections show the world population peaking at around 10.18 billion in 2100, but the document does not specify a peak year or size within the 21st century.",
+   "b": "The UN projected that the world population would peak around the year 2084 at about 10.3 billion.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR0VQ0YBF|c_06FZ39QKR2WVB7AJ",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN's medium-variant projections show the world population peaking at around 10.18 billion in 2100, but the document does not specify a peak year or size within the 21st century.",
+   "b": "The UN's 2022 medium-variant projection has the world population peaking at 10.4 billion in 2086 and declining to 10.4 billion in 2100.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR1H8WY8P|c_06FZ39QKR2WVB7AJ",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN's projections to 2100 range from 6.8 billion (low) to 10.9 billion (medium) to 16.6 billion (high).",
+   "b": "The UN's 2022 medium-variant projection has the world population peaking at 10.4 billion in 2086 and declining to 10.4 billion in 2100.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR242ZY19|c_06FZ39QKR26PVMCG",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN projected that the world population would peak around the year 2084 at about 10.3 billion.",
+   "b": "The UN Population Division report of 2022 projects world population to peak at 10.4 billion in 2086.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR242ZY19|c_06FZ39QKR2KMGAC7",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN projected that the world population would peak around the year 2084 at about 10.3 billion.",
+   "b": "In its 2022 publication, the UN estimated that, in its medium scenario, the global population would peak in 2086 at around 10.4 billion people.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ39QKR26PVMCG|c_06FZ39QKR2KMGAC7",
+   "session": "s_06FZ39KQHSXAWRCS",
+   "a": "The UN Population Division report of 2022 projects world population to peak at 10.4 billion in 2086.",
+   "b": "In its 2022 publication, the UN estimated that, in its medium scenario, the global population would peak in 2086 at around 10.4 billion people.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQR1KKRKR|c_06FZ3A3SQTFVCH2S",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Bitcoin mining drew approximately 138 TWh of electricity, representing approximately 0.54% of global electricity consumption.",
+   "b": "At approximately 138 TWh, Bitcoin's annual electricity consumption is comparable to that of Poland or Argentina and represents roughly 0.5% of global electricity production.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQR1KKRKR|c_06FZ3A3SQV6D4SPV",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Bitcoin mining drew approximately 138 TWh of electricity, representing approximately 0.54% of global electricity consumption.",
+   "b": "The Cambridge Centre for Alternative Finance estimates Bitcoin's annual electricity consumption at 138 TWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQR1KKRKR|c_06FZ3A3SQV7A4DQ1",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Bitcoin mining drew approximately 138 TWh of electricity, representing approximately 0.54% of global electricity consumption.",
+   "b": "Cambridge Centre for Alternative Finance researchers estimated Bitcoin mining at approximately 138 TWh annually in their April 2025 industry report.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQR1KKRKR|c_06FZ3A3SQXXSZPMV",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Bitcoin mining drew approximately 138 TWh of electricity, representing approximately 0.54% of global electricity consumption.",
+   "b": "The Cambridge Digital Mining Industry Report (April 2025) separately estimated Bitcoin consumption at about 138 TWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQR1KKRKR|c_06FZ3A3SQZ44TG5Z",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Bitcoin mining drew approximately 138 TWh of electricity, representing approximately 0.54% of global electricity consumption.",
+   "b": "The annualized energy consumption of Bitcoin in 2025 is estimated at approximately 173 TWh.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQR1KKRKR|c_06FZ3A3SQZJ19HD5",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Bitcoin mining drew approximately 138 TWh of electricity, representing approximately 0.54% of global electricity consumption.",
+   "b": "The Cambridge Centre for Alternative Finance (CCAF) study estimates the Bitcoin network's annual electricity consumption at 138 TWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQREK3BZ6|c_06FZ3A3SQRQRS6VV",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Cambridge Centre for Alternative Finance (CCAF) estimates Bitcoin's annual electricity consumption at approximately 138 TWh as of early 2025.",
+   "b": "Digiconomist's most recent live estimate puts Bitcoin's annual electricity consumption at 204.44 TWh as of May 2026.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQREK3BZ6|c_06FZ3A3SQV6D4SPV",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Cambridge Centre for Alternative Finance (CCAF) estimates Bitcoin's annual electricity consumption at approximately 138 TWh as of early 2025.",
+   "b": "The Cambridge Centre for Alternative Finance estimates Bitcoin's annual electricity consumption at 138 TWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQREK3BZ6|c_06FZ3A3SQV7A4DQ1",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Cambridge Centre for Alternative Finance (CCAF) estimates Bitcoin's annual electricity consumption at approximately 138 TWh as of early 2025.",
+   "b": "Cambridge Centre for Alternative Finance researchers estimated Bitcoin mining at approximately 138 TWh annually in their April 2025 industry report.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQREK3BZ6|c_06FZ3A3SQWCSP7YQ",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Cambridge Centre for Alternative Finance (CCAF) estimates Bitcoin's annual electricity consumption at approximately 138 TWh as of early 2025.",
+   "b": "In 2025, Bitcoin consumes about 173 TWh of electricity per year.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQREK3BZ6|c_06FZ3A3SQXXSZPMV",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Cambridge Centre for Alternative Finance (CCAF) estimates Bitcoin's annual electricity consumption at approximately 138 TWh as of early 2025.",
+   "b": "The Cambridge Digital Mining Industry Report (April 2025) separately estimated Bitcoin consumption at about 138 TWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQREK3BZ6|c_06FZ3A3SQYBP1ZM6",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Cambridge Centre for Alternative Finance (CCAF) estimates Bitcoin's annual electricity consumption at approximately 138 TWh as of early 2025.",
+   "b": "As of early 2025, CBECI reported Bitcoin network power demand of roughly 20 GW and annualised electricity consumption of roughly 175 TWh.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQREK3BZ6|c_06FZ3A3SQZ6E04J0",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Cambridge Centre for Alternative Finance (CCAF) estimates Bitcoin's annual electricity consumption at approximately 138 TWh as of early 2025.",
+   "b": "Cambridge CCAF's annual best-guess energy estimate for Bitcoin in 2025 is 95.5 TWh, with a daily power demand of about 13 GW.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQREK3BZ6|c_06FZ3A3SQZJ19HD5",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Cambridge Centre for Alternative Finance (CCAF) estimates Bitcoin's annual electricity consumption at approximately 138 TWh as of early 2025.",
+   "b": "The Cambridge Centre for Alternative Finance (CCAF) study estimates the Bitcoin network's annual electricity consumption at 138 TWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQRM2Y14M|c_06FZ3A3SQY6RNABY",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "52.4% of Bitcoin mining electricity now comes from zero-emission sources, up from 37.6% in 2022.",
+   "b": "The CCAF study found that sustainable energy use by the Bitcoin mining industry has reached 52.4%, up from 37.6% in 2022.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQRQRS6VV|c_06FZ3A3SQS0Y7ZZ0",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Digiconomist's most recent live estimate puts Bitcoin's annual electricity consumption at 204.44 TWh as of May 2026.",
+   "b": "Digiconomist's Bitcoin Energy Consumption Index reports the live network at 204.44 TWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQRQRS6VV|c_06FZ3A3SQYMHD9DS",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Digiconomist's most recent live estimate puts Bitcoin's annual electricity consumption at 204.44 TWh as of May 2026.",
+   "b": "Digiconomist's live estimate of annualised Bitcoin electricity consumption is 204.44 TWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQRQRS6VV|c_06FZ3A3SQZJ19HD5",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Digiconomist's most recent live estimate puts Bitcoin's annual electricity consumption at 204.44 TWh as of May 2026.",
+   "b": "The Cambridge Centre for Alternative Finance (CCAF) study estimates the Bitcoin network's annual electricity consumption at 138 TWh.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQS0Y7ZZ0|c_06FZ3A3SQYBP1ZM6",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Digiconomist's Bitcoin Energy Consumption Index reports the live network at 204.44 TWh.",
+   "b": "As of early 2025, CBECI reported Bitcoin network power demand of roughly 20 GW and annualised electricity consumption of roughly 175 TWh.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQS0Y7ZZ0|c_06FZ3A3SQYMHD9DS",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Digiconomist's Bitcoin Energy Consumption Index reports the live network at 204.44 TWh.",
+   "b": "Digiconomist's live estimate of annualised Bitcoin electricity consumption is 204.44 TWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQSZC5VNK|c_06FZ3A3SQZJ19HD5",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The U.S. Energy Information Administration estimated annual electricity use from cryptocurrency mining at 25 TWh to 91 TWh in 2023.",
+   "b": "The Cambridge Centre for Alternative Finance (CCAF) study estimates the Bitcoin network's annual electricity consumption at 138 TWh.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQT1FWHJK|c_06FZ3A3SQWTVYCQ1",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Bitcoin's network emissions are estimated at 39.8 MtCO2e.",
+   "b": "The CCAF study estimates the Bitcoin network's emissions at 39.8 megatonnes of CO2 equivalent.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQT1FWHJK|c_06FZ3A3SQYTQ20P1",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Bitcoin's network emissions are estimated at 39.8 MtCO2e.",
+   "b": "The Bitcoin network's total annual draw is estimated between 150 and 173 TWh.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQTFVCH2S|c_06FZ3A3SQYBP1ZM6",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "At approximately 138 TWh, Bitcoin's annual electricity consumption is comparable to that of Poland or Argentina and represents roughly 0.5% of global electricity production.",
+   "b": "As of early 2025, CBECI reported Bitcoin network power demand of roughly 20 GW and annualised electricity consumption of roughly 175 TWh.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQTFVCH2S|c_06FZ3A3SQYQN888S",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "At approximately 138 TWh, Bitcoin's annual electricity consumption is comparable to that of Poland or Argentina and represents roughly 0.5% of global electricity production.",
+   "b": "The CCAF study estimates the Bitcoin network's annual electricity consumption at roughly 0.5% of global usage.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQTFVCH2S|c_06FZ3A3SQZ44TG5Z",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "At approximately 138 TWh, Bitcoin's annual electricity consumption is comparable to that of Poland or Argentina and represents roughly 0.5% of global electricity production.",
+   "b": "The annualized energy consumption of Bitcoin in 2025 is estimated at approximately 173 TWh.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQV6D4SPV|c_06FZ3A3SQV7A4DQ1",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Cambridge Centre for Alternative Finance estimates Bitcoin's annual electricity consumption at 138 TWh.",
+   "b": "Cambridge Centre for Alternative Finance researchers estimated Bitcoin mining at approximately 138 TWh annually in their April 2025 industry report.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQV6D4SPV|c_06FZ3A3SQXXSZPMV",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Cambridge Centre for Alternative Finance estimates Bitcoin's annual electricity consumption at 138 TWh.",
+   "b": "The Cambridge Digital Mining Industry Report (April 2025) separately estimated Bitcoin consumption at about 138 TWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQV6D4SPV|c_06FZ3A3SQYTQ20P1",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Cambridge Centre for Alternative Finance estimates Bitcoin's annual electricity consumption at 138 TWh.",
+   "b": "The Bitcoin network's total annual draw is estimated between 150 and 173 TWh.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQV6D4SPV|c_06FZ3A3SQZJ19HD5",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Cambridge Centre for Alternative Finance estimates Bitcoin's annual electricity consumption at 138 TWh.",
+   "b": "The Cambridge Centre for Alternative Finance (CCAF) study estimates the Bitcoin network's annual electricity consumption at 138 TWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQV7A4DQ1|c_06FZ3A3SQXXSZPMV",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Cambridge Centre for Alternative Finance researchers estimated Bitcoin mining at approximately 138 TWh annually in their April 2025 industry report.",
+   "b": "The Cambridge Digital Mining Industry Report (April 2025) separately estimated Bitcoin consumption at about 138 TWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQW1CBZX6|c_06FZ3A3SQYBSKVWQ",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The CCAF report found natural gas use in Bitcoin mining increased to 38.2% from 25% in 2022, while coal fell to 8.9% from 36.6% over the same period.",
+   "b": "The CCAF report found that natural gas has replaced coal as the single largest energy source used in Bitcoin mining.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQWCSP7YQ|c_06FZ3A3SQZ44TG5Z",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "In 2025, Bitcoin consumes about 173 TWh of electricity per year.",
+   "b": "The annualized energy consumption of Bitcoin in 2025 is estimated at approximately 173 TWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQX27VRKK|c_06FZ3A3SQYQN888S",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Bitcoin mining claims about 0.5% of global electricity use, with a share of global electricity use around 0.5%\u20130.6% in 2025.",
+   "b": "The CCAF study estimates the Bitcoin network's annual electricity consumption at roughly 0.5% of global usage.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQXXSZPMV|c_06FZ3A3SQZ44TG5Z",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Cambridge Digital Mining Industry Report (April 2025) separately estimated Bitcoin consumption at about 138 TWh.",
+   "b": "The annualized energy consumption of Bitcoin in 2025 is estimated at approximately 173 TWh.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQXXSZPMV|c_06FZ3A3SQZ6E04J0",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Cambridge Digital Mining Industry Report (April 2025) separately estimated Bitcoin consumption at about 138 TWh.",
+   "b": "Cambridge CCAF's annual best-guess energy estimate for Bitcoin in 2025 is 95.5 TWh, with a daily power demand of about 13 GW.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQXXSZPMV|c_06FZ3A3SQZJ19HD5",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Cambridge Digital Mining Industry Report (April 2025) separately estimated Bitcoin consumption at about 138 TWh.",
+   "b": "The Cambridge Centre for Alternative Finance (CCAF) study estimates the Bitcoin network's annual electricity consumption at 138 TWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQYBP1ZM6|c_06FZ3A3SQYKBYJMA",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "As of early 2025, CBECI reported Bitcoin network power demand of roughly 20 GW and annualised electricity consumption of roughly 175 TWh.",
+   "b": "The Bitcoin network draws approximately 10 GW of continuous power, translating to about 168 TWh annually.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQYBP1ZM6|c_06FZ3A3SQZ6E04J0",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "As of early 2025, CBECI reported Bitcoin network power demand of roughly 20 GW and annualised electricity consumption of roughly 175 TWh.",
+   "b": "Cambridge CCAF's annual best-guess energy estimate for Bitcoin in 2025 is 95.5 TWh, with a daily power demand of about 13 GW.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQYKBYJMA|c_06FZ3A3SQZ6E04J0",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Bitcoin network draws approximately 10 GW of continuous power, translating to about 168 TWh annually.",
+   "b": "Cambridge CCAF's annual best-guess energy estimate for Bitcoin in 2025 is 95.5 TWh, with a daily power demand of about 13 GW.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQYMHD9DS|c_06FZ3A3SQZT40CVS",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Digiconomist's live estimate of annualised Bitcoin electricity consumption is 204.44 TWh.",
+   "b": "CoinShares' January 2022 estimate of annualised Bitcoin electricity consumption is 89.0 TWh.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQYQN888S|c_06FZ3A3SQZJ19HD5",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The CCAF study estimates the Bitcoin network's annual electricity consumption at roughly 0.5% of global usage.",
+   "b": "The Cambridge Centre for Alternative Finance (CCAF) study estimates the Bitcoin network's annual electricity consumption at 138 TWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQYR3Y7KY|c_06FZ3A3SQZ4DGAJ7",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The Cambridge Centre for Alternative Finance's CBECI model is founded on a hybrid top-down approach estimating the annualised electricity consumption of the Bitcoin network.",
+   "b": "CBECI uses a hybrid top-down model that infers which mining hardware is economically profitable to run at an assumed global average electricity price.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQZ44TG5Z|c_06FZ3A3SQZ6E04J0",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "The annualized energy consumption of Bitcoin in 2025 is estimated at approximately 173 TWh.",
+   "b": "Cambridge CCAF's annual best-guess energy estimate for Bitcoin in 2025 is 95.5 TWh, with a daily power demand of about 13 GW.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3A3SQZ6E04J0|c_06FZ3A3SQZJ19HD5",
+   "session": "s_06FZ39XPM1Y1R7MR",
+   "a": "Cambridge CCAF's annual best-guess energy estimate for Bitcoin in 2025 is 95.5 TWh, with a daily power demand of about 13 GW.",
+   "b": "The Cambridge Centre for Alternative Finance (CCAF) study estimates the Bitcoin network's annual electricity consumption at 138 TWh.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VMEQC2XD|c_06FZ3AP2VRA2CBRP",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "The OSF-Reproducibility Project aimed to replicate 100 results published in original research articles in three psychology journals in 2008.",
+   "b": "The Reproducibility Project: Psychology selected 100 studies published in 2008 in three psychology journals.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VMEQC2XD|c_06FZ3AP2VRGG5683",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "The OSF-Reproducibility Project aimed to replicate 100 results published in original research articles in three psychology journals in 2008.",
+   "b": "The Reproducibility Project replicated 100 experiments reported in papers published in 2008 in three high-ranking psychology journals.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VMGBD3M2|c_06FZ3AP2VTJFRJDJ",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "Ninety-seven percent of original studies in a replication project had statistically significant results.",
+   "b": "The original studies in the Reproducibility Project reported 97% significant results.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VMGBD3M2|c_06FZ3AP2VVQA2QPM",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "Ninety-seven percent of original studies in a replication project had statistically significant results.",
+   "b": "In a replication of 100 psychology experiments, statistical significance was achieved in only 36% of the replicated studies, whereas 97% of the original studies reported statistically significant results.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VMZW4W1H|c_06FZ3AP2VP9K3KW0",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "According to the author's prediction based on post-hoc power analysis, the actual success rate for 38 social psychology results in the OSF-Reproducibility Project was 8% (3 out of 38).",
+   "b": "The DGPs board stated that 68% is the maximum optimistic estimate of the replication success rate.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VNKCQES1|c_06FZ3AP2VNRXJYAH",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "The OSF-Reproducibility Project's Science article reported that the relative frequency of statistically significant effects in the replication studies was 36%.",
+   "b": "Thirty-six percent of replications in a replication project had statistically significant results.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VNKCQES1|c_06FZ3AP2VQCEC5MC",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "The OSF-Reproducibility Project's Science article reported that the relative frequency of statistically significant effects in the replication studies was 36%.",
+   "b": "The OSF-Reproducibility Project found that only 36% of results were replicated successfully.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VNKCQES1|c_06FZ3AP2VVQA2QPM",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "The OSF-Reproducibility Project's Science article reported that the relative frequency of statistically significant effects in the replication studies was 36%.",
+   "b": "In a replication of 100 psychology experiments, statistical significance was achieved in only 36% of the replicated studies, whereas 97% of the original studies reported statistically significant results.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VNRXJYAH|c_06FZ3AP2VVQA2QPM",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "Thirty-six percent of replications in a replication project had statistically significant results.",
+   "b": "In a replication of 100 psychology experiments, statistical significance was achieved in only 36% of the replicated studies, whereas 97% of the original studies reported statistically significant results.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VP9K3KW0|c_06FZ3AP2VQ5KJQKT",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "The DGPs board stated that 68% is the maximum optimistic estimate of the replication success rate.",
+   "b": "The DGPs board initially suggested that the replication project showed that 68% of studies (were replicated), a number based on significance in a meta-analysis of the original and replication study.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VPNN7QCB|c_06FZ3AP2VVHP85K4",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "Approximately 1.07% of psychology articles include actual replications.",
+   "b": "According to a study of replication in psychology, roughly 1.07% of all psychology publications were actual replications.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VPSKB603|c_06FZ3AP2VSGEKEZE",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "The Many Labs project achieved a 77% replication rate.",
+   "b": "In the Many Labs Project, 10 out of 13 studies successfully replicated.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VQ5KJQKT|c_06FZ3AP2VVQA2QPM",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "The DGPs board initially suggested that the replication project showed that 68% of studies (were replicated), a number based on significance in a meta-analysis of the original and replication study.",
+   "b": "In a replication of 100 psychology experiments, statistical significance was achieved in only 36% of the replicated studies, whereas 97% of the original studies reported statistically significant results.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VQCEC5MC|c_06FZ3AP2VV7297DM",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "The OSF-Reproducibility Project found that only 36% of results were replicated successfully.",
+   "b": "A large-scale assessment of 100 psychology experiments found that about one-third to one-half of the original findings were also observed in the replication study.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VR244XQZ|c_06FZ3AP2VSTGA2YJ",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "Combining positive and null effects in the Reproducibility Project: Cancer Biology, 51 of 112 (46%) replications succeeded on more criteria than they failed.",
+   "b": "Combining positive and null effects in the Reproducibility Project: Cancer Biology, 61 of 112 (54%) replications failed on more criteria than they succeeded.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VRA2CBRP|c_06FZ3AP2VRGG5683",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "The Reproducibility Project: Psychology selected 100 studies published in 2008 in three psychology journals.",
+   "b": "The Reproducibility Project replicated 100 experiments reported in papers published in 2008 in three high-ranking psychology journals.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VRKCGHQ8|c_06FZ3AP2VVQA2QPM",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "The replication studies in the Reproducibility Project reported 35% significant results.",
+   "b": "In a replication of 100 psychology experiments, statistical significance was achieved in only 36% of the replicated studies, whereas 97% of the original studies reported statistically significant results.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VRPY4NK8|c_06FZ3AP2VV4P0V6P",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "The success rate for experimental social psychology studies in the Reproducibility Project was only 25%.",
+   "b": "When limiting analysis to approved protocols, the success rate for experimental social psychology studies remained at 25%.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VT9V0731|c_06FZ3AP2VTPZK9V4",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "The same study found that the majority of replications in psychology journals reported similar findings to their original studies (i.e., they were successful replications).",
+   "b": "In psychology, across 307 systematic replications and multisite replications, 64% reported statistically significant evidence in the same direction and effect sizes 68% as large as the original experiments.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VTPZK9V4|c_06FZ3AP2VV7297DM",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "In psychology, across 307 systematic replications and multisite replications, 64% reported statistically significant evidence in the same direction and effect sizes 68% as large as the original experiments.",
+   "b": "A large-scale assessment of 100 psychology experiments found that about one-third to one-half of the original findings were also observed in the replication study.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3AP2VTPZK9V4|c_06FZ3AP2VVQA2QPM",
+   "session": "s_06FZ3AH69EKTBW1Z",
+   "a": "In psychology, across 307 systematic replications and multisite replications, 64% reported statistically significant evidence in the same direction and effect sizes 68% as large as the original experiments.",
+   "b": "In a replication of 100 psychology experiments, statistical significance was achieved in only 36% of the replicated studies, whereas 97% of the original studies reported statistically significant results.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3B5EKQ3F0A9B|c_06FZ3B5EKQ420468",
+   "session": "s_06FZ3B121KJ9SNS0",
+   "a": "The EIA projects the estimated capacity-weighted LCOE for new standalone solar farms entering service in 2026 will be about $29 per MWh.",
+   "b": "The EIA projects the estimated capacity-weighted LCOE for new onshore wind entering service in 2026 will be about $31 per MWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3B5EKRB75ZK4|c_06FZ3B5EKSWPYJ21",
+   "session": "s_06FZ3B121KJ9SNS0",
+   "a": "The EIA projects the LCOE for battery storage coming online in 2026 will be about $121 per MWh.",
+   "b": "The EIA projects the LCOE for offshore wind coming online in 2026 will be about $115 per MWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3B5EKRMABF3W|c_06FZ3B5EKT4XAVE9",
+   "session": "s_06FZ3B121KJ9SNS0",
+   "a": "Coal-fired power plants have levelized costs of electricity ranging from 15.1 to 29.3 \u20ac cents/kWh.",
+   "b": "The LCOE for coal is between $68 and $166 per megawatt-hour, as reported by Lazard.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3B5EKRMS64VN|c_06FZ3B5EKSQN8M6M",
+   "session": "s_06FZ3B121KJ9SNS0",
+   "a": "The EIA's forecast shows the LCOE for solar PV falling from about $30 to about $25 between 2023 and 2050.",
+   "b": "The EIA's forecast shows the LCOE for CCGT facilities rising from about $35 to more than $40 between 2023 and 2050.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3B5EKT06ZRKF|c_06FZ3B5EKV8T8R68",
+   "session": "s_06FZ3B121KJ9SNS0",
+   "a": "In 2021, the LCOE range for utility-scale PV fell between $30/MWh and $41/MWh.",
+   "b": "The LCOE of unsubsidized large-scale photovoltaic (PV) based on crystalline silicon was estimated at a range of $0.030\u2013$0.042 per kWh.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3B5EKTEMYR91|c_06FZ3B5EKVHWN39S",
+   "session": "s_06FZ3B121KJ9SNS0",
+   "a": "BloombergNEF expects battery energy storage LCOE to reach $53 per MWh by 2035, nearly half of its current value.",
+   "b": "Battery energy storage LCOE is forecast to fall 11% from $104 per MWh in 2024 to $93 per MWh in 2025.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3B5EKXFZMSV6|c_06FZ3B5EKZFXQWBB",
+   "session": "s_06FZ3B121KJ9SNS0",
+   "a": "The levelized cost of electricity database was developed by Govinda Timilsina, Sr. Economist, Development Research Group.",
+   "b": "The database is the result of the study 'Demystifying the Costs of Electricity Generation Technologies' by Govinda R. Timilsina (2020), a World Bank Policy Research Working Paper.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BK2NR01JC60|c_06FZ3BK2NRPTCDR9",
+   "session": "s_06FZ3BGADSVT8BPJ",
+   "a": "OpenAI's GPT-4.1 scores 90.2% on MMLU.",
+   "b": "GPT-4.1's MMLU score is 90.2%, which is +1.5 points vs GPT-4o's 88.7%.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BK2NR01JC60|c_06FZ3BK2NT7MXGFN",
+   "session": "s_06FZ3BGADSVT8BPJ",
+   "a": "OpenAI's GPT-4.1 scores 90.2% on MMLU.",
+   "b": "GPT-4o scores 85.7% on MMLU.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BK2NR01JC60|c_06FZ3BK2NTMZ6JD1",
+   "session": "s_06FZ3BGADSVT8BPJ",
+   "a": "OpenAI's GPT-4.1 scores 90.2% on MMLU.",
+   "b": "GPT-4.1 achieves a 92.5% pass rate on MMLU questions in the promptfoo evaluation.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BK2NRGSGVX8|c_06FZ3BK2NTEBR4TT",
+   "session": "s_06FZ3BGADSVT8BPJ",
+   "a": "GPT-4o mini surpasses GPT-3.5 in several benchmarks.",
+   "b": "GPT-4o mini outperforms the original GPT-4 on the LMSYS leaderboard.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BK2NRPTCDR9|c_06FZ3BK2NT7MXGFN",
+   "session": "s_06FZ3BGADSVT8BPJ",
+   "a": "GPT-4.1's MMLU score is 90.2%, which is +1.5 points vs GPT-4o's 88.7%.",
+   "b": "GPT-4o scores 85.7% on MMLU.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BK2NV0E2YSB|c_06FZ3BK2NVAN2T60",
+   "session": "s_06FZ3BGADSVT8BPJ",
+   "a": "GPT-4o mini scored 82.0% on the MMLU benchmark.",
+   "b": "Gemini scored 77.9% on the MMLU benchmark.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H03C80R7|c_06FZ3BW1H6ZF0C9X",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "Decreasing red meat and simultaneously increasing healthy alternative food choices over time was associated with lower mortality.",
+   "b": "A decrease in red meat together with an increase in nuts, fish, poultry without skin, dairy, eggs, whole grains, or vegetables over eight years was associated with a lower risk of death in the subsequent eight years.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H05ANSBV|c_06FZ3BW1H1X1238T",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "The scientific consensus is that both red and processed meats increase the risk of a premature death.",
+   "b": "Higher consumption of total red meat and processed meat is associated with an increased risk of total mortality.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H1AE8ECH|c_06FZ3BW1H1X1238T",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "In the 2012 Harvard study, a higher intake of both red and processed meat was associated with a significantly increased risk of all-cause mortality.",
+   "b": "Higher consumption of total red meat and processed meat is associated with an increased risk of total mortality.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H1AE8ECH|c_06FZ3BW1H5A21YE2",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "In the 2012 Harvard study, a higher intake of both red and processed meat was associated with a significantly increased risk of all-cause mortality.",
+   "b": "In two large prospective cohorts of U.S. men and women, higher red meat intake was associated with a significantly elevated risk of total, cardiovascular, and cancer mortality, with a relatively greater risk for processed red meat compared to unprocessed red meat.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H1AE8ECH|c_06FZ3BW1H5QJAEQD",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "In the 2012 Harvard study, a higher intake of both red and processed meat was associated with a significantly increased risk of all-cause mortality.",
+   "b": "The Harvard Health Professionals Follow-up Study and the Harvard Nurses' Health Study concluded that red meat consumption was associated with living a significantly shorter life\u2014increased cancer mortality, increased heart disease mortality, and increased overall mortality.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H1AE8ECH|c_06FZ3BW1H6G702SA",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "In the 2012 Harvard study, a higher intake of both red and processed meat was associated with a significantly increased risk of all-cause mortality.",
+   "b": "Red meat consumption is associated with an increased risk of total mortality, cardiovascular disease mortality and cancer mortality\u2014meaning a significantly shorter lifespan.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H1W4R1JR|c_06FZ3BW1H1X1238T",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "Increasing total processed meat intake by half a daily serving or more was associated with a 13% higher risk of mortality from all causes.",
+   "b": "Higher consumption of total red meat and processed meat is associated with an increased risk of total mortality.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H1X1238T|c_06FZ3BW1H3DD5XCJ",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "Higher consumption of total red meat and processed meat is associated with an increased risk of total mortality.",
+   "b": "Total red meat consumption includes both red and processed meat in this meta-analysis.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H2RDQ3VE|c_06FZ3BW1H5QJAEQD",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "Each daily serving of red meat is associated with an increased risk of dying prematurely, according to a 2012 Harvard School of Public Health study.",
+   "b": "The Harvard Health Professionals Follow-up Study and the Harvard Nurses' Health Study concluded that red meat consumption was associated with living a significantly shorter life\u2014increased cancer mortality, increased heart disease mortality, and increased overall mortality.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H3WSE5RY|c_06FZ3BW1H7PRR6VG",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "The pooled relative risk for all-cause mortality with an increase of one serving per day of processed meat was 1.15 (95% CI 1.11, 1.19).",
+   "b": "In a pooled analysis, a one-serving per day increase of processed red meat was associated with a 20% higher total mortality risk.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H4A0JS03|c_06FZ3BW1H5T30A08",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "Increasing unprocessed meat intake by half a daily serving or more increased mortality risk by 9%.",
+   "b": "In a pooled analysis, a one-serving per day increase of unprocessed red meat was associated with a 13% higher total mortality risk.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H4D3GWH5|c_06FZ3BW1H5C9M5F6",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "The study found weak evidence of association between unprocessed red meat consumption and type 2 diabetes.",
+   "b": "The study found weak evidence of association between unprocessed red meat consumption and colorectal cancer, breast cancer, type 2 diabetes and ischemic heart disease.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H4D3GWH5|c_06FZ3BW1H6T16STA",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "The study found weak evidence of association between unprocessed red meat consumption and type 2 diabetes.",
+   "b": "The study found weak evidence of association between unprocessed red meat consumption and colorectal cancer.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H4D3GWH5|c_06FZ3BW1H7K5S7M6",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "The study found weak evidence of association between unprocessed red meat consumption and type 2 diabetes.",
+   "b": "The study found weak evidence of association between unprocessed red meat consumption and breast cancer.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H590WAR5|c_06FZ3BW1H6G702SA",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "There is some evidence that eating unprocessed red meat is associated with increased risk of disease incidence and mortality, but it is weak and insufficient to make stronger or more conclusive recommendations.",
+   "b": "Red meat consumption is associated with an increased risk of total mortality, cardiovascular disease mortality and cancer mortality\u2014meaning a significantly shorter lifespan.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H5A21YE2|c_06FZ3BW1H66H1C2F",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "In two large prospective cohorts of U.S. men and women, higher red meat intake was associated with a significantly elevated risk of total, cardiovascular, and cancer mortality, with a relatively greater risk for processed red meat compared to unprocessed red meat.",
+   "b": "Red meat consumption is associated with an increased risk of total, CVD, and cancer mortality.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H5A21YE2|c_06FZ3BW1H6G702SA",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "In two large prospective cohorts of U.S. men and women, higher red meat intake was associated with a significantly elevated risk of total, cardiovascular, and cancer mortality, with a relatively greater risk for processed red meat compared to unprocessed red meat.",
+   "b": "Red meat consumption is associated with an increased risk of total mortality, cardiovascular disease mortality and cancer mortality\u2014meaning a significantly shorter lifespan.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H5C9M5F6|c_06FZ3BW1H6T16STA",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "The study found weak evidence of association between unprocessed red meat consumption and colorectal cancer, breast cancer, type 2 diabetes and ischemic heart disease.",
+   "b": "The study found weak evidence of association between unprocessed red meat consumption and colorectal cancer.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H5C9M5F6|c_06FZ3BW1H7K5S7M6",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "The study found weak evidence of association between unprocessed red meat consumption and colorectal cancer, breast cancer, type 2 diabetes and ischemic heart disease.",
+   "b": "The study found weak evidence of association between unprocessed red meat consumption and breast cancer.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H5K1A38N|c_06FZ3BW1H677QDR9",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "Substitution of other healthy protein sources (fish, poultry, nuts, legumes, low-fat dairy, whole grains) for red meat was associated with a 7% to 19% lower mortality risk.",
+   "b": "The substitution of other healthy protein sources is associated with lower mortality risk.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H5QJAEQD|c_06FZ3BW1H66H1C2F",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "The Harvard Health Professionals Follow-up Study and the Harvard Nurses' Health Study concluded that red meat consumption was associated with living a significantly shorter life\u2014increased cancer mortality, increased heart disease mortality, and increased overall mortality.",
+   "b": "Red meat consumption is associated with an increased risk of total, CVD, and cancer mortality.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H5QJAEQD|c_06FZ3BW1H6G702SA",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "The Harvard Health Professionals Follow-up Study and the Harvard Nurses' Health Study concluded that red meat consumption was associated with living a significantly shorter life\u2014increased cancer mortality, increased heart disease mortality, and increased overall mortality.",
+   "b": "Red meat consumption is associated with an increased risk of total mortality, cardiovascular disease mortality and cancer mortality\u2014meaning a significantly shorter lifespan.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H5T30A08|c_06FZ3BW1H7PRR6VG",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "In a pooled analysis, a one-serving per day increase of unprocessed red meat was associated with a 13% higher total mortality risk.",
+   "b": "In a pooled analysis, a one-serving per day increase of processed red meat was associated with a 20% higher total mortality risk.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H66H1C2F|c_06FZ3BW1H6G702SA",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "Red meat consumption is associated with an increased risk of total, CVD, and cancer mortality.",
+   "b": "Red meat consumption is associated with an increased risk of total mortality, cardiovascular disease mortality and cancer mortality\u2014meaning a significantly shorter lifespan.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H677QDR9|c_06FZ3BW1H6ZF0C9X",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "The substitution of other healthy protein sources is associated with lower mortality risk.",
+   "b": "A decrease in red meat together with an increase in nuts, fish, poultry without skin, dairy, eggs, whole grains, or vegetables over eight years was associated with a lower risk of death in the subsequent eight years.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3BW1H6T16STA|c_06FZ3BW1H7K5S7M6",
+   "session": "s_06FZ3BQAP3SFXNBK",
+   "a": "The study found weak evidence of association between unprocessed red meat consumption and colorectal cancer.",
+   "b": "The study found weak evidence of association between unprocessed red meat consumption and breast cancer.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMM2MSE1Z|c_06FZ3CCXMMGGW50T",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Daily energy restriction more effectively reduces body fat content than alternate-day fasting, with no evidence of fasting-specific health benefits.",
+   "b": "Daily energy restriction reduces body fat more effectively than alternate-day fasting in lean adults.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMM2MSE1Z|c_06FZ3CCXMMWY93N6",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Daily energy restriction more effectively reduces body fat content than alternate-day fasting, with no evidence of fasting-specific health benefits.",
+   "b": "Intermittent fasting shows no unique health benefits beyond weight loss compared to continuous energy restriction.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMM2MSE1Z|c_06FZ3CCXMR0XTTZY",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Daily energy restriction more effectively reduces body fat content than alternate-day fasting, with no evidence of fasting-specific health benefits.",
+   "b": "In the one-year randomized controlled trial, no significant differences in weight loss, weight regain, or body composition (e.g., fat mass, lean mass) were found between the alternate-day fasting group and the daily calorie restriction group.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMM2MSE1Z|c_06FZ3CCXMS4QGWJ9",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Daily energy restriction more effectively reduces body fat content than alternate-day fasting, with no evidence of fasting-specific health benefits.",
+   "b": "IER is as effective as CER with regard to weight loss, insulin sensitivity and other health biomarkers, and may be offered as an alternative equivalent to CER for weight loss and reducing disease risk.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMM2MSE1Z|c_06FZ3CCXMS6DX28M",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Daily energy restriction more effectively reduces body fat content than alternate-day fasting, with no evidence of fasting-specific health benefits.",
+   "b": "It is suggested that modified alternate-day fasting diet may be a more effective option in managing body weight, waist circumference, systolic blood pressure, and fasting plasma glucose, compared with common calorie restriction.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMM2MSE1Z|c_06FZ3CCXMSC0TBGZ",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Daily energy restriction more effectively reduces body fat content than alternate-day fasting, with no evidence of fasting-specific health benefits.",
+   "b": "In the short term, intermittent energy and carbohydrate restriction (IECR) is superior to daily energy restriction (DER) with respect to improved insulin sensitivity and body fat reduction.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMM34Z2JT|c_06FZ3CCXMSJPBJZD",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Most intermittent fasting diet regimens induced significant weight loss that was comparable with that induced by continuous energy restriction diet regimens with a similar absolute energy restriction, based on low- to high-certainty evidence.",
+   "b": "IER resulted in comparable weight loss to DER when overall energy restriction remained similar between diets.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMM34Z2JT|c_06FZ3CCXMSMN6A8N",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Most intermittent fasting diet regimens induced significant weight loss that was comparable with that induced by continuous energy restriction diet regimens with a similar absolute energy restriction, based on low- to high-certainty evidence.",
+   "b": "Intermittent and continuous energy restriction achieved a comparable effect in promoting weight-loss and metabolic improvements.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMM34Z2JT|c_06FZ3CCXMVW68PWK",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Most intermittent fasting diet regimens induced significant weight loss that was comparable with that induced by continuous energy restriction diet regimens with a similar absolute energy restriction, based on low- to high-certainty evidence.",
+   "b": "Both intermittent and continuous energy restriction resulted in similar weight loss, maintenance and improvements in cardiovascular risk factors after one year, however, feelings of hunger may be more pronounced during intermittent energy restriction.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMM8ZT89S|c_06FZ3CCXMSSYYW78",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Moderate continuous energy restriction resulted in a mean difference of weight change of 6.09 kg (95% CI 5.26 to 6.93), based on moderate-certainty evidence.",
+   "b": "When examining the 12 clinical trials that compared the fasting group with the continuous calorie restriction group, there was no significant difference in weight loss amounts or body composition changes.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMM9FRTWE|c_06FZ3CCXMMGGW50T",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "In adults with overweight, obesity, or metabolic abnormalities, effectiveness in weight loss mainly depends on the extent of the energy restriction, regardless of the mealtime patterns.",
+   "b": "Daily energy restriction reduces body fat more effectively than alternate-day fasting in lean adults.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMMGGW50T|c_06FZ3CCXMR0XTTZY",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Daily energy restriction reduces body fat more effectively than alternate-day fasting in lean adults.",
+   "b": "In the one-year randomized controlled trial, no significant differences in weight loss, weight regain, or body composition (e.g., fat mass, lean mass) were found between the alternate-day fasting group and the daily calorie restriction group.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMMGGW50T|c_06FZ3CCXMS4QGWJ9",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Daily energy restriction reduces body fat more effectively than alternate-day fasting in lean adults.",
+   "b": "IER is as effective as CER with regard to weight loss, insulin sensitivity and other health biomarkers, and may be offered as an alternative equivalent to CER for weight loss and reducing disease risk.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMMGGW50T|c_06FZ3CCXMS6DX28M",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Daily energy restriction reduces body fat more effectively than alternate-day fasting in lean adults.",
+   "b": "It is suggested that modified alternate-day fasting diet may be a more effective option in managing body weight, waist circumference, systolic blood pressure, and fasting plasma glucose, compared with common calorie restriction.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMMGGW50T|c_06FZ3CCXMSC0TBGZ",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Daily energy restriction reduces body fat more effectively than alternate-day fasting in lean adults.",
+   "b": "In the short term, intermittent energy and carbohydrate restriction (IECR) is superior to daily energy restriction (DER) with respect to improved insulin sensitivity and body fat reduction.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMMWY93N6|c_06FZ3CCXMR8Q0205",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Intermittent fasting shows no unique health benefits beyond weight loss compared to continuous energy restriction.",
+   "b": "In patients with MASLD, intermittent fasting was associated with greater reductions in body weight, BMI, and LDL-C than continuous energy restriction, and CAP-based analyses suggested a possible advantage of intermittent fasting for hepatic steatosis.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMMWY93N6|c_06FZ3CCXMS4QGWJ9",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Intermittent fasting shows no unique health benefits beyond weight loss compared to continuous energy restriction.",
+   "b": "IER is as effective as CER with regard to weight loss, insulin sensitivity and other health biomarkers, and may be offered as an alternative equivalent to CER for weight loss and reducing disease risk.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMMWY93N6|c_06FZ3CCXMSMN6A8N",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Intermittent fasting shows no unique health benefits beyond weight loss compared to continuous energy restriction.",
+   "b": "Intermittent and continuous energy restriction achieved a comparable effect in promoting weight-loss and metabolic improvements.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMMWY93N6|c_06FZ3CCXMSSYYW78",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Intermittent fasting shows no unique health benefits beyond weight loss compared to continuous energy restriction.",
+   "b": "When examining the 12 clinical trials that compared the fasting group with the continuous calorie restriction group, there was no significant difference in weight loss amounts or body composition changes.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMMWY93N6|c_06FZ3CCXMT0RYP4R",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Intermittent fasting shows no unique health benefits beyond weight loss compared to continuous energy restriction.",
+   "b": "Intermittent fasting represents a valid, but apparently not superior, option to continuous energy restriction for weight loss.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMMWY93N6|c_06FZ3CCXMVW68PWK",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Intermittent fasting shows no unique health benefits beyond weight loss compared to continuous energy restriction.",
+   "b": "Both intermittent and continuous energy restriction resulted in similar weight loss, maintenance and improvements in cardiovascular risk factors after one year, however, feelings of hunger may be more pronounced during intermittent energy restriction.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMN4HGV16|c_06FZ3CCXMS6DX28M",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Similar results were noticed for body measurements, blood pressure, blood lipids, and glycemic profiles.",
+   "b": "It is suggested that modified alternate-day fasting diet may be a more effective option in managing body weight, waist circumference, systolic blood pressure, and fasting plasma glucose, compared with common calorie restriction.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMN4HGV16|c_06FZ3CCXMV43G7K3",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Similar results were noticed for body measurements, blood pressure, blood lipids, and glycemic profiles.",
+   "b": "IF significantly lowered systolic blood pressure and diastolic blood pressure in individuals with overweight or obesity, particularly in high-risk subgroups (obesity, age \u226545 years, and prehypertension/hypertension), with a favorable safety profile.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMN4HGV16|c_06FZ3CCXMVW68PWK",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Similar results were noticed for body measurements, blood pressure, blood lipids, and glycemic profiles.",
+   "b": "Both intermittent and continuous energy restriction resulted in similar weight loss, maintenance and improvements in cardiovascular risk factors after one year, however, feelings of hunger may be more pronounced during intermittent energy restriction.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMNJTJZWS|c_06FZ3CCXMT0RYP4R",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "It is suggested that IF may be superior to CCR for weight loss in some respects in overweight and obese people.",
+   "b": "Intermittent fasting represents a valid, but apparently not superior, option to continuous energy restriction for weight loss.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMPCKB0P7|c_06FZ3CCXMR0XTTZY",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Alternate-day fasting was the second most effective regimen for weight loss after severe CER, based on high-certainty evidence (mean difference of weight change 5.07 kg [95% CI 3.44 to 6.72]).",
+   "b": "In the one-year randomized controlled trial, no significant differences in weight loss, weight regain, or body composition (e.g., fat mass, lean mass) were found between the alternate-day fasting group and the daily calorie restriction group.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMPCKB0P7|c_06FZ3CCXMS4QGWJ9",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Alternate-day fasting was the second most effective regimen for weight loss after severe CER, based on high-certainty evidence (mean difference of weight change 5.07 kg [95% CI 3.44 to 6.72]).",
+   "b": "IER is as effective as CER with regard to weight loss, insulin sensitivity and other health biomarkers, and may be offered as an alternative equivalent to CER for weight loss and reducing disease risk.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMPDF3YFT|c_06FZ3CCXMPWQ8C71",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Severe continuous energy restriction proved to be the most effective regimen for obtaining weight loss, based on moderate-certainty evidence (mean difference of weight change 11.50 kg [95% CI 10.07 to 12.93]).",
+   "b": "In the MATADOR study, intermittent energy restriction led to greater weight loss (14.1 \u00b1 5.6 kg) than continuous energy restriction (9.1 \u00b1 2.9 kg) in men with obesity over 16 weeks of energy restriction.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMPDF3YFT|c_06FZ3CCXMR8Q0205",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Severe continuous energy restriction proved to be the most effective regimen for obtaining weight loss, based on moderate-certainty evidence (mean difference of weight change 11.50 kg [95% CI 10.07 to 12.93]).",
+   "b": "In patients with MASLD, intermittent fasting was associated with greater reductions in body weight, BMI, and LDL-C than continuous energy restriction, and CAP-based analyses suggested a possible advantage of intermittent fasting for hepatic steatosis.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMPDF3YFT|c_06FZ3CCXMSSYYW78",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Severe continuous energy restriction proved to be the most effective regimen for obtaining weight loss, based on moderate-certainty evidence (mean difference of weight change 11.50 kg [95% CI 10.07 to 12.93]).",
+   "b": "When examining the 12 clinical trials that compared the fasting group with the continuous calorie restriction group, there was no significant difference in weight loss amounts or body composition changes.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMR03776R|c_06FZ3CCXMR0XTTZY",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "In a randomized 1-year trial, both intermittent and continuous energy restriction resulted in similar weight loss, maintenance and improvements in cardiovascular risk factors after one year, however, feelings of hunger may be more pronounced during intermittent energy restriction.",
+   "b": "In the one-year randomized controlled trial, no significant differences in weight loss, weight regain, or body composition (e.g., fat mass, lean mass) were found between the alternate-day fasting group and the daily calorie restriction group.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMR03776R|c_06FZ3CCXMSMN6A8N",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "In a randomized 1-year trial, both intermittent and continuous energy restriction resulted in similar weight loss, maintenance and improvements in cardiovascular risk factors after one year, however, feelings of hunger may be more pronounced during intermittent energy restriction.",
+   "b": "Intermittent and continuous energy restriction achieved a comparable effect in promoting weight-loss and metabolic improvements.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMR03776R|c_06FZ3CCXMVW68PWK",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "In a randomized 1-year trial, both intermittent and continuous energy restriction resulted in similar weight loss, maintenance and improvements in cardiovascular risk factors after one year, however, feelings of hunger may be more pronounced during intermittent energy restriction.",
+   "b": "Both intermittent and continuous energy restriction resulted in similar weight loss, maintenance and improvements in cardiovascular risk factors after one year, however, feelings of hunger may be more pronounced during intermittent energy restriction.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMR0XTTZY|c_06FZ3CCXMS6DX28M",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "In the one-year randomized controlled trial, no significant differences in weight loss, weight regain, or body composition (e.g., fat mass, lean mass) were found between the alternate-day fasting group and the daily calorie restriction group.",
+   "b": "It is suggested that modified alternate-day fasting diet may be a more effective option in managing body weight, waist circumference, systolic blood pressure, and fasting plasma glucose, compared with common calorie restriction.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMR0XTTZY|c_06FZ3CCXMSSYYW78",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "In the one-year randomized controlled trial, no significant differences in weight loss, weight regain, or body composition (e.g., fat mass, lean mass) were found between the alternate-day fasting group and the daily calorie restriction group.",
+   "b": "When examining the 12 clinical trials that compared the fasting group with the continuous calorie restriction group, there was no significant difference in weight loss amounts or body composition changes.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMR0XTTZY|c_06FZ3CCXMT375W3C",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "In the one-year randomized controlled trial, no significant differences in weight loss, weight regain, or body composition (e.g., fat mass, lean mass) were found between the alternate-day fasting group and the daily calorie restriction group.",
+   "b": "A randomized controlled trial that followed 100 obese individuals for one year did not find intermittent fasting to be more effective than daily calorie restriction.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMR2A1VSV|c_06FZ3CCXMSAJWQ0V",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "At one year, the time-restricted group lost an average of 18 pounds and the time-unrestricted group lost 14 pounds, but the changes in weight and other parameters were not significantly different among the groups.",
+   "b": "A one-year randomized trial found that time-restricted eating (16:8 method) did not produce significantly different changes in weight and other parameters compared to calorie reduction without a restricted eating time.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMR64TKSC|c_06FZ3CCXMT1ZW3HF",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "A 5:2 diet is a successful but not superior weight loss approach in male war veterans when compared to a standard energy-restricted diet.",
+   "b": "Results suggest that the 5:2 diet is a successful but not superior weight loss approach in male war veterans when compared to a standard energy-restricted diet (SERD).",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMRHGC7HZ|c_06FZ3CCXMS4QGWJ9",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Short-term CER or IER diets are comparable in their effects on most markers of cardiometabolic risk, although adaptive changes in glucose and fatty acid metabolism occur.",
+   "b": "IER is as effective as CER with regard to weight loss, insulin sensitivity and other health biomarkers, and may be offered as an alternative equivalent to CER for weight loss and reducing disease risk.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMRHGC7HZ|c_06FZ3CCXMSC0TBGZ",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Short-term CER or IER diets are comparable in their effects on most markers of cardiometabolic risk, although adaptive changes in glucose and fatty acid metabolism occur.",
+   "b": "In the short term, intermittent energy and carbohydrate restriction (IECR) is superior to daily energy restriction (DER) with respect to improved insulin sensitivity and body fat reduction.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMRHGC7HZ|c_06FZ3CCXMSJPBJZD",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Short-term CER or IER diets are comparable in their effects on most markers of cardiometabolic risk, although adaptive changes in glucose and fatty acid metabolism occur.",
+   "b": "IER resulted in comparable weight loss to DER when overall energy restriction remained similar between diets.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMRHGC7HZ|c_06FZ3CCXMSMN6A8N",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Short-term CER or IER diets are comparable in their effects on most markers of cardiometabolic risk, although adaptive changes in glucose and fatty acid metabolism occur.",
+   "b": "Intermittent and continuous energy restriction achieved a comparable effect in promoting weight-loss and metabolic improvements.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMS2K1RHT|c_06FZ3CCXMSSYYW78",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "All four included regiments were effective in reducing body weight, with ADF likely having the most significant impact, while interventions lasting 7\u201312 months may result in effective weight loss, with TRE potentially ranking first during both the 4\u20136 months and 7\u201312 months periods.",
+   "b": "When examining the 12 clinical trials that compared the fasting group with the continuous calorie restriction group, there was no significant difference in weight loss amounts or body composition changes.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMS4QGWJ9|c_06FZ3CCXMSJPBJZD",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "IER is as effective as CER with regard to weight loss, insulin sensitivity and other health biomarkers, and may be offered as an alternative equivalent to CER for weight loss and reducing disease risk.",
+   "b": "IER resulted in comparable weight loss to DER when overall energy restriction remained similar between diets.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMS6DX28M|c_06FZ3CCXMT375W3C",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "It is suggested that modified alternate-day fasting diet may be a more effective option in managing body weight, waist circumference, systolic blood pressure, and fasting plasma glucose, compared with common calorie restriction.",
+   "b": "A randomized controlled trial that followed 100 obese individuals for one year did not find intermittent fasting to be more effective than daily calorie restriction.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMSAJWQ0V|c_06FZ3CCXMT375W3C",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "A one-year randomized trial found that time-restricted eating (16:8 method) did not produce significantly different changes in weight and other parameters compared to calorie reduction without a restricted eating time.",
+   "b": "A randomized controlled trial that followed 100 obese individuals for one year did not find intermittent fasting to be more effective than daily calorie restriction.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMSC0TBGZ|c_06FZ3CCXMT0RYP4R",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "In the short term, intermittent energy and carbohydrate restriction (IECR) is superior to daily energy restriction (DER) with respect to improved insulin sensitivity and body fat reduction.",
+   "b": "Intermittent fasting represents a valid, but apparently not superior, option to continuous energy restriction for weight loss.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMSC0TBGZ|c_06FZ3CCXMT1ZW3HF",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "In the short term, intermittent energy and carbohydrate restriction (IECR) is superior to daily energy restriction (DER) with respect to improved insulin sensitivity and body fat reduction.",
+   "b": "Results suggest that the 5:2 diet is a successful but not superior weight loss approach in male war veterans when compared to a standard energy-restricted diet (SERD).",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMSJPBJZD|c_06FZ3CCXMSMN6A8N",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "IER resulted in comparable weight loss to DER when overall energy restriction remained similar between diets.",
+   "b": "Intermittent and continuous energy restriction achieved a comparable effect in promoting weight-loss and metabolic improvements.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMSJPBJZD|c_06FZ3CCXMVW68PWK",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "IER resulted in comparable weight loss to DER when overall energy restriction remained similar between diets.",
+   "b": "Both intermittent and continuous energy restriction resulted in similar weight loss, maintenance and improvements in cardiovascular risk factors after one year, however, feelings of hunger may be more pronounced during intermittent energy restriction.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMSMN6A8N|c_06FZ3CCXMT0RYP4R",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "Intermittent and continuous energy restriction achieved a comparable effect in promoting weight-loss and metabolic improvements.",
+   "b": "Intermittent fasting represents a valid, but apparently not superior, option to continuous energy restriction for weight loss.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3CCXMTQSMTHQ|c_06FZ3CCXMV43G7K3",
+   "session": "s_06FZ3C6YC95B0WYA",
+   "a": "In the one-year randomized controlled trial, no significant differences in blood pressure, heart rate, fasting glucose, and fasting insulin were found between the groups, but at 12 months the alternate-day fasting group showed significantly increased LDL cholesterol levels.",
+   "b": "IF significantly lowered systolic blood pressure and diastolic blood pressure in individuals with overweight or obesity, particularly in high-risk subgroups (obesity, age \u226545 years, and prehypertension/hypertension), with a favorable safety profile.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3D0AFR32P697|c_06FZ3D0AFRK7DR98",
+   "session": "s_06FZ3CR7MH4FB3H5",
+   "a": "No significant change was noted in all-cause mortality with the Mediterranean diet, with an odds ratio of 0.77 (95% CI: 0.51 to 1.15, p = 0.20; I2 = 58%).",
+   "b": "The Mediterranean diet significantly reduced the risk of cardiovascular death, with an odds ratio of 0.54 (95% CI: 0.31 to 0.94, p = 0.03; I2 = 55%).",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3D0AFSE4XEFV|c_06FZ3D0AFTRSK07V",
+   "session": "s_06FZ3CR7MH4FB3H5",
+   "a": "The Mediterranean diet was associated with a significant reduction in stroke incidence, with an odds ratio of 0.63 (95% CI: 0.48 to 0.87, p = 0.002; I2 = 0%).",
+   "b": "The same pooled analysis found that the Mediterranean diet was associated with a notable decrease in the incidence of myocardial infarction (MI), with an odds ratio of 0.62 (95% CI: 0.41 to 0.92, p = 0.02; I2 = 56%).",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3D0AFWGJX6DB|c_06FZ3D0AG37BPYJA",
+   "session": "s_06FZ3CR7MH4FB3H5",
+   "a": "In the PREDIMED trial, the multivariable-adjusted hazard ratio for the primary endpoint was 0.70 for the Mediterranean diet with extra-virgin olive oil and 0.72 for the Mediterranean diet with nuts compared with the control group.",
+   "b": "Hard cardiovascular disease endpoints are currently lacking from the data in the form of RCTs regarding olive oil consumption for cardiovascular disease prevention.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3D0AFWWP5AZ6|c_06FZ3D0AFZEGVQ12",
+   "session": "s_06FZ3CR7MH4FB3H5",
+   "a": "The PREDIMED randomized controlled trial tested primary prevention of cardiovascular disease with a Mediterranean diet supplemented with extra-virgin olive oil or nuts, publishing in the New England Journal of Medicine in 2018.",
+   "b": "The randomized trial tested the efficacy of two Mediterranean diets, one supplemented with extra-virgin olive oil and the other with nuts, compared with a control diet in which patients were given advice on eating a low-fat diet.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3D0AFX9ANBYZ|c_06FZ3D0AFXJZ7JVR",
+   "session": "s_06FZ3CR7MH4FB3H5",
+   "a": "The randomized trial included nearly 7500 participants with a mean follow-up of nearly 5 years, and the final variables analyzed were hard end points such as acute myocardial infarction, stroke, and cardiovascular death.",
+   "b": "The study enrolled a total of 102 adults with a mean age of 70.1 \u00b1 7.9 years, all diagnosed with high cardiovascular risk.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3D0AFYA50MKJ|c_06FZ3D0AG0GM5G04",
+   "session": "s_06FZ3CR7MH4FB3H5",
+   "a": "In secondary prevention, the Mediterranean diet was superior to the low-fat diet in preventing major cardiovascular events, according to the Lyon Heart and CORDIOPREV trials.",
+   "b": "The Mediterranean diet has proven secondary cardiovascular disease prevention benefit and improvements in surrogate markers for cardiovascular disease.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3D0AFYG6HJ4E|c_06FZ3D0AFZ43G939",
+   "session": "s_06FZ3CR7MH4FB3H5",
+   "a": "The Mediterranean diet is the only comprehensive diet that has been found to result in a reduction in heart attacks and death by the randomized trial, the gold standard of scientific studies.",
+   "b": "No other comprehensive diet has demonstrated a statistically significant difference in death and heart attack rate in a randomized trial.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "duplicate_of",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3D0AFZEGVQ12|c_06FZ3D0AG37BPYJA",
+   "session": "s_06FZ3CR7MH4FB3H5",
+   "a": "The randomized trial tested the efficacy of two Mediterranean diets, one supplemented with extra-virgin olive oil and the other with nuts, compared with a control diet in which patients were given advice on eating a low-fat diet.",
+   "b": "Hard cardiovascular disease endpoints are currently lacking from the data in the form of RCTs regarding olive oil consumption for cardiovascular disease prevention.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3D0AG0GM5G04|c_06FZ3D0AG2H0XEE9",
+   "session": "s_06FZ3CR7MH4FB3H5",
+   "a": "The Mediterranean diet has proven secondary cardiovascular disease prevention benefit and improvements in surrogate markers for cardiovascular disease.",
+   "b": "The Mediterranean diet supplemented with olive oil proffers cardiovascular disease surrogate and morbidity benefit according to RCT data.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3D0AG0GM5G04|c_06FZ3D0AG37BPYJA",
+   "session": "s_06FZ3CR7MH4FB3H5",
+   "a": "The Mediterranean diet has proven secondary cardiovascular disease prevention benefit and improvements in surrogate markers for cardiovascular disease.",
+   "b": "Hard cardiovascular disease endpoints are currently lacking from the data in the form of RCTs regarding olive oil consumption for cardiovascular disease prevention.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3DHCFR1WG6X6|c_06FZ3DHCFTWG7DYY",
+   "session": "s_06FZ3DC3Q1JR0N80",
+   "a": "Some studies suggest that modest increases in the minimum wage have minimal to no adverse effect on employment.",
+   "b": "Some studies indicate that minimum wage increases have potential negative consequences, particularly for low-skilled workers and certain industries.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3DHCFV1EW7VT|c_06FZ3DHCFX7JT150",
+   "session": "s_06FZ3DC3Q1JR0N80",
+   "a": "Research on the impact of minimum wage increases on employment levels in the United States has yielded mixed findings.",
+   "b": "Eight (8) studies showed mixed or inconclusive results.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3DHCFW1FF4WW|c_06FZ3DHCFWM59273",
+   "session": "s_06FZ3DC3Q1JR0N80",
+   "a": "The document claims that the main finding of economic theory and empirical research over the past 70 years is that minimum wage increases tend to reduce employment.",
+   "b": "Theory alone does not tell us how large any of these effects are, and it is ambiguous about the direction.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3DHCFW1FF4WW|c_06FZ3DHCFWRPESVY",
+   "session": "s_06FZ3DC3Q1JR0N80",
+   "a": "The document claims that the main finding of economic theory and empirical research over the past 70 years is that minimum wage increases tend to reduce employment.",
+   "b": "Empirical studies suggest that the effects of minimum wage increases on employment have historically been slightly negative, negligible, or sometimes even positive.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "contradicts",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3DHCFW5G69TT|c_06FZ3DHCFWFZM1B3",
+   "session": "s_06FZ3DC3Q1JR0N80",
+   "a": "An examination of recent minimum wage increases in Seattle found that wage increases were more than offset by reductions in hours, leading to a net loss in earnings to workers.",
+   "b": "The Congressional Budget Office estimates that low-paid workers as a group gain more income from a higher minimum wage than they lose from reduced employment.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3DHCFW6FX6WA|c_06FZ3DHCFZ2ZZC82",
+   "session": "s_06FZ3DC3Q1JR0N80",
+   "a": "Studies of developed countries other than the United States and of developing countries yielded the same hodgepodge of positive, negative, and null effects on employment as in the United States.",
+   "b": "Comparing the results of individual studies offers no clear pattern, with positive, null, and negative effects on adolescent employment estimated in different studies using different methods.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "duplicate_of",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3DHCFW6FX6WA|c_06FZ3DHCFZQNFY36",
+   "session": "s_06FZ3DC3Q1JR0N80",
+   "a": "Studies of developed countries other than the United States and of developing countries yielded the same hodgepodge of positive, negative, and null effects on employment as in the United States.",
+   "b": "In the 2006 Neumark and Wascher review, 85 percent of the most credible studies point to negative employment effects of minimum wages.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3DHCFWREXXC4|c_06FZ3DHCFZ4HNXRC",
+   "session": "s_06FZ3DC3Q1JR0N80",
+   "a": "Regression approaches based on aggregate data tend to find higher estimates of the price elasticity of minimum wages than quasi-experimental studies.",
+   "b": "The same review finds that studies using quasi-experimental designs yield smaller precision-weighted price elasticities compared to the overall estimates, with a precision-weighted regression estimate of 0.005.",
+   "stored_batch8_graph": "duplicate_of",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3DHCFWRPESVY|c_06FZ3DHCFZQNFY36",
+   "session": "s_06FZ3DC3Q1JR0N80",
+   "a": "Empirical studies suggest that the effects of minimum wage increases on employment have historically been slightly negative, negligible, or sometimes even positive.",
+   "b": "In the 2006 Neumark and Wascher review, 85 percent of the most credible studies point to negative employment effects of minimum wages.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "neither",
+   "label": ""
+  },
+  {
+   "pair": "c_06FZ3DHCFZ4HNXRC|c_06FZ3DHCFZCJQ3QW",
+   "session": "s_06FZ3DC3Q1JR0N80",
+   "a": "The same review finds that studies using quasi-experimental designs yield smaller precision-weighted price elasticities compared to the overall estimates, with a precision-weighted regression estimate of 0.005.",
+   "b": "The precision-weighted estimate of the average elasticity of prices with respect to the minimum wage, accounting for heterogeneity via random-effects meta-analysis, is approximately 0.1.",
+   "stored_batch8_graph": "contradicts",
+   "rejudged_batch1": "neither",
+   "rejudged_batch8": "contradicts",
+   "label": ""
+  }
+ ]
+}
