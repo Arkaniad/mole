@@ -404,6 +404,8 @@ type fetchIn struct {
 
 type fetchOut struct {
 	DocID string `json:"doc_id"`
+	// PublishedAt is what the page says about itself, empty when it says nothing.
+	PublishedAt string `json:"published_at,omitempty"`
 	// URL is where the bytes actually came from, which is not necessarily the URL
 	// that was requested. Reported so a caller citing this document cites the
 	// page it read.
@@ -485,7 +487,13 @@ func (d Deps) toolkitFetch(ctx context.Context, _ *mcp.CallToolRequest, in fetch
 		// storing the wrapper would make every offset wrong by its length.
 		Text:      text,
 		Truncated: truncated,
-		FetchedAt: time.Now().UTC(),
+		// Kept because §11's staleness rule needs it: a 2019 claim contradicted by
+		// a 2025 one is usually staleness rather than disagreement, and the rule
+		// that says so needs a date on both claims. Discarding it here made a
+		// supersedes edge impossible in this mode, and left the eval advising the
+		// user to check for dates the extractor had already found.
+		PublishedAt: derefTime(doc.PublishedAt),
+		FetchedAt:   time.Now().UTC(),
 	}
 	if err := d.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
 		return tx.InsertDocument(ctx, stored)
@@ -499,9 +507,14 @@ func (d Deps) toolkitFetch(ctx context.Context, _ *mcp.CallToolRequest, in fetch
 		note += fmt.Sprintf(" The page was cut at %d characters, so a quote from beyond "+
 			"that point cannot be verified.", MaxFetchChars)
 	}
+	published := ""
+	if !stored.PublishedAt.IsZero() {
+		published = stored.PublishedAt.UTC().Format(time.RFC3339)
+	}
 	return nil, fetchOut{
 		DocID: stored.ID, Title: stored.Title, URL: stored.URL,
-		Text: fenceDocument(text),
+		PublishedAt: published,
+		Text:        fenceDocument(text),
 		// Runes, because MaxFetchChars is a rune bound and the note quotes it as
 		// a character count. len() reported a Japanese page as three times the
 		// limit it had just been cut to.
@@ -524,6 +537,24 @@ func finalURL(res *fetch.Result, requested string) string {
 		return res.FinalURL
 	}
 	return requested
+}
+
+// derefTime and optionalTime move a publication date between the two shapes the
+// codebase uses for "may be unstated": a zero time.Time in a stored row, and a
+// nil *time.Time on a claim. Neither is wrong; they just meet here.
+func derefTime(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return t.UTC()
+}
+
+func optionalTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	u := t.UTC()
+	return &u
 }
 
 // truncateAt cuts on a rune boundary and reports whether it cut.
@@ -763,6 +794,7 @@ func (d Deps) toolkitClaimAdd(ctx context.Context, _ *mcp.CallToolRequest, in cl
 		Quote:             actors.TruncateQuote(match.Text),
 		QuoteOffset:       int64(match.Offset),
 		AssertionStrength: clampStrength(in.Strength),
+		PublishedAt:       optionalTime(doc.PublishedAt),
 		RetrievedAt:       doc.FetchedAt,
 	}
 	if err := d.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
@@ -1422,6 +1454,13 @@ type rowsAddOut struct {
 	Note    string   `json:"note,omitempty"`
 }
 
+// MaxDatasetRows bounds what one mole.dataset call returns.
+//
+// The merged table goes into an agent's context window twice over — as markdown
+// and as structured rows — so it needs the same bound the other list tools have.
+// `mole dataset` exports the whole thing.
+const MaxDatasetRows = 200
+
 // MaxRowsPerCall bounds one batch. Larger batches are not refused work, only
 // split, and a bound keeps one call from holding a write transaction open over an
 // arbitrary amount of parsing.
@@ -1507,7 +1546,10 @@ type datasetOut struct {
 	Extracted int              `json:"extracted"`
 	Merged    int              `json:"merged"`
 	Contested int              `json:"contested"`
-	Note      string           `json:"note,omitempty"`
+	// Truncated says the table is longer than what came back, so a caller reading
+	// it does not mistake a page for the whole dataset.
+	Truncated bool   `json:"truncated,omitempty"`
+	Note      string `json:"note,omitempty"`
 }
 
 func (d Deps) toolkitDataset(ctx context.Context, _ *mcp.CallToolRequest, in datasetIn) (
@@ -1524,18 +1566,31 @@ func (d Deps) toolkitDataset(ctx context.Context, _ *mcp.CallToolRequest, in dat
 		return nil, datasetOut{}, err
 	}
 
+	// Bounded, like every other list this surface returns. A session can record
+	// fifty thousand rows across two hundred and fifty calls, and this used to
+	// return all of them twice — once as markdown and once as JSON — in a single
+	// tool result.
+	rows := ds.Rows
 	out := datasetOut{
-		Table:     dataset.Markdown(ds),
-		Rows:      ds.Rows,
 		Extracted: ds.Extracted,
 		Merged:    len(ds.Rows),
 		Contested: ds.Contested(),
 	}
+	if len(rows) > MaxDatasetRows {
+		rows = rows[:MaxDatasetRows]
+		out.Truncated = true
+		out.Note = fmt.Sprintf("showing %d of %d merged rows; export the whole table "+
+			"with `mole dataset %s`. ", MaxDatasetRows, out.Merged, in.SessionID)
+	}
+	out.Rows = rows
+	out.Table = dataset.Markdown(dataset.Dataset{
+		Schema: ds.Schema, Rows: rows, Extracted: ds.Extracted, Notes: ds.Notes,
+	})
 	switch {
 	case ds.Extracted == 0:
-		out.Note = "no rows have been recorded; read a document and call mole.rows_add"
+		out.Note += "no rows have been recorded; read a document and call mole.rows_add"
 	case out.Contested > 0:
-		out.Note = fmt.Sprintf("%d row(s) have cells where sources disagree. The "+
+		out.Note += fmt.Sprintf("%d row(s) have cells where sources disagree. The "+
 			"disagreement is reported, not resolved — say so rather than picking one.",
 			out.Contested)
 	}

@@ -1,0 +1,13 @@
+-- The publication date of stored source text (toolkit mode).
+--
+-- The extractor already recovers it from JSON-LD, <meta> and the usual attributes,
+-- and mole's own claims carry it: §11's staleness rule rewrites a contradiction
+-- between a 2019 claim and a 2025 one as "supersedes", and the whole rule needs a
+-- date on both claims. Toolkit mode threw the date away at fetch, so no toolkit
+-- session could ever produce a supersedes edge, and `mole eval` told the user to
+-- "check whether the sources carried publication dates at all" — advice that was a
+-- dead end, since they had and mole had discarded it.
+--
+-- Nullable: most pages carry no date, and "not stated" is a different fact from
+-- "stated as the zero time".
+ALTER TABLE documents ADD COLUMN published_at INTEGER;

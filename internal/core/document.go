@@ -24,6 +24,12 @@ type Document struct {
 	// fault.
 	Truncated bool
 
+	// PublishedAt is when the source says it was published, when it says at all.
+	// Zero means unstated, which is the common case and is not the same fact as
+	// "published at the epoch" — the staleness rule needs a date on both sides
+	// before it will rewrite anything.
+	PublishedAt time.Time
+
 	FetchedAt time.Time
 	ExpiresAt time.Time
 }

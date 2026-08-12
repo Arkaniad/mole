@@ -1419,11 +1419,21 @@ func (t *queries) InsertDocument(ctx context.Context, doc core.Document) error {
 		expires = fetched.Add(core.DefaultDocumentTTL)
 	}
 	_, err := t.q.ExecContext(ctx, `
-		INSERT INTO documents (id, session_id, url, title, text, truncated, fetched_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO documents (id, session_id, url, title, text, truncated, published_at, fetched_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, doc.SessionID, doc.URL, doc.Title, doc.Text, doc.Truncated,
-		toMicros(fetched), toMicros(expires))
+		publishedMicros(doc.PublishedAt), toMicros(fetched), toMicros(expires))
 	return err
+}
+
+// publishedMicros keeps "unstated" distinct from "the epoch": a zero time is
+// stored as NULL, because most pages carry no date and pretending they claim 1970
+// would feed the staleness rule a comparison it has no business making.
+func publishedMicros(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return toMicros(t)
 }
 
 // Document reads stored source text, treating an expired row as absent.
@@ -1435,11 +1445,13 @@ func (t *queries) Document(ctx context.Context, id string, now time.Time) (core.
 	var (
 		d                core.Document
 		fetched, expires int64
+		published        sql.NullInt64
 	)
 	err := t.q.QueryRowContext(ctx, `
-		SELECT id, session_id, url, title, text, truncated, fetched_at, expires_at
+		SELECT id, session_id, url, title, text, truncated, published_at, fetched_at, expires_at
 		  FROM documents WHERE id = ?`, id).
-		Scan(&d.ID, &d.SessionID, &d.URL, &d.Title, &d.Text, &d.Truncated, &fetched, &expires)
+		Scan(&d.ID, &d.SessionID, &d.URL, &d.Title, &d.Text, &d.Truncated, &published,
+			&fetched, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.Document{}, false, nil
 	}
@@ -1447,6 +1459,9 @@ func (t *queries) Document(ctx context.Context, id string, now time.Time) (core.
 		return core.Document{}, false, fmt.Errorf("sqlite: read document: %w", err)
 	}
 	d.FetchedAt, d.ExpiresAt = fromMicros(fetched), fromMicros(expires)
+	if published.Valid {
+		d.PublishedAt = fromMicros(published.Int64)
+	}
 	if d.Expired(now) {
 		return core.Document{}, false, nil
 	}
@@ -1459,7 +1474,7 @@ func (t *queries) Document(ctx context.Context, id string, now time.Time) (core.
 // must not see text the retention rule says is gone, sweep or no sweep.
 func (t *queries) DocumentsForSession(ctx context.Context, sessionID string, now time.Time) ([]core.Document, error) {
 	rows, err := t.q.QueryContext(ctx, `
-		SELECT id, url, title, text, truncated, fetched_at, expires_at
+		SELECT id, url, title, text, truncated, published_at, fetched_at, expires_at
 		  FROM documents WHERE session_id = ? AND expires_at > ?
 		 ORDER BY fetched_at, id`, sessionID, toMicros(now))
 	if err != nil {
@@ -1472,13 +1487,17 @@ func (t *queries) DocumentsForSession(ctx context.Context, sessionID string, now
 		var (
 			d                core.Document
 			fetched, expires int64
+			published        sql.NullInt64
 		)
 		if err := rows.Scan(&d.ID, &d.URL, &d.Title, &d.Text, &d.Truncated,
-			&fetched, &expires); err != nil {
+			&published, &fetched, &expires); err != nil {
 			return nil, err
 		}
 		d.SessionID = sessionID
 		d.FetchedAt, d.ExpiresAt = fromMicros(fetched), fromMicros(expires)
+		if published.Valid {
+			d.PublishedAt = fromMicros(published.Int64)
+		}
 		out = append(out, d)
 	}
 	return out, rows.Err()

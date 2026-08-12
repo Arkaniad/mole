@@ -6,9 +6,12 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/lajosdeme/mole/internal/actors"
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/tools/extract"
 	"github.com/lajosdeme/mole/internal/tools/fetch"
 )
@@ -265,6 +268,67 @@ func (p *PipelineReader) Text(ctx context.Context, rawURL string) (string, error
 		return "", err
 	}
 	return doc.Text, nil
+}
+
+// StoredReader answers from the source text mole kept, and falls back to a
+// re-fetch when it has none.
+//
+// Toolkit mode stores the document a quote was verified against — it has to, since
+// verifying against text the caller supplied proves nothing — and the citation
+// metric was re-fetching anyway. That made the measurement worse in exactly the
+// case the store exists for: a page that has changed or 404'd since reports
+// "unreachable" or an offset drift, while mole is holding the bytes the claim was
+// checked against on disk.
+//
+// The fallback matters. An autonomous session stores no documents, and a toolkit
+// session's text expires after seven days, so this has to degrade to the network
+// rather than to "unverifiable".
+type StoredReader struct {
+	Store     store.Store
+	SessionID string
+	// Fallback reads a source the store does not have. Nil means such a source is
+	// simply unreadable, which is the honest answer when there is no network path
+	// configured.
+	Fallback SourceReader
+
+	once  sync.Once
+	byURL map[string]string
+	err   error
+}
+
+func NewStoredReader(st store.Store, sessionID string, fallback SourceReader) *StoredReader {
+	return &StoredReader{Store: st, SessionID: sessionID, Fallback: fallback}
+}
+
+func (r *StoredReader) Text(ctx context.Context, rawURL string) (string, error) {
+	r.once.Do(func() {
+		r.byURL = map[string]string{}
+		r.err = r.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
+			docs, err := q.DocumentsForSession(ctx, r.SessionID, time.Now().UTC())
+			if err != nil {
+				return err
+			}
+			for _, d := range docs {
+				// First write wins: a URL fetched twice in one session has two
+				// rows, and the earlier one is the text the earlier claims were
+				// checked against.
+				if _, seen := r.byURL[d.URL]; !seen {
+					r.byURL[d.URL] = d.Text
+				}
+			}
+			return nil
+		})
+	})
+	if r.err != nil {
+		return "", r.err
+	}
+	if text, ok := r.byURL[rawURL]; ok {
+		return text, nil
+	}
+	if r.Fallback == nil {
+		return "", fmt.Errorf("no stored copy of %s and no reader configured", rawURL)
+	}
+	return r.Fallback.Text(ctx, rawURL)
 }
 
 func truncate(s string, max int) string {

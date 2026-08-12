@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -113,6 +114,31 @@ type serveOpts struct {
 //
 // Nil rather than an error: a daemon serving an agent that never touches local data
 // should still start, and mole.aggregate says what is missing when it is called.
+// documentPurgeInterval is how often a running daemon reclaims expired source
+// text. Hourly: the TTL is measured in days, so the exact moment does not matter,
+// and a sweep that runs while the daemon is idle costs nothing worth counting.
+const documentPurgeInterval = time.Hour
+
+func purgeDocumentsPeriodically(ctx context.Context, runner *session.Runner, log *slog.Logger) {
+	t := time.NewTicker(documentPurgeInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			n, err := runner.PurgeDocuments(ctx)
+			if err != nil {
+				log.Warn("could not purge expired documents", "err", err)
+				continue
+			}
+			if n > 0 {
+				log.Info("purged expired source text", "documents", n)
+			}
+		}
+	}
+}
+
 func toolkitConnectors(dbPath string) *connector.Registry {
 	reg, err := connector.LoadRegistry(connectorRegistryPath(dbPath))
 	if err != nil || len(reg.List()) == 0 {
@@ -160,8 +186,14 @@ func cmdServe(ctx context.Context, o serveOpts) error {
 	// session would sweep leases belonging to sessions running alongside.
 	if rc := runner.Recover(ctx); rc.Any() {
 		actor.Log.Info("recovered state from a previous run",
-			"leads", rc.Leads, "reservations", rc.Reservations, "sessions", rc.Sessions)
+			"leads", rc.Leads, "reservations", rc.Reservations, "sessions", rc.Sessions,
+			"documents_purged", rc.Documents)
 	}
+
+	// Retention, repeated. Boot recovery covers a daemon that restarts; this one
+	// stays up for weeks, and toolkit mode writes a document per fetch, so the
+	// TTL has to be enforced by something that runs while the process does.
+	go purgeDocumentsPeriodically(ctx, runner, actor.Log)
 
 	sup := session.NewSupervisor(runner, o.maxSessions, actor.Log)
 

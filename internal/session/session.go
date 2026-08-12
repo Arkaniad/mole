@@ -184,10 +184,16 @@ type Recovery struct {
 	Leads        int
 	Reservations int
 	Sessions     int
+	// Documents is stored source text deleted for being past its TTL. Reclaimed
+	// disk rather than recovered state, and reported for the same reason: a
+	// number nobody prints is a sweep nobody notices has stopped running.
+	Documents int64
 }
 
 // Any reports whether anything was recovered.
-func (rc Recovery) Any() bool { return rc.Leads+rc.Reservations+rc.Sessions > 0 }
+func (rc Recovery) Any() bool {
+	return rc.Leads+rc.Reservations+rc.Sessions > 0 || rc.Documents > 0
+}
 
 // Recover reclaims what a previous process left behind (§9.4).
 //
@@ -221,7 +227,33 @@ func (r *Runner) Recover(ctx context.Context) Recovery {
 	} else {
 		rc.Sessions = n
 	}
+	// Stored source text past its TTL. The reads already refuse it — a quote
+	// cannot be checked against an expired document — but nothing deleted the
+	// rows, so a machine that ran toolkit mode kept every page it had ever read,
+	// at up to 120,000 characters each, permanently. The migration promised two
+	// mechanisms and shipped with neither firing.
+	if n, err := r.PurgeDocuments(ctx); err != nil {
+		r.notice("document sweep failed: %v", err)
+	} else {
+		rc.Documents = n
+	}
 	return rc
+}
+
+// PurgeDocuments deletes stored source text past its retention TTL and reports
+// how many rows went.
+//
+// Exported so a long-running daemon can repeat it: boot recovery is not enough
+// for a process that stays up for weeks, which is the process this table fills
+// up fastest under.
+func (r *Runner) PurgeDocuments(ctx context.Context) (int64, error) {
+	var n int64
+	err := r.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+		var err error
+		n, err = tx.PurgeExpiredDocuments(ctx, time.Now().UTC())
+		return err
+	})
+	return n, err
 }
 
 // Create writes the session row and returns it.

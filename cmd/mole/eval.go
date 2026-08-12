@@ -127,13 +127,20 @@ func cmdEval(ctx context.Context, path, sessionID string, o evalOpts) error {
 		}
 		defer func() { _ = rec.Close() }()
 
-		opts.Citations = eval.NewPipelineReader(
+		network := eval.NewPipelineReader(
 			fetch.NewHTTP(fetch.Config{UserAgent: userAgent()}, fetch.Options{
 				Log:       slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 				Transport: rec.Wrap,
 			}),
 			extract.New(),
 		)
+		// Stored text first, network second. A toolkit session holds the exact
+		// bytes each quote was verified against, and re-fetching them measured the
+		// page's stability rather than the citation — a source that has since 404'd
+		// reported "unreachable" while mole had the text on disk. Sessions with no
+		// stored documents fall straight through to the fetch, which is every
+		// autonomous session and any toolkit session past its retention window.
+		opts.Citations = eval.NewStoredReader(db, sessionID, network)
 	}
 
 	card, err := eval.Score(ctx, db, sessionID, opts)
