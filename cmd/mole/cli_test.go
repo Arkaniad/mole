@@ -108,17 +108,44 @@ func TestArgErrorsNameTheCommand(t *testing.T) {
 	}
 }
 
-// TestHelpListsEveryCommand so a new one cannot be added invisibly.
-func TestHelpListsEveryCommand(t *testing.T) {
+// TestHelpListsEveryProductCommand so a new one cannot be added invisibly.
+//
+// The development commands are deliberately absent — see the two assertions
+// below, which pin both halves of that split. Checking only "is it listed" would
+// pass if `research` were hidden by accident.
+func TestHelpListsEveryProductCommand(t *testing.T) {
 	out, err := exec(t, "--help")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"research", "migrate", "config", "doctor", "sessions", "stats", "trace", "dev", "version",
+		"research", "ask", "dataset", "connect", "crossings", "serve",
+		"migrate", "config", "doctor", "sessions", "stats", "trace", "version",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help does not list %q", want)
+		}
+	}
+}
+
+// TestTheDevCommandsAreHiddenButRunnable.
+//
+// Hidden, because a help screen listing eleven commands teaches nothing about
+// which six matter, and `mole dev seed` against a real database is a bad first
+// impression. Runnable, because they produce every measured number the README
+// quotes and a reader checking a claim must be able to run them from a release
+// binary.
+func TestTheDevCommandsAreHiddenButRunnable(t *testing.T) {
+	out, err := exec(t, "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hidden := range []string{"eval", "corpus", "pairs", "dev"} {
+		if strings.Contains(out, "\n  "+hidden+" ") {
+			t.Errorf("%q is listed in the product help", hidden)
+		}
+		if _, err := exec(t, hidden, "--help"); err != nil {
+			t.Errorf("%q is hidden AND unrunnable: %v", hidden, err)
 		}
 	}
 }
