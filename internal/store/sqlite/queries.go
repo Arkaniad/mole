@@ -1484,6 +1484,14 @@ func (t *queries) DocumentsForSession(ctx context.Context, sessionID string, now
 	return out, rows.Err()
 }
 
+// ExpireDocumentForTest backdates a document's expiry. See the interface comment.
+func (t *queries) ExpireDocumentForTest(ctx context.Context, id string) error {
+	_, err := t.q.ExecContext(ctx,
+		`UPDATE documents SET expires_at = ? WHERE id = ?`,
+		toMicros(time.Now().UTC().Add(-time.Hour)), id)
+	return err
+}
+
 // PurgeExpiredDocuments reclaims disk taken by source text past its TTL.
 func (t *queries) PurgeExpiredDocuments(ctx context.Context, now time.Time) (int64, error) {
 	res, err := t.q.ExecContext(ctx,

@@ -79,6 +79,17 @@ func (r *rig) tools(t *testing.T) []string {
 
 func timeNow() time.Time { return time.Now().UTC() }
 
+// expireDocument backdates a stored document past its TTL, so a test can check what
+// happens when retention has taken text a caller still holds an id for.
+func expireDocument(t *testing.T, r *rig, docID string) {
+	t.Helper()
+	if err := r.db.WithTx(context.Background(), func(ctx context.Context, tx store.Tx) error {
+		return tx.ExpireDocumentForTest(ctx, docID)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // connectToolkit brings up the server with the toolkit surface enabled and a local
 // HTTP page to fetch.
 func connectToolkit(t *testing.T) *rig {

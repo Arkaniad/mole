@@ -217,6 +217,13 @@ type Tx interface {
 	// InsertDocument stores source text a quote can later be checked against.
 	InsertDocument(ctx context.Context, doc core.Document) error
 
+	// ExpireDocumentForTest backdates a document's expiry.
+	//
+	// On the interface because retention is a property worth testing through the
+	// real path rather than by reaching around the store, and there is no
+	// legitimate production caller — a document's TTL is set when it is stored.
+	ExpireDocumentForTest(ctx context.Context, id string) error
+
 	// PurgeExpiredDocuments deletes source text past its TTL and reports how many
 	// rows went. Reclaims disk; correctness does not depend on it, since reads
 	// apply expiry themselves.
