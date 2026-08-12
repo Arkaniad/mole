@@ -464,3 +464,99 @@ func TestTheAuditSinkIsNotSilencedByTheResearchLogger(t *testing.T) {
 			"logger instead")
 	}
 }
+
+// The remaining bounds this surface declares, none of which had a test: a
+// mechanism with a constant and no test is a constant.
+
+// TestALongPageIsCutAndSaysSo, because a quote from beyond the cut fails
+// verification for a reason that is not the caller's fault.
+func TestALongPageIsCutAndSaysSo(t *testing.T) {
+	body := "<html><head><title>Long</title></head><body><article><p>" +
+		strings.Repeat("Fasting reduced fasting glucose in adults with prediabetes. ",
+			MaxFetchChars/40) + "</p></article></body></html>"
+	r := connectToolkitStubFetch(t, body)
+	sess, _ := openWithDoc(t, r)
+
+	var fetched struct {
+		DocID     string `json:"doc_id"`
+		Chars     int    `json:"chars"`
+		Truncated bool   `json:"truncated"`
+		Note      string `json:"note"`
+	}
+	r.call(t, "mole.fetch", map[string]any{
+		"session_id": sess, "url": r.pageURL}, &fetched)
+
+	if !fetched.Truncated {
+		t.Fatalf("a %d-character page was not reported as cut", fetched.Chars)
+	}
+	if fetched.Chars > MaxFetchChars {
+		t.Errorf("chars = %d, limit %d", fetched.Chars, MaxFetchChars)
+	}
+	if !strings.Contains(fetched.Note, "cut") {
+		t.Errorf("the note does not warn about quotes past the cut: %q", fetched.Note)
+	}
+	// And the refusal explains it, which is where a caller actually meets this.
+	res := r.call(t, "mole.claim_add", map[string]any{
+		"session_id": sess, "doc_id": fetched.DocID,
+		"text":  "Something the page says beyond the cut.",
+		"quote": "a sentence that is nowhere in this page at all, truly nowhere",
+	}, nil)
+	if !res.IsError || !strings.Contains(errText(res), "cut at") {
+		t.Errorf("a refusal on a truncated document does not mention the cut: %s",
+			errText(res))
+	}
+}
+
+// TestAnOversizedRowBatchIsRefusedRatherThanTruncated, so a caller is never left
+// believing rows landed that did not.
+func TestAnOversizedRowBatchIsRefusedRatherThanTruncated(t *testing.T) {
+	r := connectToolkitStubFetch(t, testPage)
+	sess, doc := openDataset(t, r)
+
+	rows := make([]map[string]any, 0, MaxRowsPerCall+1)
+	for i := 0; i <= MaxRowsPerCall; i++ {
+		rows = append(rows, map[string]any{
+			"values": map[string]string{"trial": fmt.Sprintf("Trial %d", i)},
+			"quote":  realQuote,
+		})
+	}
+	res := r.call(t, "mole.rows_add", map[string]any{
+		"session_id": sess, "doc_id": doc, "rows": rows}, nil)
+	if !res.IsError {
+		t.Fatal("an oversized batch was accepted; some rows would be silently dropped")
+	}
+	if !strings.Contains(errText(res), "batches") {
+		t.Errorf("the refusal does not say what to do instead: %s", errText(res))
+	}
+}
+
+// TestCitationsCapTheQuotesPerSource.
+//
+// A source cited by forty claims would otherwise return forty quotes, and the
+// tool exists to give an agent a numbering to write prose against, not to replay
+// the session.
+func TestCitationsCapTheQuotesPerSource(t *testing.T) {
+	r := connectToolkitStubFetch(t, testPage)
+	sess, doc := openWithDoc(t, r)
+	text := storedText(t, r, doc)
+	for i := 0; i < 8; i++ {
+		r.call(t, "mole.claim_add", map[string]any{
+			"session_id": sess, "doc_id": doc,
+			"text":  fmt.Sprintf("Assertion %d drawn from the review.", i),
+			"quote": text[i*40 : i*40+40]}, nil)
+	}
+
+	var out struct {
+		Citations []struct {
+			N      int      `json:"n"`
+			Quotes []string `json:"quotes"`
+		} `json:"citations"`
+	}
+	r.call(t, "mole.citations", map[string]any{"session_id": sess}, &out)
+	if len(out.Citations) != 1 {
+		t.Fatalf("%d citations for one source", len(out.Citations))
+	}
+	if n := len(out.Citations[0].Quotes); n > 3 {
+		t.Errorf("%d quotes for one source; the numbering is not a transcript", n)
+	}
+}
