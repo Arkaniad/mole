@@ -15,6 +15,7 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -28,6 +29,7 @@ import (
 	"github.com/lajosdeme/mole/internal/compute/connector"
 	"github.com/lajosdeme/mole/internal/compute/hypothesis"
 	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/dataset"
 	"github.com/lajosdeme/mole/internal/store"
 	"github.com/lajosdeme/mole/internal/tools/search"
 	"github.com/lajosdeme/mole/internal/verifier"
@@ -86,6 +88,16 @@ func fenceDocument(text string) string {
 type sessionOpenIn struct {
 	Question string  `json:"question" jsonschema:"the research question this session is about"`
 	Budget   *Budget `json:"budget,omitempty" jsonschema:"optional ceiling on what mole itself may spend on searches and fetches"`
+	// Schema turns this into a dataset session (§13): rows and a table instead of
+	// claims and prose.
+	//
+	// Declared here rather than through a tool of its own, for two reasons. It is
+	// where autonomous mode declares it — the schema is written when the session
+	// is created, because rows persist per lead and a schema written at the end
+	// left a killed run with rows nobody could read. And every extra tool costs
+	// each MCP client a slot in its context window, which a field on a call it
+	// already makes does not.
+	Schema *dataset.Schema `json:"schema,omitempty" jsonschema:"optional: declare fields to collect a table instead of prose. At least one field must be marked key"`
 }
 
 type sessionOpenOut struct {
@@ -104,15 +116,36 @@ func (d Deps) toolkitSessionOpen(ctx context.Context, _ *mcp.CallToolRequest, in
 		return nil, sessionOpenOut{}, err
 	}
 
+	// Validated before the session exists, so a bad schema costs a refusal rather
+	// than a session that can never produce a dataset.
+	mode := core.ModeReport
+	if in.Schema != nil {
+		if err := in.Schema.Validate(); err != nil {
+			return nil, sessionOpenOut{}, err
+		}
+		mode = core.ModeDataset
+	}
+
 	sess, err := budget.New(d.Store, budget.DefaultConfig()).CreateSession(ctx, budget.SessionSpec{
 		Prompt:     in.Question,
-		Mode:       core.ModeReport,
+		Mode:       mode,
 		ActorTypes: []core.ActorType{core.ActorWeb},
 		BudgetUnit: unit,
 		Budget:     amount,
 	})
 	if err != nil {
 		return nil, sessionOpenOut{}, err
+	}
+	if in.Schema != nil {
+		// Written immediately, matching session.Runner: rows are stored as they
+		// arrive, and `mole dataset` refuses a session with no stored schema. A
+		// schema written at the end would lose every row of a session that was
+		// interrupted.
+		if err := d.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+			return tx.SetDatasetSchema(ctx, sess.ID, *in.Schema)
+		}); err != nil {
+			return nil, sessionOpenOut{}, err
+		}
 	}
 	return nil, sessionOpenOut{
 		SessionID: sess.ID,
@@ -432,6 +465,27 @@ func registerToolkit(srv *mcp.Server, d Deps) {
 			"judgements 70%. Judging a pair twice, independently, is worth the second " +
 			"call. \"neither\" writes no edge and is the right answer for most pairs.",
 	}, d.toolkitEdgeAdd)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "mole.rows_add",
+		Description: "Record dataset rows read from one document. Only for sessions " +
+			"opened with a schema. Each row carries the values you read and one quote " +
+			"copied verbatim from the document that shows them; mole checks the quote " +
+			"against its own stored copy and refuses the row otherwise, the same rule as " +
+			"mole.claim_add. Values a field's declared type cannot hold are dropped and " +
+			"reported — write a number as a number, not \"roughly $1.2m\". A row filling " +
+			"no key field is refused, since it identifies nothing to merge on.",
+	}, d.toolkitRowsAdd)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "mole.dataset",
+		Description: "The finished table: rows recorded across every document in the " +
+			"session, merged by fuzzy key so one entity described by four sources is one " +
+			"row. Disagreements between sources are reported, never resolved — a cell " +
+			"with two values keeps both, with the sources for each. Read this rather " +
+			"than assembling the rows yourself; the merge is measured (precision and " +
+			"recall are in `mole eval`) and de-duplicating by eye is not.",
+	}, d.toolkitDataset)
 }
 
 // ---------------------------------------------------------------------------
@@ -974,4 +1028,190 @@ func (d Deps) claimsInSession(ctx context.Context, sessionID string, ids ...stri
 		}
 		return nil
 	})
+}
+
+// ---------------------------------------------------------------------------
+// rows_add / dataset
+// ---------------------------------------------------------------------------
+//
+// §13's dataset mode, with the agent's model doing the extraction. The interesting
+// part is that nothing about the guarantee changes: a row is a claim with columns,
+// so it is checked by exactly the same code the miner runs (actors.AcceptRow),
+// against exactly the same stored document mole.claim_add checks against.
+//
+// A CSV is more likely to be believed unchecked than prose is — nobody reads a
+// spreadsheet sceptically — so this is the tool where the quote rule matters most,
+// and it is the one an agent has the most reason to want relaxed.
+
+type rowsAddIn struct {
+	SessionID string `json:"session_id"`
+	DocID     string `json:"doc_id"`
+	Rows      []struct {
+		Values map[string]string `json:"values" jsonschema:"one entry per schema field; omit a field the document does not state"`
+		Quote  string            `json:"quote" jsonschema:"a span copied verbatim from the document that shows these values"`
+	} `json:"rows"`
+}
+
+type rowRejection struct {
+	Index  int    `json:"index"`
+	Reason string `json:"reason"`
+}
+
+type rowsAddOut struct {
+	Accepted int `json:"accepted"`
+	// Rejected names the rows that did not survive and why, per row. A count
+	// alone would leave a caller unable to fix the one row that failed, and the
+	// obvious repair — resend everything — resends the rows that were accepted.
+	Rejected []rowRejection `json:"rejected,omitempty"`
+	// Coerced names values dropped because a field's type could not hold them.
+	// The row still landed, with that cell empty, which is worth saying: a
+	// silently emptied cell reads as "the source did not state it".
+	Coerced []string `json:"coerced,omitempty"`
+	Note    string   `json:"note,omitempty"`
+}
+
+// MaxRowsPerCall bounds one batch. Larger batches are not refused work, only
+// split, and a bound keeps one call from holding a write transaction open over an
+// arbitrary amount of parsing.
+const MaxRowsPerCall = 200
+
+func (d Deps) toolkitRowsAdd(ctx context.Context, _ *mcp.CallToolRequest, in rowsAddIn) (
+	*mcp.CallToolResult, rowsAddOut, error,
+) {
+	schema, err := d.sessionSchema(ctx, in.SessionID)
+	if err != nil {
+		return nil, rowsAddOut{}, err
+	}
+	if len(in.Rows) == 0 {
+		return nil, rowsAddOut{}, fmt.Errorf("no rows supplied")
+	}
+	if len(in.Rows) > MaxRowsPerCall {
+		return nil, rowsAddOut{}, fmt.Errorf(
+			"%d rows in one call, limit %d; send them in batches", len(in.Rows), MaxRowsPerCall)
+	}
+	doc, err := d.liveDocument(ctx, in.DocID, in.SessionID)
+	if err != nil {
+		return nil, rowsAddOut{}, err
+	}
+
+	var out rowsAddOut
+	var accepted []dataset.Row
+	seenCoerced := map[string]bool{}
+	now := time.Now().UTC()
+	for i, r := range in.Rows {
+		res := actors.AcceptRow(schema, actors.RowSource{
+			Text: doc.Text, URL: doc.URL, LeadID: toolkitLeadID,
+		}, r.Values, r.Quote)
+		for _, f := range res.Coerced {
+			if !seenCoerced[f] {
+				seenCoerced[f] = true
+				out.Coerced = append(out.Coerced, f)
+			}
+		}
+		if !res.OK() {
+			reason := res.Reason
+			if strings.Contains(reason, "quote") {
+				// The generic refusal explains the rule and what to do about it,
+				// which a caller seeing "the quote does not appear" for the first
+				// time needs and the miner's operator does not.
+				reason = quoteRefusal(doc)
+			}
+			out.Rejected = append(out.Rejected, rowRejection{Index: i, Reason: reason})
+			continue
+		}
+		res.Row.RetrievedAt = now
+		accepted = append(accepted, res.Row)
+	}
+
+	if len(accepted) > 0 {
+		if err := d.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+			return tx.InsertRows(ctx, in.SessionID, accepted)
+		}); err != nil {
+			return nil, rowsAddOut{}, err
+		}
+	}
+	out.Accepted = len(accepted)
+	if len(out.Coerced) > 0 {
+		out.Note = "some values were dropped because the field's declared type could " +
+			"not hold them; those cells are empty rather than wrong"
+	}
+	return nil, out, nil
+}
+
+type datasetIn struct {
+	SessionID string `json:"session_id"`
+}
+
+type datasetOut struct {
+	// Table is the merged dataset as markdown, which is what a person reads and
+	// what `mole dataset` prints. The rows are the same rows.
+	Table string `json:"table"`
+	// Rows is the machine-readable form, so an agent writing prose around the
+	// table does not have to parse its own markdown back.
+	Rows      []dataset.Merged `json:"rows"`
+	Extracted int              `json:"extracted"`
+	Merged    int              `json:"merged"`
+	Contested int              `json:"contested"`
+	Note      string           `json:"note,omitempty"`
+}
+
+func (d Deps) toolkitDataset(ctx context.Context, _ *mcp.CallToolRequest, in datasetIn) (
+	*mcp.CallToolResult, datasetOut, error,
+) {
+	// The same call `mole dataset` makes, with the same defaults. A second merge
+	// tuned for this mode would make the measured precision and recall figures
+	// describe something nobody runs.
+	ds, err := store.LoadDataset(ctx, d.Store, in.SessionID, dataset.Options{})
+	if errors.Is(err, store.ErrNotDataset) {
+		return nil, datasetOut{}, noSchemaErr(in.SessionID)
+	}
+	if err != nil {
+		return nil, datasetOut{}, err
+	}
+
+	out := datasetOut{
+		Table:     dataset.Markdown(ds),
+		Rows:      ds.Rows,
+		Extracted: ds.Extracted,
+		Merged:    len(ds.Rows),
+		Contested: ds.Contested(),
+	}
+	switch {
+	case ds.Extracted == 0:
+		out.Note = "no rows have been recorded; read a document and call mole.rows_add"
+	case out.Contested > 0:
+		out.Note = fmt.Sprintf("%d row(s) have cells where sources disagree. The "+
+			"disagreement is reported, not resolved — say so rather than picking one.",
+			out.Contested)
+	}
+	return nil, out, nil
+}
+
+// sessionSchema reads the schema a dataset session was opened with.
+func (d Deps) sessionSchema(ctx context.Context, sessionID string) (dataset.Schema, error) {
+	var (
+		schema dataset.Schema
+		ok     bool
+	)
+	if err := d.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		schema, ok, err = q.DatasetSchema(ctx, sessionID)
+		return err
+	}); err != nil {
+		return dataset.Schema{}, err
+	}
+	if !ok {
+		return dataset.Schema{}, noSchemaErr(sessionID)
+	}
+	return schema, nil
+}
+
+// noSchemaErr names the fix.
+//
+// A caller that opened a plain session and then tried to add rows has made one
+// mistake, and telling it "no schema" without saying where a schema comes from
+// leaves it guessing at a tool that does not exist.
+func noSchemaErr(sessionID string) error {
+	return fmt.Errorf("session %s has no dataset schema, so it collects claims rather "+
+		"than rows. Pass a schema to mole.session_open to collect a table.", sessionID)
 }

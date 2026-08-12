@@ -39,6 +39,10 @@ func TestTheToolkitAppearsWhenEnabled(t *testing.T) {
 
 	for _, want := range []string{
 		"mole.session_open", "mole.session_close", "mole.search", "mole.fetch",
+		"mole.verify_quote", "mole.claim_add", "mole.claims_list", "mole.citations",
+		"mole.connect_list", "mole.aggregate",
+		"mole.pairs_candidates", "mole.edge_add",
+		"mole.rows_add", "mole.dataset",
 	} {
 		if !contains(tools, want) {
 			t.Errorf("%q is missing with --toolkit", want)

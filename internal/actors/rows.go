@@ -137,21 +137,50 @@ func (m *RowMiner) Mine(ctx context.Context, in RowInput) (RowOutput, error) {
 	return out, nil
 }
 
-// accept applies §11.5 and the schema to one proposed row.
-// The int is how many values the field types could not hold — dropped, and
-// counted so the caller can report it.
-func (m *RowMiner) accept(ctx context.Context, in RowInput, cand minedRow) (dataset.Row, int, bool) {
-	match, ok := FindQuote(in.Text, cand.Quote)
+// RowSource is the passage a proposed row must be supported by.
+type RowSource struct {
+	// Text is what the quote is checked against. mole's own copy of the source,
+	// never text a caller supplied — the whole rule collapses otherwise.
+	Text string
+	URL  string
+	// Offset is where Text starts inside the full document, so a stored quote
+	// offset points into the document rather than into the chunk.
+	Offset int
+	LeadID string
+}
+
+// AcceptedRow is the outcome of applying §11.5 and the schema to a proposed row.
+type AcceptedRow struct {
+	Row dataset.Row
+	// Coerced names the fields whose value the declared type could not hold.
+	// Dropped, and named rather than counted, because the caller that can act on
+	// it is the one that proposed the value.
+	Coerced []string
+	// Reason is empty when the row was accepted, and otherwise says why it was
+	// not, in terms whoever proposed the row can act on.
+	Reason string
+}
+
+// OK reports whether the row survived.
+func (a AcceptedRow) OK() bool { return a.Reason == "" }
+
+// AcceptRow applies §11.5 and the schema to one proposed row.
+//
+// Extracted from the miner when toolkit mode needed the same check for rows an
+// agent's model proposed. Two copies would have been two places for the rule to
+// drift, and the rule is the product: a row whose quote is not in the source text
+// dies exactly as a fabricated claim does, and a row filling no key field
+// identifies nothing and can be neither merged nor reported.
+func AcceptRow(schema dataset.Schema, src RowSource, values map[string]string, quote string) AcceptedRow {
+	match, ok := FindQuote(src.Text, quote)
 	if !ok {
-		m.logger().DebugContext(ctx, "row rejected: quote not found in source",
-			"source", in.SourceURL, "quote", truncateForLog(cand.Quote))
-		return dataset.Row{}, 0, false
+		return AcceptedRow{Reason: "the quote does not appear in the source text"}
 	}
 
-	var coerced int
-	values := map[string]string{}
-	for _, f := range m.Schema.Fields {
-		raw, present := cand.Values[f.Name]
+	var coerced []string
+	kept := map[string]string{}
+	for _, f := range schema.Fields {
+		raw, present := values[f.Name]
 		if !present {
 			continue
 		}
@@ -160,13 +189,11 @@ func (m *RowMiner) accept(ctx context.Context, in RowInput, cand minedRow) (data
 			// A value the field's type cannot hold is dropped rather than
 			// carried as text: a number column holding "roughly $1.2m" merges
 			// against nothing and renders as a value somebody will sort.
-			coerced++
-			m.logger().DebugContext(ctx, "value dropped: not a "+string(f.Type),
-				"source", in.SourceURL, "field", f.Name, "value", truncateForLog(raw))
+			coerced = append(coerced, f.Name)
 			continue
 		}
 		if v != "" {
-			values[f.Name] = v
+			kept[f.Name] = v
 		}
 	}
 
@@ -174,25 +201,47 @@ func (m *RowMiner) accept(ctx context.Context, in RowInput, cand minedRow) (data
 	// meaningfully reported — and a page that produced one was not answering the
 	// question. Dropped and counted.
 	var hasKey bool
-	for _, k := range m.Schema.Keys() {
-		if v, ok := values[k]; ok && strings.TrimSpace(v) != "" {
+	for _, k := range schema.Keys() {
+		if v, ok := kept[k]; ok && strings.TrimSpace(v) != "" {
 			hasKey = true
 			break
 		}
 	}
 	if !hasKey {
-		m.logger().DebugContext(ctx, "row rejected: no key field",
-			"source", in.SourceURL)
-		return dataset.Row{}, coerced, false
+		return AcceptedRow{Coerced: coerced, Reason: "no key field was filled, so the " +
+			"row identifies nothing and cannot be merged"}
 	}
 
-	return dataset.Row{
-		Values:      values,
-		Source:      in.SourceURL,
-		Quote:       TruncateQuote(match.Text),
-		QuoteOffset: int64(in.Offset + match.Offset),
-		LeadID:      in.Lead.ID,
-	}, coerced, true
+	return AcceptedRow{
+		Coerced: coerced,
+		Row: dataset.Row{
+			Values:      kept,
+			Source:      src.URL,
+			Quote:       TruncateQuote(match.Text),
+			QuoteOffset: int64(src.Offset + match.Offset),
+			LeadID:      src.LeadID,
+		},
+	}
+}
+
+// accept is AcceptRow with the miner's logging, which names the source a rejected
+// row came from — the thing an operator watching a run needs and a tool caller
+// does not.
+func (m *RowMiner) accept(ctx context.Context, in RowInput, cand minedRow) (dataset.Row, int, bool) {
+	res := AcceptRow(m.Schema, RowSource{
+		Text: in.Text, URL: in.SourceURL, Offset: in.Offset, LeadID: in.Lead.ID,
+	}, cand.Values, cand.Quote)
+
+	for _, f := range res.Coerced {
+		m.logger().DebugContext(ctx, "value dropped: type mismatch",
+			"source", in.SourceURL, "field", f, "value", truncateForLog(cand.Values[f]))
+	}
+	if !res.OK() {
+		m.logger().DebugContext(ctx, "row rejected: "+res.Reason,
+			"source", in.SourceURL, "quote", truncateForLog(cand.Quote))
+		return dataset.Row{}, len(res.Coerced), false
+	}
+	return res.Row, len(res.Coerced), true
 }
 
 // CoerceNumberForTest exposes the number coercion.

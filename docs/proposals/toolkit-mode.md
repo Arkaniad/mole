@@ -221,8 +221,28 @@ contradictions), and it does not cap edges per session. What it does enforce is 
 both claims belong to the session — an edge nothing in the session explains is a
 graph defect the scorecard would silently absorb.
 
-Dataset mode reuses `claim_add`'s shape via `mole.rows_add` and `mole.dataset`, and
-is a later slice.
+### Dataset
+
+```
+mole.rows_add(session_id, doc_id, rows[{values, quote}]) -> {accepted, rejected[], coerced[]}
+mole.dataset(session_id)                                 -> {table, rows, extracted, merged, contested}
+```
+
+A row is a claim with columns, so `rows_add` runs the same check `claim_add` does —
+literally the same function (`actors.AcceptRow`), against the same stored document.
+A CSV is believed without checking in a way prose is not, so this is the tool where
+a dropped quote check would do the most damage.
+
+The schema is a field on `mole.session_open` rather than a tool of its own. That is
+where autonomous mode declares it — the schema is written when the session is
+created, because rows persist per lead and a schema written at the end left a killed
+run with rows nobody could read — and it keeps the surface at twelve tools rather
+than thirteen.
+
+`mole.dataset` calls what `mole dataset` calls, so the merge, its thresholds and its
+measured precision and recall are the same ones. A batch is not all-or-nothing:
+rejected rows are named by index, because the obvious repair to a rejected batch is
+to resend it, and that would duplicate the rows that were accepted.
 
 ## What the eval can still measure
 
@@ -235,6 +255,7 @@ Half the scorecard survives, and the half that survives is the objective half:
 | exfil regression | **yes** — the gate is unchanged |
 | k-anonymity suppression | **yes** |
 | duplicate collapse, disagreement rate | **yes** — over the graph the agent built |
+| dataset row integrity, merge collapse | **yes** — the rows are quote-checked by the same code |
 | budget overshoot | no — nothing to overshoot |
 | grounding rate | partial — mole can re-fetch and locate; judging support needs a model |
 | cost per claim | no |
@@ -253,7 +274,7 @@ Each slice is usable on its own.
 | ~~2~~ | ~~`verify_quote`, `claim_add`, `claims_list`, `citations`~~ **done** — §11.5 now holds for someone else's model |
 | ~~3~~ | ~~`connect_list`, `aggregate`~~ **done** — pipeline extracted to internal/compute so both modes run one copy |
 | ~~4~~ | ~~`pairs_candidates`, `edge_add`~~ **done** — the agent's edges land in the graph `mole eval` scores; the confirm pass is advice in the tool description, not a rule |
-| 5 | `rows_add`, `dataset` | medium |
+| ~~5~~ | ~~`rows_add`, `dataset`~~ **done** — §11.5 applied to rows by the same code the miner runs; the schema is a field on `session_open`, not a thirteenth tool |
 
 Roughly two to three weeks. Most of it is exposure of machinery that exists and is
 tested; the new code is the document store, ten tool handlers, and their refusals.
