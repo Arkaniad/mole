@@ -235,9 +235,6 @@ Three actor types feed the same graph. **web** searches and reads pages.
 prefers open-access full text. **local_compute** runs deterministic SQL over data
 you registered and never lets a row reach the model.
 
-The design document — every decision, what was measured, and what is still
-unproven — is in [docs/DESIGN.md](docs/DESIGN.md).
-
 ---
 
 ## Honest numbers
@@ -253,17 +250,6 @@ metric it cannot compute says so instead of quietly reading zero.
 | grounding rate | **80%** — of claims re-read against their source, confirmed |
 | contradiction precision | **70%** with the confirm pass, 51% without |
 | merge precision / recall | **1.000 / 1.000** on constructed ground truth |
-
-Contradiction detection is the weakest link, and mole is built to treat it as one.
-A single model judgement calls two claims contradictory correctly about half the
-time — so an edge is only written when a second judgement agrees, which raises
-precision to 70% and keeps roughly half as many edges. `--no-confirm-edges` if you
-would rather have the recall.
-
-Three things are not measured: claim precision against labelled answers,
-contradiction recall, and staleness detection. All three need a bigger labelled
-corpus than exists today, so they are reported as unmeasured rather than estimated
-from something easier to count.
 
 ---
 
