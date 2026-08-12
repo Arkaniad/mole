@@ -9,24 +9,24 @@
         "epidemiology",
         "numeric"
       ],
-      "session_id": "s_06FZ395TJ4Z4K25W",
+      "session_id": "s_06FZA17P8XNM1NHD",
       "status": "done",
-      "claims": 35,
+      "claims": 36,
       "scorecard": {
-        "session_id": "s_06FZ395TJ4Z4K25W",
+        "session_id": "s_06FZA17P8XNM1NHD",
         "metrics": [
           {
             "name": "budget overshoot",
             "status": "measured",
             "unit": "%",
-            "detail": "spent $0.0131 of $0.4000, no overshoot"
+            "detail": "spent $0.0110 of $0.4000, no overshoot"
           },
           {
             "name": "ledger consistency",
             "status": "measured",
             "value": 1,
             "unit": "ok",
-            "detail": "35 call(s) reconcile"
+            "detail": "47 call(s) reconcile"
           },
           {
             "name": "holds released",
@@ -39,55 +39,55 @@
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "35 of 35 claims well-formed"
+            "detail": "36 of 36 claims well-formed"
           },
           {
             "name": "source concentration",
             "status": "measured",
-            "value": 22.857142857142858,
+            "value": 22.22222222222222,
             "unit": "%",
-            "detail": "6 distinct source(s); the largest contributed 8 of 35 claims (https://pmc.ncbi.nlm.nih.gov/articles/PMC7314216)"
+            "detail": "6 distinct source(s); the largest contributed 8 of 36 claims (https://archive.cdc.gov/www_cdc_gov/flu/pandemic-resources/1918-commemoration/1918-pandemic-history.htm)"
           },
           {
             "name": "cost per claim",
             "status": "measured",
-            "value": 0.000375,
+            "value": 0.000307,
             "unit": "usd",
-            "detail": "$0.0131 over 35 claims = $0.0003 each"
+            "detail": "$0.0110 over 36 claims = $0.0003 each"
           },
           {
             "name": "tool calls",
             "status": "measured",
-            "value": 35,
+            "value": 47,
             "unit": "calls",
-            "detail": "llm 34 · search 1"
+            "detail": "llm 46 · search 1"
           },
           {
             "name": "verification coverage",
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "35 of 35 claim(s) verified"
+            "detail": "36 of 36 claim(s) verified"
           },
           {
             "name": "duplicate collapse",
             "status": "measured",
-            "value": 42.857142857142854,
+            "value": 33.333333333333336,
             "unit": "%",
-            "detail": "35 claim(s) render as 20 finding(s)"
+            "detail": "36 claim(s) render as 24 finding(s)"
           },
           {
             "name": "disagreement rate",
             "status": "measured",
-            "value": 42.857142857142854,
+            "value": 16.666666666666668,
             "unit": "%",
-            "detail": "17 contradiction(s) involving 15 of 35 claim(s)"
+            "detail": "4 contradiction(s) involving 6 of 36 claim(s)"
           },
           {
             "name": "staleness separation",
             "status": "measured",
             "unit": "edges",
-            "detail": "0 of 17 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+            "detail": "0 of 4 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
           },
           {
             "name": "grounding rate",
@@ -130,24 +130,24 @@
         "demography",
         "numeric"
       ],
-      "session_id": "s_06FZ39KQHSXAWRCS",
+      "session_id": "s_06FZA1N1KDMQ4MCT",
       "status": "done",
-      "claims": 22,
+      "claims": 63,
       "scorecard": {
-        "session_id": "s_06FZ39KQHSXAWRCS",
+        "session_id": "s_06FZA1N1KDMQ4MCT",
         "metrics": [
           {
             "name": "budget overshoot",
             "status": "measured",
             "unit": "%",
-            "detail": "spent $0.0132 of $0.4000, no overshoot"
+            "detail": "spent $0.0214 of $0.4000, no overshoot"
           },
           {
             "name": "ledger consistency",
             "status": "measured",
             "value": 1,
             "unit": "ok",
-            "detail": "27 call(s) reconcile"
+            "detail": "88 call(s) reconcile"
           },
           {
             "name": "holds released",
@@ -160,55 +160,55 @@
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "22 of 22 claims well-formed"
+            "detail": "63 of 63 claims well-formed"
           },
           {
             "name": "source concentration",
             "status": "measured",
-            "value": 36.36363636363637,
+            "value": 12.698412698412698,
             "unit": "%",
-            "detail": "6 distinct source(s); the largest contributed 8 of 22 claims (https://en.wikipedia.org/wiki/Human_population_projections)"
+            "detail": "12 distinct source(s); the largest contributed 8 of 63 claims (https://populationmatters.org/news/2024/04/the-world-of-population-projections)"
           },
           {
             "name": "cost per claim",
             "status": "measured",
-            "value": 0.000602,
+            "value": 0.000339,
             "unit": "usd",
-            "detail": "$0.0132 over 22 claims = $0.0006 each"
+            "detail": "$0.0214 over 63 claims = $0.0003 each"
           },
           {
             "name": "tool calls",
             "status": "measured",
-            "value": 27,
+            "value": 88,
             "unit": "calls",
-            "detail": "llm 26 · search 1"
+            "detail": "llm 86 · search 2"
           },
           {
             "name": "verification coverage",
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "22 of 22 claim(s) verified"
+            "detail": "63 of 63 claim(s) verified"
           },
           {
             "name": "duplicate collapse",
             "status": "measured",
-            "value": 54.54545454545455,
+            "value": 31.746031746031747,
             "unit": "%",
-            "detail": "22 claim(s) render as 10 finding(s)"
+            "detail": "63 claim(s) render as 43 finding(s)"
           },
           {
             "name": "disagreement rate",
             "status": "measured",
-            "value": 68.18181818181819,
+            "value": 6.349206349206349,
             "unit": "%",
-            "detail": "27 contradiction(s) involving 15 of 22 claim(s)"
+            "detail": "2 contradiction(s) involving 4 of 63 claim(s)"
           },
           {
             "name": "staleness separation",
             "status": "measured",
             "unit": "edges",
-            "detail": "0 of 27 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+            "detail": "0 of 2 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
           },
           {
             "name": "grounding rate",
@@ -251,24 +251,24 @@
         "energy",
         "numeric"
       ],
-      "session_id": "s_06FZ39XPM1Y1R7MR",
+      "session_id": "s_06FZA2H89XHN6YHJ",
       "status": "done",
-      "claims": 46,
+      "claims": 26,
       "scorecard": {
-        "session_id": "s_06FZ39XPM1Y1R7MR",
+        "session_id": "s_06FZA2H89XHN6YHJ",
         "metrics": [
           {
             "name": "budget overshoot",
             "status": "measured",
             "unit": "%",
-            "detail": "spent $0.0172 of $0.4000, no overshoot"
+            "detail": "spent $0.0137 of $0.4000, no overshoot"
           },
           {
             "name": "ledger consistency",
             "status": "measured",
             "value": 1,
             "unit": "ok",
-            "detail": "46 call(s) reconcile"
+            "detail": "36 call(s) reconcile"
           },
           {
             "name": "holds released",
@@ -281,55 +281,55 @@
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "46 of 46 claims well-formed"
+            "detail": "26 of 26 claims well-formed"
           },
           {
             "name": "source concentration",
             "status": "measured",
-            "value": 17.391304347826086,
+            "value": 30.76923076923077,
             "unit": "%",
-            "detail": "6 distinct source(s); the largest contributed 8 of 46 claims (https://ccaf.io/cbnsi/cbeci/methodology)"
+            "detail": "6 distinct source(s); the largest contributed 8 of 26 claims (https://cryptoslate.com/stop-shaming-bitcoin-when-daily-streaming-ai-and-social-media-scrolling-shown-to-consume-double-the-energy)"
           },
           {
             "name": "cost per claim",
             "status": "measured",
-            "value": 0.000374,
+            "value": 0.000526,
             "unit": "usd",
-            "detail": "$0.0172 over 46 claims = $0.0003 each"
+            "detail": "$0.0137 over 26 claims = $0.0005 each"
           },
           {
             "name": "tool calls",
             "status": "measured",
-            "value": 46,
+            "value": 36,
             "unit": "calls",
-            "detail": "llm 45 · search 1"
+            "detail": "llm 35 · search 1"
           },
           {
             "name": "verification coverage",
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "46 of 46 claim(s) verified"
+            "detail": "26 of 26 claim(s) verified"
           },
           {
             "name": "duplicate collapse",
             "status": "measured",
-            "value": 30.434782608695652,
+            "value": 3.8461538461538463,
             "unit": "%",
-            "detail": "46 claim(s) render as 32 finding(s)"
+            "detail": "26 claim(s) render as 25 finding(s)"
           },
           {
             "name": "disagreement rate",
             "status": "measured",
-            "value": 43.47826086956522,
+            "value": 23.076923076923077,
             "unit": "%",
-            "detail": "21 contradiction(s) involving 20 of 46 claim(s)"
+            "detail": "5 contradiction(s) involving 6 of 26 claim(s)"
           },
           {
             "name": "staleness separation",
             "status": "measured",
             "unit": "edges",
-            "detail": "0 of 21 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+            "detail": "0 of 5 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
           },
           {
             "name": "grounding rate",
@@ -372,24 +372,24 @@
         "metascience",
         "numeric"
       ],
-      "session_id": "s_06FZ3AH69EKTBW1Z",
+      "session_id": "s_06FZA2X9VRJFF8QZ",
       "status": "done",
-      "claims": 41,
+      "claims": 44,
       "scorecard": {
-        "session_id": "s_06FZ3AH69EKTBW1Z",
+        "session_id": "s_06FZA2X9VRJFF8QZ",
         "metrics": [
           {
             "name": "budget overshoot",
             "status": "measured",
             "unit": "%",
-            "detail": "spent $0.0156 of $0.4000, no overshoot"
+            "detail": "spent $0.0141 of $0.4000, no overshoot"
           },
           {
             "name": "ledger consistency",
             "status": "measured",
             "value": 1,
             "unit": "ok",
-            "detail": "39 call(s) reconcile"
+            "detail": "63 call(s) reconcile"
           },
           {
             "name": "holds released",
@@ -402,49 +402,49 @@
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "41 of 41 claims well-formed"
+            "detail": "44 of 44 claims well-formed"
           },
           {
             "name": "source concentration",
             "status": "measured",
-            "value": 19.51219512195122,
+            "value": 18.181818181818183,
             "unit": "%",
-            "detail": "6 distinct source(s); the largest contributed 8 of 41 claims (https://replicationindex.com/tag/osf-reproducibility-project/feed)"
+            "detail": "6 distinct source(s); the largest contributed 8 of 44 claims (https://en.wikipedia.org/wiki/Replication_crisis)"
           },
           {
             "name": "cost per claim",
             "status": "measured",
-            "value": 0.000381,
+            "value": 0.00032,
             "unit": "usd",
-            "detail": "$0.0156 over 41 claims = $0.0003 each"
+            "detail": "$0.0141 over 44 claims = $0.0003 each"
           },
           {
             "name": "tool calls",
             "status": "measured",
-            "value": 39,
+            "value": 63,
             "unit": "calls",
-            "detail": "llm 38 · search 1"
+            "detail": "llm 62 · search 1"
           },
           {
             "name": "verification coverage",
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "41 of 41 claim(s) verified"
+            "detail": "44 of 44 claim(s) verified"
           },
           {
             "name": "duplicate collapse",
             "status": "measured",
-            "value": 29.26829268292683,
+            "value": 25,
             "unit": "%",
-            "detail": "41 claim(s) render as 29 finding(s)"
+            "detail": "44 claim(s) render as 33 finding(s)"
           },
           {
             "name": "disagreement rate",
             "status": "measured",
-            "value": 29.26829268292683,
+            "value": 22.727272727272727,
             "unit": "%",
-            "detail": "7 contradiction(s) involving 12 of 41 claim(s)"
+            "detail": "7 contradiction(s) involving 10 of 44 claim(s)"
           },
           {
             "name": "staleness separation",
@@ -493,24 +493,24 @@
         "energy",
         "policy"
       ],
-      "session_id": "s_06FZ3B121KJ9SNS0",
+      "session_id": "s_06FZA3GMDREQ9T5C",
       "status": "done",
-      "claims": 42,
+      "claims": 37,
       "scorecard": {
-        "session_id": "s_06FZ3B121KJ9SNS0",
+        "session_id": "s_06FZA3GMDREQ9T5C",
         "metrics": [
           {
             "name": "budget overshoot",
             "status": "measured",
             "unit": "%",
-            "detail": "spent $0.0122 of $0.4000, no overshoot"
+            "detail": "spent $0.0168 of $0.4000, no overshoot"
           },
           {
             "name": "ledger consistency",
             "status": "measured",
             "value": 1,
             "unit": "ok",
-            "detail": "38 call(s) reconcile"
+            "detail": "49 call(s) reconcile"
           },
           {
             "name": "holds released",
@@ -523,55 +523,54 @@
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "42 of 42 claims well-formed"
+            "detail": "37 of 37 claims well-formed"
           },
           {
             "name": "source concentration",
             "status": "measured",
-            "value": 19.047619047619047,
+            "value": 21.62162162162162,
             "unit": "%",
-            "detail": "6 distinct source(s); the largest contributed 8 of 42 claims (https://w3.windfair.net/wind-energy/news/46789-study-levelized-cost-of-electricity-for-renewable-energy-and-conventional-power-plants-wind-and-pv-clearly-advantageous)"
+            "detail": "6 distinct source(s); the largest contributed 8 of 37 claims (https://cleantechnica.com/2021/11/17/utility-scale-solar-reaches-lcoe-range-between-2-4%C2%A2-per-kwh-in-the-usa-record-low)"
           },
           {
             "name": "cost per claim",
             "status": "measured",
-            "value": 0.000291,
+            "value": 0.000455,
             "unit": "usd",
-            "detail": "$0.0122 over 42 claims = $0.0002 each"
+            "detail": "$0.0168 over 37 claims = $0.0004 each"
           },
           {
             "name": "tool calls",
             "status": "measured",
-            "value": 38,
+            "value": 49,
             "unit": "calls",
-            "detail": "llm 37 · search 1"
+            "detail": "llm 48 · search 1"
           },
           {
             "name": "verification coverage",
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "42 of 42 claim(s) verified"
+            "detail": "37 of 37 claim(s) verified"
           },
           {
             "name": "duplicate collapse",
             "status": "measured",
-            "value": 11.904761904761905,
+            "value": 24.324324324324323,
             "unit": "%",
-            "detail": "42 claim(s) render as 37 finding(s)"
+            "detail": "37 claim(s) render as 28 finding(s)"
           },
           {
             "name": "disagreement rate",
             "status": "measured",
-            "value": 9.523809523809524,
             "unit": "%",
-            "detail": "2 contradiction(s) involving 4 of 42 claim(s)"
+            "detail": "0 contradiction(s) involving 0 of 37 claim(s)"
           },
           {
             "name": "staleness separation",
-            "status": "measured",
+            "status": "n/a",
             "unit": "edges",
-            "detail": "0 of 2 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+            "detail": "no conflicting claims to separate"
           },
           {
             "name": "grounding rate",
@@ -614,24 +613,24 @@
         "ml-benchmarks",
         "numeric"
       ],
-      "session_id": "s_06FZ3BGADSVT8BPJ",
+      "session_id": "s_06FZA40FC8AK7G7B",
       "status": "done",
-      "claims": 18,
+      "claims": 28,
       "scorecard": {
-        "session_id": "s_06FZ3BGADSVT8BPJ",
+        "session_id": "s_06FZA40FC8AK7G7B",
         "metrics": [
           {
             "name": "budget overshoot",
             "status": "measured",
             "unit": "%",
-            "detail": "spent $0.0111 of $0.4000, no overshoot"
+            "detail": "spent $0.0156 of $0.4000, no overshoot"
           },
           {
             "name": "ledger consistency",
             "status": "measured",
             "value": 1,
             "unit": "ok",
-            "detail": "23 call(s) reconcile"
+            "detail": "47 call(s) reconcile"
           },
           {
             "name": "holds released",
@@ -644,169 +643,49 @@
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "18 of 18 claims well-formed"
+            "detail": "28 of 28 claims well-formed"
           },
           {
             "name": "source concentration",
             "status": "measured",
-            "value": 33.333333333333336,
+            "value": 28.571428571428573,
             "unit": "%",
-            "detail": "5 distinct source(s); the largest contributed 6 of 18 claims (https://www.libertify.com/interactive-library/gpt-4-technical-report)"
+            "detail": "5 distinct source(s); the largest contributed 8 of 28 claims (https://arxiv.org/html/2406.01574v2)"
           },
           {
             "name": "cost per claim",
             "status": "measured",
-            "value": 0.000619,
+            "value": 0.00056,
             "unit": "usd",
-            "detail": "$0.0111 over 18 claims = $0.0006 each"
+            "detail": "$0.0156 over 28 claims = $0.0005 each"
           },
           {
             "name": "tool calls",
             "status": "measured",
-            "value": 23,
+            "value": 47,
             "unit": "calls",
-            "detail": "llm 22 · search 1"
+            "detail": "llm 46 · search 1"
           },
           {
             "name": "verification coverage",
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "18 of 18 claim(s) verified"
+            "detail": "28 of 28 claim(s) verified"
           },
           {
             "name": "duplicate collapse",
             "status": "measured",
-            "value": 22.22222222222222,
+            "value": 25,
             "unit": "%",
-            "detail": "18 claim(s) render as 14 finding(s)"
+            "detail": "28 claim(s) render as 21 finding(s)"
           },
           {
             "name": "disagreement rate",
             "status": "measured",
-            "value": 22.22222222222222,
+            "value": 17.857142857142858,
             "unit": "%",
-            "detail": "2 contradiction(s) involving 4 of 18 claim(s)"
-          },
-          {
-            "name": "staleness separation",
-            "status": "measured",
-            "unit": "edges",
-            "detail": "0 of 2 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
-          },
-          {
-            "name": "grounding rate",
-            "status": "blocked",
-            "reason": "no claim was re-read: §11.5.2's grounding pass needs escrow left over and a fetcher configured"
-          },
-          {
-            "name": "exfil regression",
-            "status": "blocked",
-            "reason": "this session crossed no local data; the assertion is enforced at the gate on every envelope (internal/compute/gate, §14.3) and is scored here only for a session that used a connector"
-          },
-          {
-            "name": "claim precision",
-            "status": "blocked",
-            "reason": "needs labelled answers; the question corpus (§14.2) is not built yet"
-          },
-          {
-            "name": "contradiction recall",
-            "status": "blocked",
-            "reason": "the Verifier now finds contradictions (see disagreement rate), but recall needs planted disagreements to measure what it MISSED — the question corpus (§14.2)"
-          },
-          {
-            "name": "staleness detection",
-            "status": "blocked",
-            "reason": "supersedes edges now exist (see staleness separation), but detection needs a corpus with known-stale sources to measure what was missed (§14.2)"
-          },
-          {
-            "name": "citation accuracy",
-            "status": "blocked",
-            "reason": "not requested; re-reads every cited source, so pass --citations (free and deterministic under MOLE_RECORD=replay)"
-          }
-        ]
-      }
-    },
-    {
-      "id": "red-meat-mortality",
-      "question": "does eating red meat increase all-cause mortality?",
-      "tags": [
-        "disputed",
-        "nutrition"
-      ],
-      "session_id": "s_06FZ3BQAP3SFXNBK",
-      "status": "done",
-      "claims": 41,
-      "scorecard": {
-        "session_id": "s_06FZ3BQAP3SFXNBK",
-        "metrics": [
-          {
-            "name": "budget overshoot",
-            "status": "measured",
-            "unit": "%",
-            "detail": "spent $0.0150 of $0.4000, no overshoot"
-          },
-          {
-            "name": "ledger consistency",
-            "status": "measured",
-            "value": 1,
-            "unit": "ok",
-            "detail": "39 call(s) reconcile"
-          },
-          {
-            "name": "holds released",
-            "status": "measured",
-            "unit": "held",
-            "detail": "no reservations left held"
-          },
-          {
-            "name": "claim integrity",
-            "status": "measured",
-            "value": 100,
-            "unit": "%",
-            "detail": "41 of 41 claims well-formed"
-          },
-          {
-            "name": "source concentration",
-            "status": "measured",
-            "value": 19.51219512195122,
-            "unit": "%",
-            "detail": "6 distinct source(s); the largest contributed 8 of 41 claims (https://pmc.ncbi.nlm.nih.gov/articles/PMC3712342)"
-          },
-          {
-            "name": "cost per claim",
-            "status": "measured",
-            "value": 0.000367,
-            "unit": "usd",
-            "detail": "$0.0150 over 41 claims = $0.0003 each"
-          },
-          {
-            "name": "tool calls",
-            "status": "measured",
-            "value": 39,
-            "unit": "calls",
-            "detail": "fetch 1 · llm 37 · search 1 · 1 errored"
-          },
-          {
-            "name": "verification coverage",
-            "status": "measured",
-            "value": 100,
-            "unit": "%",
-            "detail": "41 of 41 claim(s) verified"
-          },
-          {
-            "name": "duplicate collapse",
-            "status": "measured",
-            "value": 39.02439024390244,
-            "unit": "%",
-            "detail": "41 claim(s) render as 25 finding(s)"
-          },
-          {
-            "name": "disagreement rate",
-            "status": "measured",
-            "value": 14.634146341463415,
-            "unit": "%",
-            "detail": "3 contradiction(s) involving 6 of 41 claim(s)"
+            "detail": "3 contradiction(s) involving 5 of 28 claim(s)"
           },
           {
             "name": "staleness separation",
@@ -848,30 +727,30 @@
       }
     },
     {
-      "id": "intermittent-fasting",
-      "question": "is intermittent fasting more effective than continuous calorie restriction for weight loss?",
+      "id": "red-meat-mortality",
+      "question": "does eating red meat increase all-cause mortality?",
       "tags": [
         "disputed",
         "nutrition"
       ],
-      "session_id": "s_06FZ3C6YC95B0WYA",
+      "session_id": "s_06FZA4D33D0DXQ8C",
       "status": "done",
-      "claims": 40,
+      "claims": 46,
       "scorecard": {
-        "session_id": "s_06FZ3C6YC95B0WYA",
+        "session_id": "s_06FZA4D33D0DXQ8C",
         "metrics": [
           {
             "name": "budget overshoot",
             "status": "measured",
             "unit": "%",
-            "detail": "spent $0.0235 of $0.4000, no overshoot"
+            "detail": "spent $0.0149 of $0.4000, no overshoot"
           },
           {
             "name": "ledger consistency",
             "status": "measured",
             "value": 1,
             "unit": "ok",
-            "detail": "51 call(s) reconcile"
+            "detail": "65 call(s) reconcile"
           },
           {
             "name": "holds released",
@@ -884,55 +763,177 @@
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "40 of 40 claims well-formed"
+            "detail": "46 of 46 claims well-formed"
           },
           {
             "name": "source concentration",
             "status": "measured",
-            "value": 20,
+            "value": 17.391304347826086,
             "unit": "%",
-            "detail": "5 distinct source(s); the largest contributed 8 of 40 claims (https://nutritionsource.hsph.harvard.edu/healthy-weight/diet-reviews/intermittent-fasting)"
+            "detail": "6 distinct source(s); the largest contributed 8 of 46 claims (https://pmc.ncbi.nlm.nih.gov/articles/PMC3712342)"
           },
           {
             "name": "cost per claim",
             "status": "measured",
-            "value": 0.000587,
+            "value": 0.000324,
             "unit": "usd",
-            "detail": "$0.0235 over 40 claims = $0.0005 each"
+            "detail": "$0.0149 over 46 claims = $0.0003 each"
           },
           {
             "name": "tool calls",
             "status": "measured",
-            "value": 51,
+            "value": 65,
             "unit": "calls",
-            "detail": "fetch 12 · llm 37 · search 2 · 12 errored"
+            "detail": "fetch 6 · llm 58 · search 1 · 2 errored"
           },
           {
             "name": "verification coverage",
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "40 of 40 claim(s) verified"
+            "detail": "46 of 46 claim(s) verified"
           },
           {
             "name": "duplicate collapse",
             "status": "measured",
-            "value": 42.5,
+            "value": 17.391304347826086,
             "unit": "%",
-            "detail": "40 claim(s) render as 23 finding(s)"
+            "detail": "46 claim(s) render as 38 finding(s)"
           },
           {
             "name": "disagreement rate",
             "status": "measured",
-            "value": 57.5,
+            "value": 8.695652173913043,
             "unit": "%",
-            "detail": "26 contradiction(s) involving 23 of 40 claim(s)"
+            "detail": "2 contradiction(s) involving 4 of 46 claim(s)"
           },
           {
             "name": "staleness separation",
             "status": "measured",
             "unit": "edges",
-            "detail": "0 of 26 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+            "detail": "0 of 2 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+          },
+          {
+            "name": "grounding rate",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "4 of 4 re-read claim(s) confirmed by their own source (1 inconclusive, excluded)"
+          },
+          {
+            "name": "exfil regression",
+            "status": "blocked",
+            "reason": "this session crossed no local data; the assertion is enforced at the gate on every envelope (internal/compute/gate, §14.3) and is scored here only for a session that used a connector"
+          },
+          {
+            "name": "claim precision",
+            "status": "blocked",
+            "reason": "needs labelled answers; the question corpus (§14.2) is not built yet"
+          },
+          {
+            "name": "contradiction recall",
+            "status": "blocked",
+            "reason": "the Verifier now finds contradictions (see disagreement rate), but recall needs planted disagreements to measure what it MISSED — the question corpus (§14.2)"
+          },
+          {
+            "name": "staleness detection",
+            "status": "blocked",
+            "reason": "supersedes edges now exist (see staleness separation), but detection needs a corpus with known-stale sources to measure what was missed (§14.2)"
+          },
+          {
+            "name": "citation accuracy",
+            "status": "blocked",
+            "reason": "not requested; re-reads every cited source, so pass --citations (free and deterministic under MOLE_RECORD=replay)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "intermittent-fasting",
+      "question": "is intermittent fasting more effective than continuous calorie restriction for weight loss?",
+      "tags": [
+        "disputed",
+        "nutrition"
+      ],
+      "session_id": "s_06FZA50VDY17YDH9",
+      "status": "done",
+      "claims": 47,
+      "scorecard": {
+        "session_id": "s_06FZA50VDY17YDH9",
+        "metrics": [
+          {
+            "name": "budget overshoot",
+            "status": "measured",
+            "unit": "%",
+            "detail": "spent $0.0185 of $0.4000, no overshoot"
+          },
+          {
+            "name": "ledger consistency",
+            "status": "measured",
+            "value": 1,
+            "unit": "ok",
+            "detail": "67 call(s) reconcile"
+          },
+          {
+            "name": "holds released",
+            "status": "measured",
+            "unit": "held",
+            "detail": "no reservations left held"
+          },
+          {
+            "name": "claim integrity",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "47 of 47 claims well-formed"
+          },
+          {
+            "name": "source concentration",
+            "status": "measured",
+            "value": 17.02127659574468,
+            "unit": "%",
+            "detail": "6 distinct source(s); the largest contributed 8 of 47 claims (https://link.springer.com/article/10.1186/s12967-018-1748-4)"
+          },
+          {
+            "name": "cost per claim",
+            "status": "measured",
+            "value": 0.000394,
+            "unit": "usd",
+            "detail": "$0.0185 over 47 claims = $0.0003 each"
+          },
+          {
+            "name": "tool calls",
+            "status": "measured",
+            "value": 67,
+            "unit": "calls",
+            "detail": "llm 66 · search 1"
+          },
+          {
+            "name": "verification coverage",
+            "status": "measured",
+            "value": 100,
+            "unit": "%",
+            "detail": "47 of 47 claim(s) verified"
+          },
+          {
+            "name": "duplicate collapse",
+            "status": "measured",
+            "value": 25.53191489361702,
+            "unit": "%",
+            "detail": "47 claim(s) render as 35 finding(s)"
+          },
+          {
+            "name": "disagreement rate",
+            "status": "measured",
+            "value": 6.382978723404255,
+            "unit": "%",
+            "detail": "2 contradiction(s) involving 3 of 47 claim(s)"
+          },
+          {
+            "name": "staleness separation",
+            "status": "measured",
+            "unit": "edges",
+            "detail": "0 of 2 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
           },
           {
             "name": "grounding rate",
@@ -975,24 +976,24 @@
         "stale",
         "nutrition"
       ],
-      "session_id": "s_06FZ3CR7MH4FB3H5",
+      "session_id": "s_06FZA5N61FYFNKXE",
       "status": "done",
-      "claims": 43,
+      "claims": 29,
       "scorecard": {
-        "session_id": "s_06FZ3CR7MH4FB3H5",
+        "session_id": "s_06FZA5N61FYFNKXE",
         "metrics": [
           {
             "name": "budget overshoot",
             "status": "measured",
             "unit": "%",
-            "detail": "spent $0.0254 of $0.4000, no overshoot"
+            "detail": "spent $0.0116 of $0.4000, no overshoot"
           },
           {
             "name": "ledger consistency",
             "status": "measured",
             "value": 1,
             "unit": "ok",
-            "detail": "49 call(s) reconcile"
+            "detail": "36 call(s) reconcile"
           },
           {
             "name": "holds released",
@@ -1005,55 +1006,54 @@
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "43 of 43 claims well-formed"
+            "detail": "29 of 29 claims well-formed"
           },
           {
             "name": "source concentration",
             "status": "measured",
-            "value": 18.6046511627907,
+            "value": 27.586206896551722,
             "unit": "%",
-            "detail": "6 distinct source(s); the largest contributed 8 of 43 claims (https://pmc.ncbi.nlm.nih.gov/articles/PMC4339461)"
+            "detail": "4 distinct source(s); the largest contributed 8 of 29 claims (https://pubmed.ncbi.nlm.nih.gov/38431146)"
           },
           {
             "name": "cost per claim",
             "status": "measured",
-            "value": 0.000591,
+            "value": 0.0004,
             "unit": "usd",
-            "detail": "$0.0254 over 43 claims = $0.0005 each"
+            "detail": "$0.0116 over 29 claims = $0.0004 each"
           },
           {
             "name": "tool calls",
             "status": "measured",
-            "value": 49,
+            "value": 36,
             "unit": "calls",
-            "detail": "llm 48 · search 1"
+            "detail": "llm 35 · search 1"
           },
           {
             "name": "verification coverage",
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "43 of 43 claim(s) verified"
+            "detail": "29 of 29 claim(s) verified"
           },
           {
             "name": "duplicate collapse",
             "status": "measured",
-            "value": 13.953488372093023,
+            "value": 34.48275862068966,
             "unit": "%",
-            "detail": "43 claim(s) render as 37 finding(s)"
+            "detail": "29 claim(s) render as 19 finding(s)"
           },
           {
             "name": "disagreement rate",
             "status": "measured",
-            "value": 13.953488372093023,
             "unit": "%",
-            "detail": "4 contradiction(s) involving 6 of 43 claim(s)"
+            "detail": "0 contradiction(s) involving 0 of 29 claim(s)"
           },
           {
             "name": "staleness separation",
-            "status": "measured",
+            "status": "n/a",
             "unit": "edges",
-            "detail": "0 of 4 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+            "detail": "no conflicting claims to separate"
           },
           {
             "name": "grounding rate",
@@ -1095,24 +1095,24 @@
         "disputed",
         "economics"
       ],
-      "session_id": "s_06FZ3DC3Q1JR0N80",
+      "session_id": "s_06FZA611KY2VYASH",
       "status": "done",
-      "claims": 41,
+      "claims": 130,
       "scorecard": {
-        "session_id": "s_06FZ3DC3Q1JR0N80",
+        "session_id": "s_06FZA611KY2VYASH",
         "metrics": [
           {
             "name": "budget overshoot",
             "status": "measured",
             "unit": "%",
-            "detail": "spent $0.0156 of $0.4000, no overshoot"
+            "detail": "spent $0.0454 of $0.4000, no overshoot"
           },
           {
             "name": "ledger consistency",
             "status": "measured",
             "value": 1,
             "unit": "ok",
-            "detail": "46 call(s) reconcile"
+            "detail": "165 call(s) reconcile"
           },
           {
             "name": "holds released",
@@ -1125,55 +1125,55 @@
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "41 of 41 claims well-formed"
+            "detail": "130 of 130 claims well-formed"
           },
           {
             "name": "source concentration",
             "status": "measured",
-            "value": 19.51219512195122,
+            "value": 10.76923076923077,
             "unit": "%",
-            "detail": "6 distinct source(s); the largest contributed 8 of 41 claims (https://pmc.ncbi.nlm.nih.gov/articles/PMC5966045)"
+            "detail": "17 distinct source(s); the largest contributed 14 of 130 claims (https://www.cbpp.org/research/economy/the-minimum-wage)"
           },
           {
             "name": "cost per claim",
             "status": "measured",
-            "value": 0.000382,
+            "value": 0.000349,
             "unit": "usd",
-            "detail": "$0.0156 over 41 claims = $0.0003 each"
+            "detail": "$0.0454 over 130 claims = $0.0003 each"
           },
           {
             "name": "tool calls",
             "status": "measured",
-            "value": 46,
+            "value": 165,
             "unit": "calls",
-            "detail": "fetch 2 · llm 43 · search 1"
+            "detail": "fetch 3 · llm 159 · search 3 · 1 errored"
           },
           {
             "name": "verification coverage",
             "status": "measured",
             "value": 100,
             "unit": "%",
-            "detail": "41 of 41 claim(s) verified"
+            "detail": "130 of 130 claim(s) verified"
           },
           {
             "name": "duplicate collapse",
             "status": "measured",
-            "value": 9.75609756097561,
+            "value": 17.692307692307693,
             "unit": "%",
-            "detail": "41 claim(s) render as 37 finding(s)"
+            "detail": "130 claim(s) render as 107 finding(s)"
           },
           {
             "name": "disagreement rate",
             "status": "measured",
-            "value": 21.951219512195124,
+            "value": 10.76923076923077,
             "unit": "%",
-            "detail": "6 contradiction(s) involving 9 of 41 claim(s)"
+            "detail": "9 contradiction(s) involving 14 of 130 claim(s)"
           },
           {
             "name": "staleness separation",
             "status": "measured",
             "unit": "edges",
-            "detail": "0 of 6 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
+            "detail": "0 of 9 conflict(s) resolved as staleness by publication date — check whether the sources carried publication dates at all"
           },
           {
             "name": "grounding rate",
@@ -1241,21 +1241,21 @@
     {
       "name": "source concentration",
       "status": "measured",
-      "value": 22.613427247820205,
+      "value": 20.683275267408735,
       "unit": "%",
       "detail": "mean of 10 question(s)"
     },
     {
       "name": "cost per claim",
       "status": "measured",
-      "value": 0.0004569000000000001,
+      "value": 0.0003974,
       "unit": "usd",
       "detail": "mean of 10 question(s)"
     },
     {
       "name": "tool calls",
       "status": "measured",
-      "value": 39.3,
+      "value": 66.3,
       "unit": "calls",
       "detail": "mean of 10 question(s)"
     },
@@ -1269,14 +1269,14 @@
     {
       "name": "duplicate collapse",
       "status": "measured",
-      "value": 29.64666329981751,
+      "value": 23.83481288042837,
       "unit": "%",
       "detail": "mean of 10 question(s)"
     },
     {
       "name": "disagreement rate",
       "status": "measured",
-      "value": 32.35704005632364,
+      "value": 11.252507334375975,
       "unit": "%",
       "detail": "mean of 10 question(s)"
     },
@@ -1284,14 +1284,14 @@
       "name": "staleness separation",
       "status": "measured",
       "unit": "edges",
-      "detail": "mean of 10 question(s)"
+      "detail": "mean of 8 question(s)"
     },
     {
       "name": "grounding rate",
       "status": "measured",
       "value": 100,
       "unit": "%",
-      "detail": "mean of 1 question(s); 9 blocked"
+      "detail": "mean of 2 question(s); 8 blocked"
     },
     {
       "name": "exfil regression",
