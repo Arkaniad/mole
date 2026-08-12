@@ -23,13 +23,6 @@ speaks MCP so a coding agent can drive it.
   <img src="demo.svg" alt="mole researching a question: planning, 39 claims, two contradictions found, $0.0149 spent" width="900">
 </p>
 
-<p align="center">
-  <sub>A real run, trimmed for length — five sections of the answer and three of its
-  five sources are cut. Note what it does with a disagreement: it reports both sides
-  rather than picking one. $0.0149 is DeepSeek pricing; the same run on a frontier
-  model costs more.</sub>
-</p>
-
 ---
 
 ## Why mole
