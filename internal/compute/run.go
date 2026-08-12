@@ -85,7 +85,14 @@ func Run(
 	}
 	defer db.Close()
 
-	opts.Log = log
+	// The caller's own logger wins. §12.1's trail goes to its own sink at its own
+	// level — research logging is diagnostics somebody turns down, and this is the
+	// record of what left the machine — and overwriting it unconditionally meant
+	// the sink serve.go configures received nothing while the comment there said
+	// it did.
+	if opts.Log == nil {
+		opts.Log = log
+	}
 	opts.FreeTextColumns = FreeTextColumns(c)
 
 	env, err := gate.Aggregate(ctx, db, query, opts)

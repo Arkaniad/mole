@@ -3,9 +3,15 @@ package mcpserver_test
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lajosdeme/mole/internal/compute"
+	"github.com/lajosdeme/mole/internal/compute/gate"
+	"github.com/lajosdeme/mole/internal/compute/hypothesis"
 
 	"github.com/lajosdeme/mole/internal/actors"
 	"github.com/lajosdeme/mole/internal/core"
@@ -408,5 +414,53 @@ func TestClosingASessionDerivesConfidence(t *testing.T) {
 		if c.Confidence == 0 {
 			t.Errorf("claim %s has confidence 0; the graph says otherwise", c.ID)
 		}
+	}
+}
+
+// TestQuotesHandedBackAreLabelledAsSourceText.
+//
+// mole.fetch fences a document; claims_list and citations hand pieces of that
+// same text back later, outside the fence, to an agent whose context has usually
+// been compacted since. The wrapper is not available there — these are structured
+// fields, not a prompt — so the labelling is a note, which is the same treatment
+// search snippets get and is a convention rather than a control.
+func TestQuotesHandedBackAreLabelledAsSourceText(t *testing.T) {
+	r := connectToolkitStubFetch(t, testPage)
+	sess, doc := openWithDoc(t, r)
+	r.call(t, "mole.claim_add", map[string]any{
+		"session_id": sess, "doc_id": doc,
+		"text": "Fasting reduced fasting glucose.", "quote": realQuote}, nil)
+
+	for _, tool := range []string{"mole.claims_list", "mole.citations"} {
+		var out struct {
+			Note string `json:"note"`
+		}
+		r.call(t, tool, map[string]any{"session_id": sess}, &out)
+		if !strings.Contains(out.Note, "not") || !strings.Contains(out.Note, "instructions") {
+			t.Errorf("%s hands back source text without saying what it is: %q", tool, out.Note)
+		}
+	}
+}
+
+// TestTheAuditSinkIsNotSilencedByTheResearchLogger.
+//
+// serve.go passes gate.Options{Log: auditLogger()} with a comment saying §12.1's
+// trail must not be turned down with research diagnostics. compute.Run overwrote
+// opts.Log unconditionally, so the sink received nothing and the comment
+// described something that did not happen.
+func TestTheAuditSinkIsNotSilencedByTheResearchLogger(t *testing.T) {
+	var audit strings.Builder
+	c := csvConnectorForTest(t)
+	res := compute.Run(context.Background(), c, hypothesis.Plan{
+		Connector: c.Name, Table: "tickets", Template: "distribution",
+		Columns: map[string]string{"key": "region"},
+	}, gate.Options{Log: slog.New(slog.NewTextHandler(&audit, nil))},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if res.Err != nil {
+		t.Fatalf("aggregate failed: %v", res.Err)
+	}
+	if audit.Len() == 0 {
+		t.Error("the audit sink received nothing; the gate logged to the research " +
+			"logger instead")
 	}
 }

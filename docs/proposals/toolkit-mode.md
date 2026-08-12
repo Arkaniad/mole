@@ -1,6 +1,8 @@
 # Toolkit mode
 
-**Status:** proposal. Nothing below is built.
+**Status:** built, and reviewed. Slices 0–5 are in `internal/mcpserver/toolkit.go`
+behind `mole serve --toolkit`. The review that followed is recorded here too, in
+the places where this document described something the code did not do.
 
 mole today owns the model. It plans, mines, adjudicates and synthesises against its
 own provider with its own key, and a coding agent driving it over MCP is only
@@ -104,10 +106,17 @@ host outright. The egress guard refuses loopback on a high port, which is what m
 `mole.fetch` safe to expose at all — without it an agent could aim it at
 `localhost:8080` or a metadata endpoint and read the answer through mole's process.
 
-**2. The budget becomes a quota.** mole can still meter and cap what it spends —
-search calls, fetches — because it makes those. It cannot cap model spend. `--usd`
-stops meaning anything in this mode, and saying so is better than a ceiling that
-silently binds nothing.
+**2. The budget becomes a quota.** mole meters and caps what it spends — search
+calls, fetches — because it makes those. It cannot cap model spend.
+
+This shipped wrong and the review caught it: nothing reserved, settled or wrote a
+cost row, so the budget bound nothing while `session_open` said it did and
+`session_close` reported a spend of zero. Two things were needed. Every search and
+fetch now reserves before spending and settles after, which is where the ceiling
+check happens. And the default unit is dollars rather than tokens: a search costs
+money and no tokens at all, so a token-denominated session was charged 0 for every
+call. Since a fetch costs no money either, `MaxToolkitCalls` bounds the number of
+calls — money alone cannot bound work that is free to mole.
 
 **3. Planning quality is the agent's problem.** Everything measured about mole's
 planner — the digest, the replan loop, the depth cap — is unused. That is fine, and
@@ -144,29 +153,50 @@ so a machine does not accumulate a corpus nobody asked for.
 
 ## Tool surface
 
-Ten tools. Deliberately not more: MCP clients degrade as the tool count rises, and
-every tool here has to earn a slot in an agent's context window.
+Fourteen tools. Deliberately not more: MCP clients degrade as the tool count rises,
+and every tool here has to earn a slot in an agent's context window — which is why
+the dataset schema is a field on `session_open` rather than a fifteenth.
 
 ### Session
 
 ```
-mole.session_open(question, mode?) -> {session_id}
-mole.session_close(session_id)     -> {claims, edges, contradictions, sources}
+mole.session_open(question, budget?, schema?) -> {session_id}
+mole.session_close(session_id)                -> {documents, claims, edges,
+                                                  contradictions, scored, spent}
 ```
 
 Scopes claims, documents and the audit trail. Reuses the existing sessions table, so
 `mole sessions`, `mole trace` and `mole eval` work on a toolkit session unchanged.
 
+The session carries `core.ActorToolkit` — an actor type with no actor behind it,
+which is exactly the fact worth recording: mole dispatches no lead here. Three
+things depend on being able to tell: `session_close` refuses a session it did not
+open (it was closing live research runs out from under the runner), the
+abandonment sweep skips it (a session with no mole process cannot be abandoned by
+one, and live sessions were being marked failed after thirty idle minutes), and
+`session_close` derives confidence from the graph on the way out, since the
+Verifier that normally does it never runs in this mode.
+
 ### Retrieval
 
 ```
-mole.search(query, max_results?) -> [{title, url, snippet, provider}]
-mole.fetch(url)                  -> {doc_id, title, text, published_at, chars, truncated}
+mole.search(session_id, query, max_results?) -> [{title, url, snippet}]
+mole.fetch(session_id, url)                  -> {doc_id, url, title, text,
+                                                 published_at, chars, truncated}
 ```
 
 `search` goes through the configured provider with its rate limiter. `fetch` goes
 through the existing SSRF guard, robots handling and extractor, stores the document,
 and returns the text **fenced** (see regression 1).
+
+Four things the review corrected here. The stored URL is where the bytes came from
+rather than what was asked for — an open redirect on a trusted host otherwise
+attributes an attacker's text to that host, with the quote check passing.
+`extract.Refine` runs before a document is accepted, so a consent wall is refused
+rather than mined as eighty characters of cookie copy. Titles are truncated,
+because a title reaches the model outside the fence and is the only page-controlled
+text that does. And `published_at` is kept: §11's staleness rule needs a date on
+both claims, and discarding it made a `supersedes` edge impossible in this mode.
 
 ### Evidence
 
@@ -201,8 +231,8 @@ privacy boundary does not care which model is on the other side of it.
 ### Graph
 
 ```
-mole.pairs_candidates(session_id, max?)                     -> [{pair_id, a, b}]
-mole.edge_add(session_id, pair_id, relation, rationale)     -> {edge_id}
+mole.pairs_candidates(session_id, max?, offset?)         -> {pairs, total, decided}
+mole.edge_add(session_id, pair_id, relation, rationale)  -> {edge_id, relation}
 ```
 
 mole retrieves the candidate pairs (deterministic lexical retrieval); the agent
@@ -251,14 +281,14 @@ Half the scorecard survives, and the half that survives is the objective half:
 | metric | toolkit mode |
 |---|---|
 | claim integrity | **yes** — quote and source are mole's own records |
-| citation accuracy | **yes** — re-reads the stored document |
+| citation accuracy | **yes** — reads the stored document, falling back to a re-fetch |
 | exfil regression | **yes** — the gate is unchanged |
 | k-anonymity suppression | **yes** |
 | duplicate collapse, disagreement rate | **yes** — over the graph the agent built |
 | dataset row integrity, merge collapse | **yes** — the rows are quote-checked by the same code |
-| budget overshoot | no — nothing to overshoot |
-| grounding rate | partial — mole can re-fetch and locate; judging support needs a model |
-| cost per claim | no |
+| budget overshoot | **yes**, for mole's own spend — searches and fetches are metered |
+| grounding rate | no — reported Blocked; §11.5.2's re-read needs a model call mole does not make here |
+| cost per claim | partial — mole's own cost per claim, which is not the model cost |
 
 That is a selling point rather than a consolation: an agent whose research can be
 scored is unusual, and the scoring does not depend on the agent's cooperation.
@@ -293,7 +323,11 @@ their model made up — which is the whole pitch.
 2. **One binary or two modes?** Toolkit tools could live behind
    `mole serve --toolkit`, or always be present. Always-present is simpler and
    costs every MCP client sixteen tool definitions in its context.
-3. **Does `claim_add` need rate limiting?** An agent in a loop could write ten
-   thousand claims. The existing per-session ceilings assume mole controls the loop.
-4. **Retention default.** Session-scoped deletion plus a TTL is proposed above;
-   somebody researching their own machine's data may want none of it kept at all.
+3. ~~**Does `claim_add` need rate limiting?**~~ Partly settled: `MaxToolkitCalls`
+   bounds searches and fetches, which are the calls that cost money and reach the
+   network. `claim_add` is still unbounded — it only writes rows mole already
+   holds the evidence for — and `claims_list` now says when it truncated.
+4. ~~**Retention default.**~~ Session-scoped deletion plus a seven-day TTL, and
+   both now run: reads refuse expired text, boot recovery purges it, and a running
+   daemon repeats the purge hourly. Shipped with the read half only, which meant
+   the text became unreadable on schedule and stayed on disk forever.

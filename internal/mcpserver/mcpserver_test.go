@@ -194,6 +194,32 @@ func connectToolkitStubFetch(t *testing.T, body string) *rig {
 	return r
 }
 
+// csvConnectorForTest ingests the same fixture connectToolkitLocal uses, for the
+// tests that call the compute pipeline directly rather than through a tool.
+func csvConnectorForTest(t *testing.T) connector.Connector {
+	t.Helper()
+	dir := t.TempDir()
+	csv := filepath.Join(dir, "tickets.csv")
+	var b strings.Builder
+	b.WriteString("region,tickets,spend,note\n")
+	for i := 0; i < 40; i++ {
+		region := "north"
+		if i%2 == 1 {
+			region = "south"
+		}
+		fmt.Fprintf(&b, "%s,%d,%d,\"Shipment held at the depot until the quarter opened\"\n",
+			region, i%9+1, 100+i)
+	}
+	if err := os.WriteFile(csv, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := connector.Ingest(context.Background(), "sales", csv, filepath.Join(dir, "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
 // connectToolkitLocal registers a small CSV so the aggregate tools have real data
 // behind them — the same ingest path `mole connect add` uses, so the profile and
 // the free-text flags are the real ones rather than a fixture's idea of them.
