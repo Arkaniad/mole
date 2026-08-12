@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -36,7 +37,22 @@ import (
 )
 
 // version is overridden at build time via -ldflags.
+// version is set by the release build's ldflags. `go install` sets no ldflags, so
+// it falls back to the module version the toolchain embedded — otherwise every
+// installed copy reports "dev" and a bug report cannot say which build it came
+// from.
 var version = "dev"
+
+func moleVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" &&
+		info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
+}
 
 // ---------------------------------------------------------------------------
 // Shared plumbing
@@ -92,9 +108,14 @@ func openDBMigrate(ctx context.Context, path string) (*sqlite.DB, error) {
 //
 // What is genuinely unsafe is migrating under a live daemon, so this does not:
 // it checks the schema version and says what to run.
+// errNoDatabase distinguishes a fresh install from a broken one, so `doctor` can
+// tell a first-time user "nothing is wrong yet" instead of exiting non-zero at
+// them.
+var errNoDatabase = errors.New("no database")
+
 func openDBNoMigrate(ctx context.Context, path string) (*sqlite.DB, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil, fmt.Errorf("no database at %s (run: mole migrate)", path)
+		return nil, fmt.Errorf("%w at %s (run: mole migrate)", errNoDatabase, path)
 	}
 
 	db, err := sqlite.Open(path, sqlite.Options{})
@@ -183,6 +204,14 @@ func cmdDoctor(ctx context.Context, path string) error {
 
 	db, err := openDBNoMigrate(ctx, path)
 	if err != nil {
+		if errors.Is(err, errNoDatabase) {
+			// A fresh install, not a broken one. `research` creates the database on
+			// first use, so there is nothing for the user to repair — and exiting
+			// non-zero here tells a setup script the opposite.
+			r.note(false, "state db", "not created yet; the first run makes it")
+			fmt.Println("\nnothing is wrong — run a research question to get started")
+			return nil
+		}
 		report(false, "state db", err.Error())
 		return errors.New("doctor found problems")
 	}

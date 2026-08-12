@@ -108,7 +108,7 @@ func newRootCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Write through the command's writer, not os.Stdout, so the tree
 			// can be exercised in a test the way a user drives it.
-			fmt.Fprintln(cmd.OutOrStdout(), "mole "+version)
+			fmt.Fprintln(cmd.OutOrStdout(), "mole "+moleVersion())
 			return nil
 		},
 	})

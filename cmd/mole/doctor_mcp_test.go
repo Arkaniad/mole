@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,5 +133,51 @@ func TestAnUnrelatedMCPConfigIsNotRead(t *testing.T) {
 	out, _ := doctorRun(t, t.TempDir(), "")
 	if strings.Contains(out, "mcp config") {
 		t.Errorf("another server's key was reported as mole's problem:\n%s", out)
+	}
+}
+
+// TestDoctorOnAFreshInstallIsNotAFailure.
+//
+// The database is created by the first run, so a first-time user has none — and
+// doctor exited non-zero at them, which tells a setup script the install is broken
+// when nothing is wrong yet.
+func TestDoctorOnAFreshInstallIsNotAFailure(t *testing.T) {
+	t.Setenv("MOLE_CONFIG_DIR", t.TempDir())
+	db := filepath.Join(t.TempDir(), "absent", "mole.db")
+
+	stdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		var b strings.Builder
+		_, _ = io.Copy(&b, r)
+		done <- b.String()
+	}()
+
+	doctorErr := cmdDoctor(context.Background(), db)
+	_ = w.Close()
+	os.Stdout = stdout
+	out := <-done
+
+	if doctorErr != nil {
+		t.Errorf("doctor failed on a fresh install: %v", doctorErr)
+	}
+	if !strings.Contains(out, "nothing is wrong") {
+		t.Errorf("doctor does not tell a new user they are fine:\n%s", out)
+	}
+}
+
+// TestAMissingDatabaseIsStillReportedWhenItShouldExist. The relaxation must not
+// hide a database that was deleted out from under a real install.
+func TestAMissingDatabaseIsStillReportedWhenItShouldExist(t *testing.T) {
+	if !errors.Is(fmt.Errorf("%w at /x", errNoDatabase), errNoDatabase) {
+		t.Fatal("errNoDatabase does not match through wrapping")
+	}
+	if errors.Is(errors.New("permission denied"), errNoDatabase) {
+		t.Error("an unrelated failure matches errNoDatabase")
 	}
 }
