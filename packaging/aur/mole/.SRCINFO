@@ -1,0 +1,15 @@
+pkgbase = mole
+	pkgdesc = Deep-research agent with an enforced budget and verified quotes
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/lajosdeme/mole
+	arch = x86_64
+	arch = aarch64
+	license = Apache-2.0
+	makedepends = go>=1.25
+	provides = mole
+	conflicts = mole-bin
+	source = mole-0.1.0.tar.gz::https://github.com/lajosdeme/mole/archive/refs/tags/v0.1.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = mole

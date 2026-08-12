@@ -19,3 +19,4 @@
 # of those copies into a commit before this line existed.
 *.bak
 zz_*_test.go
+dist/

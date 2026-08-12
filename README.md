@@ -50,15 +50,54 @@ are allowed back. `mole crossings` shows you exactly what left.
 
 ## Install
 
-Requires Go 1.25+. Pre-built binaries are not published yet.
+**Script** — Linux and macOS, amd64 and arm64:
 
-```bash
-go install github.com/lajosdeme/mole/cmd/mole@latest
-go install github.com/lajosdeme/mole/cmd/mole-mcp@latest   # optional, for MCP clients
+```sh
+curl -fsSL https://raw.githubusercontent.com/lajosdeme/mole/main/install.sh | sh
 ```
 
-Builds `CGO_ENABLED=0` into a single static binary with no runtime dependencies.
-The database is SQLite, created on first use under your XDG data directory.
+Downloads the release archive for your platform, verifies its SHA-256 against the
+checksums published with the release, and installs `mole` and `mole-mcp` into
+`~/.local/bin` (or `/usr/local/bin` if that is writable). It uses `sudo` only if
+the target directory needs it, and `--dry-run` shows what it would do. If piping a
+script into a shell makes you uneasy — reasonable — read it first, or use one of
+the paths below.
+
+**Homebrew** — macOS and Linux:
+
+```sh
+brew install lajosdeme/tap/mole
+```
+
+**Arch Linux** — from the AUR:
+
+```sh
+yay -S mole-bin      # prebuilt release binaries
+yay -S mole          # build from source
+```
+
+**Debian and Ubuntu** — `.deb` from the [releases page](https://github.com/lajosdeme/mole/releases):
+
+```sh
+curl -fsSLO https://github.com/lajosdeme/mole/releases/latest/download/mole_amd64.deb
+sudo dpkg -i mole_amd64.deb
+```
+
+An `.rpm` is published for the same platforms.
+
+**From source** — needs Go 1.25+:
+
+```sh
+go install github.com/lajosdeme/mole/cmd/mole@latest
+go install github.com/lajosdeme/mole/cmd/mole-mcp@latest
+```
+
+Or clone and `make install`, which stamps the version so `mole version` reports the
+tag rather than `dev`.
+
+Every path installs the same thing: two static binaries with no runtime
+dependencies, built `CGO_ENABLED=0`. The database is SQLite, created on first use
+under your XDG data directory.
 
 ### Configure
 

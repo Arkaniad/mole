@@ -1,0 +1,51 @@
+name: release
+
+# Tag-driven. Everything about a release is derived from the tag, so an artifact
+# cannot disagree with itself about which version it is.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # GoReleaser derives the changelog from history, and a shallow clone
+          # gives it a changelog of one commit.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      # The suite runs before anything is built, not after. A release is the one
+      # artifact that cannot be recalled once an installer has cached it.
+      - name: test
+        run: go test -race -count=1 ./...
+
+      - name: import the AUR signing key
+        # Only when the secret exists, so a fork can cut a release without one.
+        if: ${{ env.AUR_KEY != '' }}
+        env:
+          AUR_KEY: ${{ secrets.AUR_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A token for the tap repository, not GITHUB_TOKEN: the default token
+          # cannot push to another repository, and the Homebrew formula lives in
+          # lajosdeme/homebrew-tap.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          AUR_KEY: ${{ secrets.AUR_KEY }}

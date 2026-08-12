@@ -1,16 +1,30 @@
 BIN     := bin/mole
+MCP     := bin/mole-mcp
 PKG     := ./...
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build test race vet lint cover clean tidy check seed
+.PHONY: all build install test race vet lint cover clean tidy check seed release-check
 
 all: check build
 
 build:
 	@mkdir -p bin
 	CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/mole
-	@echo "built $(BIN) ($(VERSION))"
+	CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' -o $(MCP) ./cmd/mole-mcp
+	@echo "built $(BIN) and $(MCP) ($(VERSION))"
+
+# Install into GOBIN (or ~/go/bin), which is the from-source path the README
+# documents. Uses the same ldflags as a release build, so `mole version` reports
+# the tag rather than "dev".
+install:
+	CGO_ENABLED=0 go install -ldflags '$(LDFLAGS)' ./cmd/mole ./cmd/mole-mcp
+	@echo "installed mole and mole-mcp ($(VERSION))"
+
+# Dry-run the release pipeline locally: builds every platform, packages, and
+# writes to dist/ without publishing anything.
+release-check:
+	goreleaser release --snapshot --clean --skip=publish
 
 test:
 	go test $(PKG)
