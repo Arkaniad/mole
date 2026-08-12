@@ -98,24 +98,32 @@ func TestEveryRelationHasADeliberateEffect(t *testing.T) {
 // an edge nothing reads. The ninth was a false contradiction, which spends a
 // confidence penalty and a research lead. Those are not the same mistake and a
 // single accuracy figure cannot tell them apart.
+// Rewritten when the scorer began normalizing the retired vocabulary. Rows b and c
+// used to be "inert errors" — supports/refines/unrelated were three names for one
+// effect, which is why the taxonomy was shrunk to three relations in the first
+// place. Now they normalize onto "neither" and are simply CORRECT, so the fixture
+// states the live vocabulary and keeps one genuinely inert case: a stored edge
+// carrying a retired kind, which claim_edges rows still do.
 func TestScoreSeparatesInertErrorsFromRealOnes(t *testing.T) {
 	ps := &eval.PairSet{Pairs: []eval.LabelledPair{
-		{Pair: "a", Model: "unrelated", Label: "unrelated", Judged: true},    // correct
-		{Pair: "b", Model: "supports", Label: "unrelated", Judged: true},     // inert error
-		{Pair: "c", Model: "refines", Label: "supports", Judged: true},       // inert error
-		{Pair: "d", Model: "contradicts", Label: "unrelated", Judged: true},  // REAL error
-		{Pair: "e", Model: "unrelated", Label: "duplicate_of", Judged: true}, // REAL error
+		{Pair: "a", Model: "neither", Label: "neither", Judged: true},      // correct
+		{Pair: "b", Model: "supports", Label: "neither", Judged: true},     // correct: a retired name
+		{Pair: "c", Model: "unrelated", Label: "neither", Judged: true},    // correct: a retired name
+		{Pair: "d", Model: "contradicts", Label: "neither", Judged: true},  // REAL error
+		{Pair: "e", Model: "neither", Label: "duplicate_of", Judged: true}, // REAL error
 	}}
 
 	s := eval.ScorePairs(ps)
 	if s.Labelled != 5 {
 		t.Fatalf("Labelled = %d, want 5", s.Labelled)
 	}
-	if s.Correct != 1 {
-		t.Errorf("Correct = %d, want 1", s.Correct)
+	if s.Correct != 3 {
+		t.Errorf("Correct = %d, want 3 — a retired name is the same verdict", s.Correct)
 	}
 	if s.CorrectEffect != 3 {
-		t.Errorf("CorrectEffect = %d, want 3 (the correct one plus two inert errors)", s.CorrectEffect)
+		t.Errorf("CorrectEffect = %d, want 3 — every remaining error changes the graph, "+
+			"which is what shrinking the taxonomy to one relation per effect bought",
+			s.CorrectEffect)
 	}
 	if got := s.EffectAccuracy(); got < 0.59 || got > 0.61 {
 		t.Errorf("EffectAccuracy = %.3f, want 0.6", got)

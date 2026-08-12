@@ -220,8 +220,11 @@ func TestPrecisionAndRecallAnswerDifferentQuestions(t *testing.T) {
 	}
 	// And the confusion says what it said instead, which is what tells you whether to
 	// change the prompt or the model.
-	if n := s.Confusion["contradicts"]["unrelated"]; n != 4 {
-		t.Errorf("confusion contradicts→unrelated = %d, want 4", n)
+	// Keyed on the LIVE name: the fixture labels these "unrelated", the scorer
+	// normalizes it onto "neither", and the confusion matrix speaks one vocabulary
+	// so a reader is not asked to add two rows together.
+	if n := s.Confusion["contradicts"]["neither"]; n != 4 {
+		t.Errorf("confusion contradicts→neither = %d, want 4", n)
 	}
 }
 
