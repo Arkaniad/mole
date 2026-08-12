@@ -85,11 +85,24 @@ belongs to the client, not the server. mole's achievable condition is the middle
 mole does not currently set. Whether a given client folds them into its system
 prompt is client-dependent and untested.
 
-So slice 1 has an extra task: set server `Instructions` carrying the untrusted-data
-rule, then re-run this spike through a real client to find out whether the rule
-actually lands. If it does not, `mole.fetch` returning raw page text is a weaker
-proposition than this document assumed, and the fallback — returning extracted
-claims rather than raw text — costs the agent the ability to mine for itself.
+So slice 1 set server `Instructions` carrying the untrusted-data rule, and the
+delivery half was then verified over a real socket (`cmd/mcp-probe`, connecting
+through the real `mole-mcp` shim): the instructions arrive intact in the client's
+`InitializeResult`, and a fetched page arrives inside a nonce fence with the
+injection sealed inside it.
+
+What is verified is that mole sends the right thing. What is **not** verified is
+that a client folds `Instructions` into its model's system context — that cannot be
+observed from the server side, and it is the difference between the 4% condition and
+the 0% one. It needs a session where an agent meets a hostile page without having
+been told a test is happening, which is a thing the user can do and a thing this
+project cannot honestly do to itself.
+
+Two guards fired during the spike and are worth recording, since both were doing
+their job rather than getting in the way. `robots.txt` refused the first fixture
+host outright. The egress guard refuses loopback on a high port, which is what makes
+`mole.fetch` safe to expose at all — without it an agent could aim it at
+`localhost:8080` or a metadata endpoint and read the answer through mole's process.
 
 **2. The budget becomes a quota.** mole can still meter and cap what it spends —
 search calls, fetches — because it makes those. It cannot cap model spend. `--usd`
