@@ -556,6 +556,32 @@ Stated plainly rather than left to be discovered:
 
 ---
 
+## Licence
+
+Apache-2.0. See `LICENSE`, and `NOTICE` for the third-party attributions that
+travel with the binary.
+
+Apache rather than MIT for the explicit patent grant, and rather than a
+source-available licence (BUSL, ELv2, n8n's SUL) for a reason worth stating,
+since the opposite choice is fashionable: for a tool that runs on the user's own
+machine and spends the user's own API budget, the scarce resource is adoption,
+not protection. A restrictive licence defends against a hosted competitor that
+cannot exist until the project has users, and costs the distribution — package
+managers, corporate legal review, the MCP ecosystem — that produces them.
+
+It also sits badly with what mole is. §12's boundary is that data never leaves
+the machine; a hosted mole inverts that, so the hosted product would be selling
+convenience rather than the thing that makes this distinctive. Defending it with
+a licence would be defending the weaker half.
+
+Contributions are taken under a CLA, and `CONTRIBUTING.md` says exactly what it
+is for rather than leaving it to be inferred: every *released* version stays
+Apache-2.0 permanently, and the grant exists so future versions could respond if
+somebody packages this as a service. Every dependency is permissive — 17 MIT,
+16 BSD-3, 1 BSD-2, 4 Apache-2.0, and nothing copyleft.
+
+---
+
 ## Before a public release
 
 Deliberately deferred, tracked here rather than in a scratch file:
@@ -570,10 +596,12 @@ Deliberately deferred, tracked here rather than in a scratch file:
   a stable surface — an accidental `mole dev seed` against a real database is a
   bad first impression. `cmd/fixorphans` is a one-off repair for a mistake that
   can no longer happen and should simply go.
-- **Choose a licence.** There is no `LICENSE` file yet. The choice is between
-  plain MIT and a source-available/fair-code licence in the shape n8n uses —
-  which turns on whether a hosted mole run by someone else is a problem worth
-  preventing. Not decided.
+- **Finish the CLA.** The licence is settled — Apache-2.0, with `LICENSE`,
+  `NOTICE` and `CONTRIBUTING.md` in place. `CLA.md` is a draft outline for a
+  lawyer, explicitly not legal text, and it must be replaced with reviewed text
+  before the repository goes public. The question inside it that is cheap now and
+  expensive later: whether contributions are granted to an individual or to a
+  company that does not exist yet.
 
 ---
 

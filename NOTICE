@@ -1,0 +1,104 @@
+mole
+Copyright 2026 Lajos Deme
+
+This product includes software developed by Lajos Deme.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+
+-------------------------------------------------------------------------------
+THIRD-PARTY SOFTWARE
+-------------------------------------------------------------------------------
+
+mole is distributed as a single statically linked binary, so the modules below
+are compiled into it and their licence terms travel with every copy. All of them
+are permissive; none is copyleft.
+
+The list is what `go list -deps ./cmd/mole ./cmd/mole-mcp` resolves to on Linux.
+A build for another platform may link a small number of additional
+platform-specific modules (a Windows build adds github.com/inconshreveable/mousetrap,
+for example); regenerate this section when producing release artifacts for a new
+platform.
+
+Full licence texts are not reproduced here. Each module carries its own in its
+source distribution, retrievable with `go mod download` and found under
+$(go env GOMODCACHE)/<module>@<version>/LICENSE.
+
+  Apache-2.0
+    github.com/modelcontextprotocol/go-sdk
+    github.com/pb33f/ordered-map/v2
+    github.com/spf13/cobra
+    go.yaml.in/yaml/v4
+
+  MIT
+    codeberg.org/readeck/go-readability/v2
+    github.com/anthropics/anthropic-sdk-go
+    github.com/buger/jsonparser
+    github.com/dustin/go-humanize
+    github.com/go-shiori/dom
+    github.com/gogs/chardet
+    github.com/google/jsonschema-go
+    github.com/invopop/jsonschema
+    github.com/itlightning/dateparse
+    github.com/rqlite/sql
+    github.com/segmentio/asm
+    github.com/segmentio/encoding
+    github.com/standard-webhooks/standard-webhooks/libraries
+    github.com/tidwall/gjson
+    github.com/tidwall/match
+    github.com/tidwall/pretty
+    github.com/tidwall/sjson
+
+  BSD-3-Clause
+    github.com/bahlo/generic-list-go
+    github.com/google/uuid
+    github.com/remyoudompheng/bigfft
+    github.com/spf13/pflag
+    github.com/yosida95/uritemplate/v3
+    golang.org/x/exp
+    golang.org/x/net
+    golang.org/x/oauth2
+    golang.org/x/sync
+    golang.org/x/sys
+    golang.org/x/text
+    golang.org/x/time
+    modernc.org/libc
+    modernc.org/mathutil
+    modernc.org/memory
+    modernc.org/sqlite
+
+  BSD-2-Clause
+    github.com/andybalholm/cascadia
+
+-------------------------------------------------------------------------------
+REQUIRED THIRD-PARTY NOTICES
+-------------------------------------------------------------------------------
+
+The following notices are reproduced as required by section 4(d) of the Apache
+License, Version 2.0.
+
+go.yaml.in/yaml/v4
+------------------
+
+    Copyright 2011-2016 Canonical Ltd.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.

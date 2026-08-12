@@ -1196,7 +1196,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1208,7 +1208,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1220,7 +1220,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1232,7 +1232,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1244,7 +1244,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1256,7 +1256,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1268,7 +1268,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1280,7 +1280,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3CR7MH4FB3H5"
   },
   {
@@ -1292,7 +1292,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3CR7MH4FB3H5"
   },
   {
@@ -1304,7 +1304,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3CR7MH4FB3H5"
   },
   {
@@ -1316,7 +1316,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3CR7MH4FB3H5"
   },
   {
@@ -1328,7 +1328,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3DC3Q1JR0N80"
   },
   {
@@ -1340,7 +1340,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3DC3Q1JR0N80"
   },
   {
@@ -1352,7 +1352,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3DC3Q1JR0N80"
   },
   {
@@ -1364,7 +1364,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3DC3Q1JR0N80"
   },
   {
@@ -1376,7 +1376,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3DC3Q1JR0N80"
   },
   {
@@ -1388,7 +1388,7 @@
    "model": "contradicts",
    "why": "judged contradicts \u2014 label it to measure PRECISION",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3DC3Q1JR0N80"
   },
   {
@@ -1400,7 +1400,7 @@
    "model": "duplicate_of",
    "why": "different figures of the same magnitude about the same subject ([11.24, 1918.0] vs [17.41, 1918.0]), judged duplicate_of \u2014 label it to measure RECALL",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ395TJ4Z4K25W"
   },
   {
@@ -1412,7 +1412,7 @@
    "model": "duplicate_of",
    "why": "different figures of the same magnitude about the same subject ([17.41, 1918.0] vs [17.4, 1918.0]), judged duplicate_of \u2014 label it to measure RECALL",
    "judged": true,
-   "label": "",
+   "label": "duplicate_of",
    "session": "s_06FZ395TJ4Z4K25W"
   },
   {
@@ -1423,7 +1423,7 @@
    "source_b": "https://pmc.ncbi.nlm.nih.gov/articles/PMC7314216",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ395TJ4Z4K25W",
    "why": "different figures of the same magnitude about the same subject ([11.24, 1918.0] vs [17.4, 1918.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1435,7 +1435,7 @@
    "source_b": "https://ourworldindata.org/spanish-flu-largest-influenza-pandemic-in-history",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ395TJ4Z4K25W",
    "why": "different figures of the same magnitude about the same subject ([50.0, 100.0] vs [5.4, 100.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1447,7 +1447,7 @@
    "source_b": "https://ourworldindata.org/spanish-flu-largest-influenza-pandemic-in-history",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ395TJ4Z4K25W",
    "why": "different figures of the same magnitude about the same subject ([2.7, 50.0] vs [1.0, 17.4]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1460,7 +1460,7 @@
    "model": "duplicate_of",
    "why": "different figures of the same magnitude about the same subject ([9.6, 2012.0] vs [9.3, 9.6]), judged duplicate_of \u2014 label it to measure RECALL",
    "judged": true,
-   "label": "",
+   "label": "duplicate_of",
    "session": "s_06FZ39KQHSXAWRCS"
   },
   {
@@ -1472,7 +1472,7 @@
    "model": "duplicate_of",
    "why": "different figures of the same magnitude about the same subject ([8.0, 10.3] vs [10.3, 2084.0]), judged duplicate_of \u2014 label it to measure RECALL",
    "judged": true,
-   "label": "",
+   "label": "duplicate_of",
    "session": "s_06FZ39KQHSXAWRCS"
   },
   {
@@ -1483,7 +1483,7 @@
    "source_b": "https://www.prb.org/resources/united-nations-raises-projected-world-population",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ39KQHSXAWRCS",
    "why": "different figures of the same magnitude about the same subject ([10.9, 2100.0] vs [9.6, 2012.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1495,7 +1495,7 @@
    "source_b": "http://en.wikipedia.org/wiki/Human_population_projections",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ39KQHSXAWRCS",
    "why": "different figures of the same magnitude about the same subject ([8.0, 10.3] vs [10.3, 2022.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1507,7 +1507,7 @@
    "source_b": "https://en.wikipedia.org/wiki/Human_population_projections",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ39KQHSXAWRCS",
    "why": "different figures of the same magnitude about the same subject ([10.3, 2024.0] vs [10.4, 2022.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1520,7 +1520,7 @@
    "model": "duplicate_of",
    "why": "different figures of the same magnitude about the same subject ([138.0, 2025.0] vs [138.0]), judged duplicate_of \u2014 label it to measure RECALL",
    "judged": true,
-   "label": "",
+   "label": "duplicate_of",
    "session": "s_06FZ39XPM1Y1R7MR"
   },
   {
@@ -1532,7 +1532,7 @@
    "model": "duplicate_of",
    "why": "different figures of the same magnitude about the same subject ([138.0, 2025.0] vs [138.0]), judged duplicate_of \u2014 label it to measure RECALL",
    "judged": true,
-   "label": "",
+   "label": "duplicate_of",
    "session": "s_06FZ39XPM1Y1R7MR"
   },
   {
@@ -1543,7 +1543,7 @@
    "source_b": "https://coinlaw.io/cryptocurrency-mining-energy-consumption-statistics",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ39XPM1Y1R7MR",
    "why": "different figures of the same magnitude about the same subject ([52.4] vs [138.0, 2025.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1556,7 +1556,7 @@
    "model": "duplicate_of",
    "why": "different figures of the same magnitude about the same subject ([204.44, 2026.0] vs [204.44]), judged duplicate_of \u2014 label it to measure RECALL",
    "judged": true,
-   "label": "",
+   "label": "duplicate_of",
    "session": "s_06FZ39XPM1Y1R7MR"
   },
   {
@@ -1568,7 +1568,7 @@
    "model": "duplicate_of",
    "why": "different figures of the same magnitude about the same subject ([0.5, 138.0] vs [0.5]), judged duplicate_of \u2014 label it to measure RECALL",
    "judged": true,
-   "label": "",
+   "label": "duplicate_of",
    "session": "s_06FZ39XPM1Y1R7MR"
   },
   {
@@ -1579,7 +1579,7 @@
    "source_b": "https://replicationnetwork.com/2021/12/22/results-from-the-reproducibility-project-cancer-biology",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3AH69EKTBW1Z",
    "why": "different figures of the same magnitude about the same subject ([13.0, 97.0] vs [21.0, 22.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1591,7 +1591,7 @@
    "source_b": "https://replicationnetwork.com/2021/12/22/results-from-the-reproducibility-project-cancer-biology",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3AH69EKTBW1Z",
    "why": "different figures of the same magnitude about the same subject ([13.0, 97.0] vs [7.0, 15.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1603,7 +1603,7 @@
    "source_b": "https://replicationnetwork.com/2021/12/22/results-from-the-reproducibility-project-cancer-biology",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3AH69EKTBW1Z",
    "why": "different figures of the same magnitude about the same subject ([46.0, 51.0] vs [13.0, 97.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1615,7 +1615,7 @@
    "source_b": "https://replicationnetwork.com/2021/12/22/results-from-the-reproducibility-project-cancer-biology",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3AH69EKTBW1Z",
    "why": "different figures of the same magnitude about the same subject ([46.0, 51.0] vs [21.0, 22.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1627,7 +1627,7 @@
    "source_b": "https://replicationnetwork.com/2021/12/22/results-from-the-reproducibility-project-cancer-biology",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3AH69EKTBW1Z",
    "why": "different figures of the same magnitude about the same subject ([46.0, 51.0] vs [7.0, 15.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1640,7 +1640,7 @@
    "model": "duplicate_of",
    "why": "different figures of the same magnitude about the same subject ([29.0, 2026.0] vs [31.0, 2026.0]), judged duplicate_of \u2014 label it to measure RECALL",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3B121KJ9SNS0"
   },
   {
@@ -1651,7 +1651,7 @@
    "source_b": "https://pv-magazine-usa.com/2025/02/06/solar-project-costs-without-subsidies-are-within-touching-distance-of-new-gas-plants",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3B121KJ9SNS0",
    "why": "different figures of the same magnitude about the same subject ([25.0, 31.0] vs [2.0, 35.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1663,7 +1663,7 @@
    "source_b": "https://w3.windfair.net/wind-energy/news/46789-study-levelized-cost-of-electricity-for-renewable-energy-and-conventional-power-plants-wind-and-pv-clearly-advantageous",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3B121KJ9SNS0",
    "why": "different figures of the same magnitude about the same subject ([15.1, 29.3] vs [13.6, 49.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1675,7 +1675,7 @@
    "source_b": "https://www.maysunsolar.com/blog-a-deep-dive-into-lcoe-levelized-cost-of-energy-and-solar-energy",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3B121KJ9SNS0",
    "why": "different figures of the same magnitude about the same subject ([39.0, 101.0] vs [141.0, 221.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1687,7 +1687,7 @@
    "source_b": "https://www.maysunsolar.com/blog-a-deep-dive-into-lcoe-levelized-cost-of-energy-and-solar-energy",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3B121KJ9SNS0",
    "why": "different figures of the same magnitude about the same subject ([39.0, 101.0] vs [68.0, 166.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1699,7 +1699,7 @@
    "source_b": "https://www.libertify.com/interactive-library/gpt-4-technical-report",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3BGADSVT8BPJ",
    "why": "different figures of the same magnitude about the same subject ([4.0, 93.0] vs [4.0, 89.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1711,7 +1711,7 @@
    "source_b": "https://pmc.ncbi.nlm.nih.gov/articles/PMC3712342",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3BQAP3SFXNBK",
    "why": "different figures of the same magnitude about the same subject ([18.0, 21.0] vs [13.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1723,7 +1723,7 @@
    "source_b": "https://pmc.ncbi.nlm.nih.gov/articles/PMC3712342",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3BQAP3SFXNBK",
    "why": "different figures of the same magnitude about the same subject ([18.0, 21.0] vs [20.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1736,7 +1736,7 @@
    "model": "duplicate_of",
    "why": "different figures of the same magnitude about the same subject ([13.0] vs [20.0]), judged duplicate_of \u2014 label it to measure RECALL",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3BQAP3SFXNBK"
   },
   {
@@ -1747,7 +1747,7 @@
    "source_b": "https://hsph.harvard.edu/news/increasing-red-meat-consumption-linked-with-higher-risk-of-premature-death",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3BQAP3SFXNBK",
    "why": "different figures of the same magnitude about the same subject ([13.0] vs [9.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1759,7 +1759,7 @@
    "source_b": "https://pmc.ncbi.nlm.nih.gov/articles/PMC3712342",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3BQAP3SFXNBK",
    "why": "different figures of the same magnitude about the same subject ([13.0] vs [20.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1771,7 +1771,7 @@
    "source_b": "https://pubmed.ncbi.nlm.nih.gov/40367516",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3C6YC95B0WYA",
    "why": "different figures of the same magnitude about the same subject ([3.44, 5.07] vs [10.07, 11.5]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1783,7 +1783,7 @@
    "source_b": "https://pubmed.ncbi.nlm.nih.gov/40367516",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3C6YC95B0WYA",
    "why": "different figures of the same magnitude about the same subject ([5.26, 6.09] vs [10.07, 11.5]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1796,7 +1796,7 @@
    "model": "duplicate_of",
    "why": "different figures of the same magnitude about the same subject ([14.0, 18.0] vs [8.0, 16.0]), judged duplicate_of \u2014 label it to measure RECALL",
    "judged": true,
-   "label": "",
+   "label": "contradicts",
    "session": "s_06FZ3C6YC95B0WYA"
   },
   {
@@ -1807,7 +1807,7 @@
    "source_b": "https://nutritionsource.hsph.harvard.edu/healthy-weight/diet-reviews/intermittent-fasting",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3C6YC95B0WYA",
    "why": "different figures of the same magnitude about the same subject ([29.0, 38.0] vs [100.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1819,7 +1819,7 @@
    "source_b": "https://nutritionsource.hsph.harvard.edu/healthy-weight/diet-reviews/intermittent-fasting",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3C6YC95B0WYA",
    "why": "different figures of the same magnitude about the same subject ([29.0, 38.0] vs [12.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1831,7 +1831,7 @@
    "source_b": "https://www.mdpi.com/2072-6643/16/15/2443",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3CR7MH4FB3H5",
    "why": "different figures of the same magnitude about the same subject ([0.001, 0.002] vs [0.001, 0.017]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1843,7 +1843,7 @@
    "source_b": "https://www.revespcardiol.org/en-effect-of-the-mediterranean-diet-in-card-articulo-S1885585724000434",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3CR7MH4FB3H5",
    "why": "different figures of the same magnitude about the same subject ([0.7, 0.72] vs [0.42]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1855,7 +1855,7 @@
    "source_b": "https://www.revespcardiol.org/en-effect-of-the-mediterranean-diet-in-card-articulo-S1885585724000434",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3CR7MH4FB3H5",
    "why": "different figures of the same magnitude about the same subject ([2018.0] vs [1876.0, 1885.0]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1867,7 +1867,7 @@
    "source_b": "https://www.revespcardiol.org/en-effect-of-the-mediterranean-diet-in-card-articulo-S1885585724000434",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3CR7MH4FB3H5",
    "why": "different figures of the same magnitude about the same subject ([0.008, 0.32] vs [0.42]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1879,7 +1879,7 @@
    "source_b": "https://pubmed.ncbi.nlm.nih.gov/38431146",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3CR7MH4FB3H5",
    "why": "different figures of the same magnitude about the same subject ([0.2, 0.51] vs [0.06, 0.3]), judged unrelated \u2014 label it to measure RECALL"
   },
@@ -1891,7 +1891,7 @@
    "source_b": "https://jorgeperezperez.com/files/PerezMinimumWagePricesMetaanalysis.pdf",
    "model": "unrelated",
    "judged": true,
-   "label": "",
+   "label": "neither",
    "session": "s_06FZ3DC3Q1JR0N80",
    "why": "different figures of the same magnitude about the same subject ([0.03] vs [0.1]), judged unrelated \u2014 label it to measure RECALL"
   },
