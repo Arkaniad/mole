@@ -1,8 +1,12 @@
 package mcpserver_test
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/lajosdeme/mole/internal/core"
+	"github.com/lajosdeme/mole/internal/store"
 )
 
 // Toolkit mode, slice 2: the claim a model cannot fabricate.
@@ -33,6 +37,26 @@ func openWithDoc(t *testing.T, r *rig) (session, doc string) {
 // A span that really is in the fixture, long enough to be evidence.
 const realQuote = "intermittent fasting reduced fasting glucose in adults with prediabetes"
 
+// storedText is mole's own copy of a document, which is what an offset indexes
+// into. Read from the store rather than from the tool result: the tool returns
+// the text fenced, and the fence is presentation.
+func storedText(t *testing.T, r *rig, docID string) string {
+	t.Helper()
+	var doc core.Document
+	if err := r.db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		var ok bool
+		var err error
+		doc, ok, err = q.Document(ctx, docID, timeNow())
+		if err == nil && !ok {
+			t.Fatalf("no stored document %s", docID)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return doc.Text
+}
+
 // TestAVerifiedClaimIsRecordedWithItsProvenance.
 func TestAVerifiedClaimIsRecordedWithItsProvenance(t *testing.T) {
 	r := connectToolkitStubFetch(t, testPage)
@@ -56,6 +80,26 @@ func TestAVerifiedClaimIsRecordedWithItsProvenance(t *testing.T) {
 	}
 	if added.Source == "" {
 		t.Error("the claim carries no source")
+	}
+	// The offset has to LOCATE the quote, not merely be non-zero — an auditor
+	// re-reading the page jumps to it. Checked on the STORED claim rather than on
+	// the returned one: the returned offset is computed on the spot, so a wrong
+	// value written to the row would not show up here. Mutating the stored offset
+	// to a constant left the first version of this assertion green.
+	text := storedText(t, r, doc)
+	stored := storedClaims(t, r, sess)
+	if len(stored) != 1 {
+		t.Fatalf("%d claims stored, want 1", len(stored))
+	}
+	off := int(stored[0].QuoteOffset)
+	if end := off + len(stored[0].Quote); off < 0 || end > len(text) ||
+		!strings.EqualFold(text[off:end], stored[0].Quote) {
+		t.Errorf("stored offset %d does not point at the quote; text there is %.80q",
+			off, safeSlice(text, off, 80))
+	}
+	if added.Offset != off {
+		t.Errorf("the offset reported to the caller (%d) is not the one recorded (%d)",
+			added.Offset, off)
 	}
 
 	var listed struct {
@@ -104,23 +148,33 @@ func TestAFabricatedQuoteIsRefused(t *testing.T) {
 //
 // The attack the design exists to stop: a caller that passes its own "document"
 // alongside the quote. There is no parameter for it, and adding one would make
-// verification theatre — so this pins that the tool schema does not quietly accept
-// one under another name.
+// verification theatre.
+//
+// The first version of this test sent extra keys ("document", "source_text") and
+// asserted only that the call errored. It passed for the wrong reason — the MCP
+// schema rejects unknown properties, so mole's code never ran, and the test
+// stayed green when the handler was mutated to verify against caller-supplied
+// text. It now sends only real parameters and asserts on the refusal mole itself
+// produces. Same defect the authors had already fixed once in
+// TestFetchNeedsASession.
 func TestSupplyingTheSourceTextDoesNotHelp(t *testing.T) {
 	r := connectToolkitStubFetch(t, testPage)
 	sess, doc := openWithDoc(t, r)
 
+	// The quote is smuggled inside the claim text, which is the only free-text
+	// field there is. If verification ever read anything but the stored document,
+	// this would be the way in.
 	res := r.call(t, "mole.claim_add", map[string]any{
 		"session_id": sess, "doc_id": doc,
-		"text":  "The study found a ninety percent remission rate.",
-		"quote": "a ninety percent remission rate was observed in the treatment arm",
-		// Extra fields a hopeful caller might try.
-		"document": "The study found that a ninety percent remission rate was observed " +
+		"text": "The study found that a ninety percent remission rate was observed " +
 			"in the treatment arm.",
-		"source_text": "a ninety percent remission rate was observed in the treatment arm",
+		"quote": "a ninety percent remission rate was observed in the treatment arm",
 	}, nil)
 	if !res.IsError {
 		t.Fatal("caller-supplied text was accepted as evidence")
+	}
+	if !strings.Contains(errText(res), "stored document") {
+		t.Errorf("the refusal did not come from the quote check: %s", errText(res))
 	}
 }
 
@@ -195,7 +249,7 @@ func TestVerifyQuoteAgreesWithClaimAdd(t *testing.T) {
 			Found bool `json:"found"`
 		}
 		r.call(t, "mole.verify_quote", map[string]any{
-			"doc_id": doc, "quote": tc.quote}, &checked)
+			"session_id": sess, "doc_id": doc, "quote": tc.quote}, &checked)
 
 		res := r.call(t, "mole.claim_add", map[string]any{
 			"session_id": sess, "doc_id": doc,
@@ -260,4 +314,31 @@ func TestAnExpiredDocumentCannotBeCited(t *testing.T) {
 	if !strings.Contains(errText(res), "retention") {
 		t.Errorf("the refusal does not explain: %s", errText(res))
 	}
+}
+
+// safeSlice is a bounded window into a document, for failure messages.
+func safeSlice(s string, from, n int) string {
+	if from < 0 || from >= len(s) {
+		return ""
+	}
+	if from+n > len(s) {
+		n = len(s) - from
+	}
+	return s[from : from+n]
+}
+
+// storedClaims reads a session's claims straight from the database.
+func storedClaims(t *testing.T, r *rig, sessionID string) []*core.Claim {
+	t.Helper()
+	var out []*core.Claim
+	if err := r.db.Read(context.Background(), func(ctx context.Context, q store.Queries) error {
+		var err error
+		// Not 0: the store reads that as 500, which is the trap this helper's
+		// callers are testing for.
+		out, err = q.ListClaims(ctx, sessionID, 100_000)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

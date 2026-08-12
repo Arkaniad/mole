@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -31,6 +32,8 @@ import (
 	"github.com/lajosdeme/mole/internal/core"
 	"github.com/lajosdeme/mole/internal/dataset"
 	"github.com/lajosdeme/mole/internal/store"
+	"github.com/lajosdeme/mole/internal/tools/extract"
+	"github.com/lajosdeme/mole/internal/tools/fetch"
 	"github.com/lajosdeme/mole/internal/tools/search"
 	"github.com/lajosdeme/mole/internal/verifier"
 )
@@ -45,6 +48,20 @@ const MaxFetchChars = 120_000
 
 // MaxSearchResults bounds one search for the same reason.
 const MaxSearchResults = 10
+
+// DefaultToolkitBudgetUSD is what a session gets when the caller names no budget:
+// one dollar, which is roughly 125 Tavily queries.
+const DefaultToolkitBudgetUSD = 1_000_000 // micros
+
+// MaxToolkitCalls bounds how many searches and fetches one toolkit session may
+// make.
+//
+// Autonomous mode is bounded by money: every call is on a lead, and leads stop
+// when the budget does. Here the money bound is weak on purpose — a search and a
+// fetch cost mole no model tokens, so in a token-budget session the ledger would
+// never stop an agent that loops. This is the ceiling that does, and it is §8.5's
+// existing one rather than a new mechanism.
+const MaxToolkitCalls = 500
 
 // serverInstructions is sent at initialize and, in a client that honours it,
 // becomes part of the model's system context.
@@ -115,6 +132,12 @@ func (d Deps) toolkitSessionOpen(ctx context.Context, _ *mcp.CallToolRequest, in
 	if err != nil {
 		return nil, sessionOpenOut{}, err
 	}
+	// The daemon's per-session ceiling applies here too. It is documented as the
+	// one limit the caller cannot raise, and a toolkit session that skipped it
+	// would be the way around it.
+	if err := d.checkCeiling(unit, amount); err != nil {
+		return nil, sessionOpenOut{}, err
+	}
 
 	// Validated before the session exists, so a bad schema costs a refusal rather
 	// than a session that can never produce a dataset.
@@ -132,6 +155,12 @@ func (d Deps) toolkitSessionOpen(ctx context.Context, _ *mcp.CallToolRequest, in
 		ActorTypes: []core.ActorType{core.ActorWeb},
 		BudgetUnit: unit,
 		Budget:     amount,
+		// A ceiling on calls, not only on money, because in a token-budget session
+		// a search and a fetch cost no tokens — the money ceiling would bind
+		// nothing and an agent in a loop could fetch until the disk filled. §8.5's
+		// MaxToolCalls is the bound that fits work mole does on someone else's
+		// behalf.
+		MaxToolCalls: MaxToolkitCalls,
 	})
 	if err != nil {
 		return nil, sessionOpenOut{}, err
@@ -151,8 +180,9 @@ func (d Deps) toolkitSessionOpen(ctx context.Context, _ *mcp.CallToolRequest, in
 		SessionID: sess.ID,
 		// Said plainly, because a caller who assumes mole is metering their model
 		// spend would be wrong in the direction that costs them money.
-		Note: "This budget bounds what mole spends on searches and fetches. It cannot " +
-			"bound your own model usage, which mole does not see.",
+		Note: fmt.Sprintf("mole meters its own searches and fetches against this "+
+			"budget and stops after %d of them. It cannot bound your own model usage, "+
+			"which mole does not see.", MaxToolkitCalls),
 	}, nil
 }
 
@@ -177,7 +207,7 @@ func (d Deps) toolkitSessionClose(ctx context.Context, _ *mcp.CallToolRequest, i
 			return err
 		}
 		out.Spent = core.FormatAmount(sess.Spent, sess.BudgetUnit)
-		claims, err := q.ListClaims(ctx, in.SessionID, 0)
+		claims, err := q.ListClaims(ctx, in.SessionID, AllClaims)
 		if err != nil {
 			return err
 		}
@@ -200,13 +230,82 @@ func (d Deps) toolkitSessionClose(ctx context.Context, _ *mcp.CallToolRequest, i
 	return nil, out, nil
 }
 
+// requireSession refuses a session id that names no session.
+//
+// Every write path is protected by a foreign key and fails loudly on an unknown
+// id — except the audit row for mole.aggregate, whose failure was only logged
+// while the aggregate itself was returned. That is the one place where a caller
+// controlling the session id could read local data and leave no trace, so the id
+// is checked before any work is done rather than when a row is written.
+func (d Deps) requireSession(ctx context.Context, sessionID string) (*core.Session, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("session_id is required; open one with mole.session_open")
+	}
+	var sess *core.Session
+	if err := d.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
+		var err error
+		sess, err = q.GetSession(ctx, sessionID)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("no session %s: %w", sessionID, err)
+	}
+	return sess, nil
+}
+
+// spend runs work that costs mole money and records what it cost.
+//
+// Reserve-before-spend, settle-after (§8), for the same reason the executor does
+// it: the availability check and the hold happen in one transaction, so the
+// ceilings actually bind. It also means every search and fetch writes a cost row,
+// which is what `mole trace` reads — a toolkit session used to show none, so a
+// user could not see what the agent had made mole do on their behalf.
+//
+// The reservation is one unit rather than an estimate. A search's price is known
+// only after the provider answers and a fetch costs nothing directly, so an
+// estimate would be a number with no measurement behind it; the hold exists for
+// the ceiling check, and the settle carries the real cost.
+func (d Deps) spend(
+	ctx context.Context,
+	sessionID string,
+	call func(context.Context) (core.ToolCall, error),
+) error {
+	ledger := budget.New(d.Store, budget.DefaultConfig())
+	res, err := ledger.Reserve(ctx, sessionID, 1)
+	if err != nil {
+		return err
+	}
+	tc, callErr := call(ctx)
+	tc.SessionID = sessionID
+	tc.Role = core.RoleExecutor
+	if callErr != nil {
+		tc.Err = callErr.Error()
+	}
+	// Settled on an uncancellable context, and settled even when the call failed:
+	// the search provider was paid either way, and a released reservation would
+	// record the spend nowhere. Same reasoning as the executor's uncancellable
+	// settle.
+	if _, err := ledger.Settle(context.WithoutCancel(ctx), res, []core.ToolCall{tc}); err != nil {
+		d.Log.ErrorContext(ctx, "a toolkit call was not settled; the ledger now "+
+			"under-reports this session", "session", sessionID, "err", err)
+	}
+	return callErr
+}
+
 // toolkitBudget resolves the ceiling on mole's own spending.
 func (d Deps) toolkitBudget(b *Budget) (core.BudgetUnit, int64, error) {
 	if b == nil {
-		// Searches and fetches, not model calls. A small default is right: a
-		// caller who wants more says so, and one who forgets does not discover it
-		// through a provider bill.
-		return core.BudgetTokens, 100_000, nil
+		// Dollars, not tokens. The only thing mole spends in this mode is search
+		// provider queries, which are priced in money and cost no tokens at all —
+		// a token budget would have been charged 0 for every call and bound
+		// nothing, which is how the ledger came to report $0 for sessions that had
+		// really spent. A small default is right: a caller who wants more says so,
+		// and one who forgets does not discover it through a provider bill.
+		if d.MaxSessionUSD == 0 && d.MaxSessionTokens > 0 {
+			// This daemon caps tokens and not dollars, and checkCeiling refuses a
+			// dollar session outright there. Follow the daemon rather than fail.
+			return core.BudgetTokens, 100_000, nil
+		}
+		return core.BudgetUSD, DefaultToolkitBudgetUSD, nil
 	}
 	return parseBudget(*b)
 }
@@ -242,19 +341,47 @@ func (d Deps) toolkitSearch(ctx context.Context, _ *mcp.CallToolRequest, in sear
 	if strings.TrimSpace(in.Query) == "" {
 		return nil, searchOut{}, fmt.Errorf("query is required")
 	}
+	if _, err := d.requireSession(ctx, in.SessionID); err != nil {
+		return nil, searchOut{}, err
+	}
 	n := in.MaxResults
 	if n <= 0 || n > MaxSearchResults {
 		n = MaxSearchResults
 	}
 
-	resp, err := d.Search.Search(ctx, in.Query, search.Options{MaxResults: n})
+	// session_id used to be declared and never read, so a search was charged to
+	// nobody and bounded by nothing.
+	var resp *search.Response
+	err := d.spend(ctx, in.SessionID, func(ctx context.Context) (core.ToolCall, error) {
+		started := time.Now()
+		var err error
+		resp, err = d.Search.Search(ctx, in.Query, search.Options{MaxResults: n})
+		tc := core.ToolCall{
+			Type: core.CallSearch, Input: in.Query,
+			DurationMS: time.Since(started).Milliseconds(),
+		}
+		if resp != nil {
+			tc.Cost = resp.Cost
+		}
+		return tc, err
+	})
 	if err != nil {
 		return nil, searchOut{}, err
 	}
 	out := searchOut{}
-	for _, r := range resp.Results {
+	for i, r := range resp.Results {
+		// Clamped on the way out as well as on the way in. A provider is not
+		// obliged to honour the limit it was asked for, and a test with a
+		// provider that answers with 25 results for a request of 10 found all 25
+		// reaching the model.
+		if i >= n {
+			break
+		}
 		out.Results = append(out.Results, searchResult{
-			Title: r.Title, URL: r.URL,
+			// Titles are provider-supplied and ultimately page-supplied, so they
+			// are bounded exactly as snippets are. This one was not, and ten
+			// unbounded titles per call is the same exposure with a shorter name.
+			Title: truncateRunes(r.Title, MaxTitleChars), URL: r.URL,
 			// A snippet is untrusted text like any other, and it is short enough
 			// that fencing each one would cost more attention than it buys — so it
 			// is truncated hard instead, and the note says where the real fence is.
@@ -276,7 +403,13 @@ type fetchIn struct {
 }
 
 type fetchOut struct {
-	DocID     string `json:"doc_id"`
+	DocID string `json:"doc_id"`
+	// URL is where the bytes actually came from, which is not necessarily the URL
+	// that was requested. Reported so a caller citing this document cites the
+	// page it read.
+	URL string `json:"url"`
+	// Title is source-controlled text like the body, and is truncated for that
+	// reason: it is the one field that reaches the model outside the fence.
 	Title     string `json:"title"`
 	Text      string `json:"text"`
 	Chars     int    `json:"chars"`
@@ -295,12 +428,24 @@ func (d Deps) toolkitFetch(ctx context.Context, _ *mcp.CallToolRequest, in fetch
 			"session_id is required: a fetched document is stored against a session so " +
 				"a quote can be checked against it later")
 	}
+	if _, err := d.requireSession(ctx, in.SessionID); err != nil {
+		return nil, fetchOut{}, err
+	}
 
 	pageURL, err := url.Parse(strings.TrimSpace(in.URL))
 	if err != nil {
 		return nil, fetchOut{}, fmt.Errorf("not a URL: %w", err)
 	}
-	res, err := d.Fetch.Fetch(ctx, in.URL)
+	var res *fetch.Result
+	err = d.spend(ctx, in.SessionID, func(ctx context.Context) (core.ToolCall, error) {
+		var err error
+		res, err = d.Fetch.Fetch(ctx, in.URL)
+		tc := core.ToolCall{Type: core.CallFetch, Input: in.URL}
+		if res != nil {
+			tc.DurationMS = res.Duration.Milliseconds()
+		}
+		return tc, err
+	})
 	if err != nil {
 		return nil, fetchOut{}, err
 	}
@@ -314,13 +459,27 @@ func (d Deps) toolkitFetch(ctx context.Context, _ *mcp.CallToolRequest, in fetch
 	if err != nil {
 		return nil, fetchOut{}, err
 	}
+	// A consent wall and a paywall both answer 200, so the transport outcome
+	// above cannot see them; the classification happens on the extracted body.
+	// Autonomous mode refines before mining (actors/web.go), and the toolkit did
+	// not — an agent got eighty characters of cookie banner reported as a
+	// successful document, and mined a claim from it.
+	extract.Refine(res, doc)
+	if !res.Outcome.Usable() {
+		return nil, fetchOut{}, fmt.Errorf("fetch %s: %s", in.URL, res.Outcome)
+	}
 
 	text, truncated := truncateAt(doc.Text, MaxFetchChars)
 	stored := core.Document{
 		ID:        core.NewDocumentID(),
 		SessionID: in.SessionID,
-		URL:       in.URL,
-		Title:     doc.Title,
+		// The URL the bytes came from, not the one that was asked for. A claim
+		// cited to a URL that redirects elsewhere sends a reader to the redirect
+		// rather than to the evidence — the same reason the web actor uses
+		// FinalURL — and here it is worse: an open redirect on a trusted host
+		// would attribute an attacker's text to that host.
+		URL:   finalURL(res, in.URL),
+		Title: truncateRunes(doc.Title, MaxTitleChars),
 		// Stored UNFENCED and exactly as extracted. The fence is presentation for
 		// the agent's prompt; a quote is verified against the text itself, and
 		// storing the wrapper would make every offset wrong by its length.
@@ -341,12 +500,30 @@ func (d Deps) toolkitFetch(ctx context.Context, _ *mcp.CallToolRequest, in fetch
 			"that point cannot be verified.", MaxFetchChars)
 	}
 	return nil, fetchOut{
-		DocID: stored.ID, Title: doc.Title,
-		Text:      fenceDocument(text),
-		Chars:     len(text),
+		DocID: stored.ID, Title: stored.Title, URL: stored.URL,
+		Text: fenceDocument(text),
+		// Runes, because MaxFetchChars is a rune bound and the note quotes it as
+		// a character count. len() reported a Japanese page as three times the
+		// limit it had just been cut to.
+		Chars:     utf8.RuneCountInString(text),
 		Truncated: truncated,
 		Note:      note,
 	}, nil
+}
+
+// MaxTitleChars bounds a page-supplied title.
+//
+// Titles reach the model OUTSIDE the fence — they are metadata a caller cites by,
+// not document text — so the only protection available is that they are short.
+// Same bound as a search snippet, for the same reason.
+const MaxTitleChars = 300
+
+// finalURL is where the bytes came from, falling back to what was asked for.
+func finalURL(res *fetch.Result, requested string) string {
+	if res != nil && res.FinalURL != "" {
+		return res.FinalURL
+	}
+	return requested
 }
 
 // truncateAt cuts on a rune boundary and reports whether it cut.
@@ -501,8 +678,9 @@ func registerToolkit(srv *mcp.Server, d Deps) {
 // model that can invent a quote can invent the passage to match it.
 
 type verifyQuoteIn struct {
-	DocID string `json:"doc_id"`
-	Quote string `json:"quote"`
+	SessionID string `json:"session_id"`
+	DocID     string `json:"doc_id"`
+	Quote     string `json:"quote"`
 }
 
 type verifyQuoteOut struct {
@@ -515,7 +693,10 @@ type verifyQuoteOut struct {
 func (d Deps) toolkitVerifyQuote(ctx context.Context, _ *mcp.CallToolRequest, in verifyQuoteIn) (
 	*mcp.CallToolResult, verifyQuoteOut, error,
 ) {
-	doc, err := d.liveDocument(ctx, in.DocID, "")
+	// Scoped to the session, like claim_add and rows_add. Unscoped it answered
+	// yes-or-no about text another session fetched, which is a presence oracle
+	// over a document this caller never read.
+	doc, err := d.liveDocument(ctx, in.DocID, in.SessionID)
 	if err != nil {
 		return nil, verifyQuoteOut{}, err
 	}
@@ -552,6 +733,13 @@ func (d Deps) toolkitClaimAdd(ctx context.Context, _ *mcp.CallToolRequest, in cl
 	if strings.TrimSpace(in.Text) == "" {
 		return nil, claimAddOut{}, fmt.Errorf("text is required: a claim is an assertion, " +
 			"not a quote on its own")
+	}
+	// Checked rather than left to the foreign key. An empty session_id used to
+	// skip liveDocument's ownership check entirely and then fail on the insert
+	// with "FOREIGN KEY constraint failed", which tells a caller nothing about
+	// what it did wrong.
+	if _, err := d.requireSession(ctx, in.SessionID); err != nil {
+		return nil, claimAddOut{}, err
 	}
 	doc, err := d.liveDocument(ctx, in.DocID, in.SessionID)
 	if err != nil {
@@ -660,6 +848,12 @@ type claimOut struct {
 type claimsListOut struct {
 	Claims []claimOut `json:"claims"`
 	Total  int        `json:"total"`
+	// Truncated says the list is shorter than Total, in the result rather than
+	// only by comparing two numbers. research.result carries the same flag and a
+	// note, and for the same reason: silent truncation reads as "that is all
+	// there is".
+	Truncated bool   `json:"truncated,omitempty"`
+	Note      string `json:"note,omitempty"`
 }
 
 func (d Deps) toolkitClaimsList(ctx context.Context, _ *mcp.CallToolRequest, in claimsListIn) (
@@ -667,13 +861,17 @@ func (d Deps) toolkitClaimsList(ctx context.Context, _ *mcp.CallToolRequest, in 
 ) {
 	var out claimsListOut
 	err := d.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
-		claims, err := q.ListClaims(ctx, in.SessionID, 0)
+		claims, err := q.ListClaims(ctx, in.SessionID, AllClaims)
 		if err != nil {
 			return err
 		}
 		out.Total = len(claims)
 		for i, c := range claims {
 			if i >= MaxClaimsReturned {
+				out.Truncated = true
+				out.Note = fmt.Sprintf("showing the first %d of %d claims, oldest "+
+					"first; mole.citations covers every source.",
+					MaxClaimsReturned, out.Total)
 				break
 			}
 			out.Claims = append(out.Claims, claimOut{
@@ -701,7 +899,7 @@ func (d Deps) toolkitCitations(ctx context.Context, _ *mcp.CallToolRequest, in c
 ) {
 	var out citationsOut
 	err := d.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
-		claims, err := q.ListClaims(ctx, in.SessionID, 0)
+		claims, err := q.ListClaims(ctx, in.SessionID, AllClaims)
 		if err != nil {
 			return err
 		}
@@ -809,6 +1007,9 @@ type aggregateOut struct {
 func (d Deps) toolkitAggregate(ctx context.Context, _ *mcp.CallToolRequest, in aggregateIn) (
 	*mcp.CallToolResult, aggregateOut, error,
 ) {
+	if _, err := d.requireSession(ctx, in.SessionID); err != nil {
+		return nil, aggregateOut{}, err
+	}
 	if d.Connectors == nil || len(d.Connectors.List()) == 0 {
 		return nil, aggregateOut{}, fmt.Errorf(
 			"no local data is registered (mole connect add <name> <path>)")
@@ -836,11 +1037,18 @@ func (d Deps) toolkitAggregate(ctx context.Context, _ *mcp.CallToolRequest, in a
 	// successes only would let them conclude the questions that worked are all it
 	// tried.
 	crossing := res.Crossing(in.SessionID, toolkitLeadID, in.Connector)
-	if err := d.Store.WithTx(ctx, func(ctx context.Context, tx store.Tx) error {
+	if err := d.Store.WithTx(context.WithoutCancel(ctx), func(ctx context.Context, tx store.Tx) error {
 		return tx.InsertCrossings(ctx, []core.Crossing{crossing})
 	}); err != nil {
+		// Fails closed. This used to log and return the aggregate anyway, which
+		// made §12.1's promise — the user can audit exactly what left their
+		// machine — conditional on a write nobody checked. An answer that was not
+		// recorded is not an answer this tool may give.
 		d.Log.ErrorContext(ctx, "the audit trail was not written; §12.1's record of "+
 			"what left this machine is incomplete", "err", err)
+		return nil, aggregateOut{}, fmt.Errorf(
+			"the result was withheld: mole could not record this query in the audit "+
+				"trail, and §12 does not allow an unrecorded answer: %w", err)
 	}
 	if res.Err != nil {
 		return nil, aggregateOut{}, res.Err
@@ -891,6 +1099,15 @@ type pairsOut struct {
 	Note  string    `json:"note"`
 }
 
+// AllClaims is the limit to pass when every claim of a session is wanted.
+//
+// store.ListClaims treats a non-positive limit as 500, which is a sensible
+// default for a display and a wrong one here: with 600 claims recorded,
+// edge_add refused a pair id for claim 550 as "not in session" — a claim mole
+// itself had stored minutes earlier. The eval reads whole sessions with the same
+// magnitude.
+const AllClaims = 100_000
+
 // MaxPairsReturned bounds one retrieval. Pairs go straight into an agent's context
 // window, and a session with two hundred claims has thousands of candidate pairs.
 const MaxPairsReturned = 50
@@ -901,7 +1118,7 @@ func (d Deps) toolkitPairs(ctx context.Context, _ *mcp.CallToolRequest, in pairs
 	var claims []*core.Claim
 	if err := d.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
 		var err error
-		claims, err = q.ListClaims(ctx, in.SessionID, 0)
+		claims, err = q.ListClaims(ctx, in.SessionID, AllClaims)
 		return err
 	}); err != nil {
 		return nil, pairsOut{}, err
@@ -958,6 +1175,9 @@ type edgeAddOut struct {
 func (d Deps) toolkitEdgeAdd(ctx context.Context, _ *mcp.CallToolRequest, in edgeAddIn) (
 	*mcp.CallToolResult, edgeAddOut, error,
 ) {
+	if _, err := d.requireSession(ctx, in.SessionID); err != nil {
+		return nil, edgeAddOut{}, err
+	}
 	rel := verifier.Relation(strings.ToLower(strings.TrimSpace(in.Relation))).Normalize()
 	if !rel.Valid() {
 		return nil, edgeAddOut{}, fmt.Errorf(
@@ -1016,7 +1236,7 @@ func (d Deps) claimsInSession(ctx context.Context, sessionID string, ids ...stri
 		want[id] = true
 	}
 	return d.Store.Read(ctx, func(ctx context.Context, q store.Queries) error {
-		claims, err := q.ListClaims(ctx, sessionID, 0)
+		claims, err := q.ListClaims(ctx, sessionID, AllClaims)
 		if err != nil {
 			return err
 		}
@@ -1078,6 +1298,9 @@ const MaxRowsPerCall = 200
 func (d Deps) toolkitRowsAdd(ctx context.Context, _ *mcp.CallToolRequest, in rowsAddIn) (
 	*mcp.CallToolResult, rowsAddOut, error,
 ) {
+	if _, err := d.requireSession(ctx, in.SessionID); err != nil {
+		return nil, rowsAddOut{}, err
+	}
 	schema, err := d.sessionSchema(ctx, in.SessionID)
 	if err != nil {
 		return nil, rowsAddOut{}, err

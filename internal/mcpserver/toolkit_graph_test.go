@@ -207,6 +207,12 @@ func TestAClaimCannotContradictItself(t *testing.T) {
 	if !res.IsError {
 		t.Fatal("a claim was recorded as contradicting itself")
 	}
+	// The message is what the tool's own check adds over the store's: without it
+	// the refusal is "sqlite: edge 1/1 is a self-edge on clm_...", which tells a
+	// model nothing it can act on. Asserting it keeps the tool layer falsifiable.
+	if !strings.Contains(errText(res), "cannot relate to itself") {
+		t.Errorf("the refusal reads like a database error: %s", errText(res))
+	}
 }
 
 // TestTheMeasurementIsInTheToolDescription.

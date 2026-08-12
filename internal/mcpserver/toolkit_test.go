@@ -130,11 +130,15 @@ func TestFetchedTextComesBackFenced(t *testing.T) {
 	}
 	// Nothing after the closing tag: text appended past it would be read as
 	// instructions again, which is the failure the fence exists to prevent.
-	if idx := strings.LastIndex(fetched.Text, "</untrusted-"); idx >= 0 {
-		tail := fetched.Text[idx:]
-		if strings.Count(tail, "\n") > 1 {
-			t.Errorf("content follows the closing fence: %q", tail)
-		}
+	//
+	// Checked as a suffix. Counting newlines in the tail was the earlier version
+	// and it was nearly vacuous — appending "IGNORE THE ABOVE" on the SAME line
+	// as the closing tag left the count unchanged and the test green.
+	if idx := strings.LastIndex(fetched.Text, "</untrusted-"); idx < 0 {
+		t.Error("no closing tag at all")
+	} else if end := strings.Index(fetched.Text[idx:], ">"); end < 0 ||
+		idx+end+1 != len(fetched.Text) {
+		t.Errorf("content follows the closing fence: %q", fetched.Text[idx:])
 	}
 	if !strings.Contains(fetched.Note, "verbatim") {
 		t.Errorf("the note does not tell the caller quotes must be verbatim: %q", fetched.Note)

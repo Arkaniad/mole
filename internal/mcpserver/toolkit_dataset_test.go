@@ -120,9 +120,13 @@ func TestAQuotedRowIsRecordedWithItsProvenance(t *testing.T) {
 	if rows[0].Source == "" || rows[0].Quote == "" {
 		t.Errorf("a row landed without provenance: %+v", rows[0])
 	}
-	if rows[0].QuoteOffset <= 0 {
-		t.Errorf("offset = %d; an auditor re-fetching the page has nowhere to look",
-			rows[0].QuoteOffset)
+	// Locates the quote, rather than merely being non-zero: a constant 1 passed
+	// the earlier version of this assertion.
+	text := storedText(t, r, doc)
+	off := int(rows[0].QuoteOffset)
+	if end := off + len(rows[0].Quote); off < 0 || end > len(text) ||
+		!strings.EqualFold(text[off:end], rows[0].Quote) {
+		t.Errorf("offset %d does not point at the row's quote %q", off, rows[0].Quote)
 	}
 }
 
@@ -256,10 +260,14 @@ func TestAnInvalidSchemaIsRefusedBeforeTheSessionExists(t *testing.T) {
 func TestTheDatasetMergesRowsFromDifferentDocuments(t *testing.T) {
 	r := connectToolkitStubFetch(t, testPage)
 	sess, doc := openDataset(t, r)
+	// A SECOND document, because "from different documents" is the name of the
+	// test and the earlier version put both rows against one — so nothing in the
+	// phase merged across sources, which is the reason mole.dataset exists.
+	doc2 := fetchAnother(t, r, sess, "https://example.org/second-review")
 
 	addRow(t, r, sess, doc, map[string]string{"trial": "Pooled analysis", "participants": "599"},
 		"Across ten randomised trials enrolling 599 participants")
-	addRow(t, r, sess, doc, map[string]string{"trial": "pooled analysis", "finding": "glucose fell"},
+	addRow(t, r, sess, doc2, map[string]string{"trial": "pooled analysis", "finding": "glucose fell"},
 		"reduced fasting glucose in adults with prediabetes")
 
 	var out struct {
@@ -267,7 +275,8 @@ func TestTheDatasetMergesRowsFromDifferentDocuments(t *testing.T) {
 		Extracted int    `json:"extracted"`
 		Merged    int    `json:"merged"`
 		Rows      []struct {
-			Members int `json:"members"`
+			Members int      `json:"members"`
+			Sources []string `json:"sources"`
 		} `json:"rows"`
 	}
 	res := r.call(t, "mole.dataset", map[string]any{"session_id": sess}, &out)
@@ -283,6 +292,9 @@ func TestTheDatasetMergesRowsFromDifferentDocuments(t *testing.T) {
 	if out.Rows[0].Members != 2 {
 		t.Errorf("members = %d, want both rows counted", out.Rows[0].Members)
 	}
+	if len(out.Rows[0].Sources) != 2 {
+		t.Errorf("sources = %v, want the row credited to both documents", out.Rows[0].Sources)
+	}
 	if !strings.Contains(out.Table, "participants") {
 		t.Errorf("the table does not render the schema's columns:\n%s", out.Table)
 	}
@@ -297,10 +309,11 @@ func TestTheDatasetMergesRowsFromDifferentDocuments(t *testing.T) {
 func TestSourcesDisagreeingIsReportedRatherThanResolved(t *testing.T) {
 	r := connectToolkitStubFetch(t, testPage)
 	sess, doc := openDataset(t, r)
+	doc2 := fetchAnother(t, r, sess, "https://example.org/second-review")
 
 	addRow(t, r, sess, doc, map[string]string{"trial": "Pooled analysis", "participants": "599"},
 		"Across ten randomised trials enrolling 599 participants")
-	addRow(t, r, sess, doc, map[string]string{"trial": "Pooled analysis", "participants": "10"},
+	addRow(t, r, sess, doc2, map[string]string{"trial": "Pooled analysis", "participants": "10"},
 		"Two trials reported a reduction of roughly 0.2 percentage points")
 
 	var out struct {
@@ -331,9 +344,14 @@ func TestSourcesDisagreeingIsReportedRatherThanResolved(t *testing.T) {
 // TestAToolkitDatasetIsScoredByEval.
 //
 // The point of the slice, as with slice 4's edges: an agent-built dataset has to
-// land where mole's own measurements read it, or the mode is unmeasurable. Row
-// integrity is the metric that matters here — it counts rows without a verbatim
-// quote, and a non-zero value is a hard regression rather than a statistic.
+// land where mole's own measurements read it, or the mode is unmeasurable.
+//
+// What this asserts and what it does not. It asserts eval SEES the session — the
+// metric is Measured rather than Blocked, which is the thing that breaks if rows
+// land somewhere eval does not read. It does NOT prove the quotes are real:
+// rowIntegrity counts rows whose quote and source are non-empty, and a row
+// written straight to the store with an invented quote scores 100%. The quote
+// rule is tested where it is enforced, in TestARowIsRefusedWhenItsQuoteIsNotInTheDocument.
 func TestAToolkitDatasetIsScoredByEval(t *testing.T) {
 	r := connectToolkitStubFetch(t, testPage)
 	sess, doc := openDataset(t, r)
@@ -392,4 +410,19 @@ func TestMoleDatasetRendersAToolkitSession(t *testing.T) {
 			t.Errorf("the exported CSV has no %q:\n%s", want, csv)
 		}
 	}
+}
+
+// fetchAnother stores a second copy of the fixture under a different URL, so a
+// test can have two sources without a second fixture. The stub fetcher answers
+// any URL with the same body, which is what makes this cheap.
+func fetchAnother(t *testing.T, r *rig, sess, url string) string {
+	t.Helper()
+	var fetched struct {
+		DocID string `json:"doc_id"`
+	}
+	res := r.call(t, "mole.fetch", map[string]any{"session_id": sess, "url": url}, &fetched)
+	if res.IsError {
+		t.Fatalf("second fetch refused: %s", errText(res))
+	}
+	return fetched.DocID
 }

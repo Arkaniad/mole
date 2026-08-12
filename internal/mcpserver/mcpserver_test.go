@@ -51,6 +51,47 @@ func (emptySearch) Search(context.Context, string, search.Options) (*search.Resp
 	return &search.Response{}, nil
 }
 
+// loudSearch answers with more results than were asked for, each carrying a long
+// provider-supplied title and snippet — which is what an untrusted provider
+// relaying an untrusted page looks like.
+type loudSearch struct {
+	asked  search.Options
+	cost   core.Cost
+	titleN int
+}
+
+func (l *loudSearch) Kind() search.Kind { return search.KindTavily }
+
+func (l *loudSearch) Search(_ context.Context, q string, o search.Options) (*search.Response, error) {
+	l.asked = o
+	n := l.titleN
+	if n == 0 {
+		n = 4000
+	}
+	var results []search.Result
+	for i := 0; i < 25; i++ {
+		results = append(results, search.Result{
+			Title:   strings.Repeat("T", n),
+			URL:     fmt.Sprintf("https://example.org/%d", i),
+			Snippet: strings.Repeat("S", n),
+		})
+	}
+	return &search.Response{Query: q, Results: results, Cost: l.cost}, nil
+}
+
+// connectToolkitSearch is the toolkit with a search provider that answers.
+func connectToolkitSearch(t *testing.T, prov *loudSearch) *rig {
+	t.Helper()
+	r := connectToolkitActor(t, &actors.WebActor{
+		LLM:     idlePlanner{},
+		Search:  prov,
+		Fetch:   stubFetcher{body: testPage},
+		Extract: extract.New(),
+	})
+	r.pageURL = "https://example.org/review"
+	return r
+}
+
 // --- harness ----------------------------------------------------------------
 
 type rig struct {
@@ -191,6 +232,31 @@ type registryOf []connector.Connector
 
 func (r registryOf) List() []connector.Connector { return r }
 
+// redirectFetcher answers as if the request had been redirected elsewhere, which
+// is what the real fetcher reports in FinalURL after following one.
+type redirectFetcher struct{ body, finalURL string }
+
+func (f redirectFetcher) Fetch(_ context.Context, _ string) (*fetch.Result, error) {
+	return &fetch.Result{
+		Content: []byte(f.body), ContentType: "text/html",
+		Outcome: fetch.OutcomeOK, StatusCode: 200, FinalURL: f.finalURL,
+	}, nil
+}
+
+// connectToolkitRedirect is connectToolkitStubFetch where every fetch lands
+// somewhere other than the URL that was asked for.
+func connectToolkitRedirect(t *testing.T, body string) *rig {
+	t.Helper()
+	r := connectToolkitActor(t, &actors.WebActor{
+		LLM:     idlePlanner{},
+		Search:  emptySearch{},
+		Fetch:   redirectFetcher{body: body, finalURL: "https://elsewhere.example/served"},
+		Extract: extract.New(),
+	})
+	r.pageURL = "https://example.org/review"
+	return r
+}
+
 type stubFetcher struct{ body string }
 
 func (s stubFetcher) Fetch(_ context.Context, rawURL string) (*fetch.Result, error) {
@@ -273,9 +339,16 @@ func connectFull(t *testing.T, maxUSD, maxTokens int64, answerer llm.Provider) *
 // real fetcher and extractor, so those tools run the path they run in production.
 func connectToolkitActor(t *testing.T, actor *actors.WebActor) *rig {
 	t.Helper()
+	return connectToolkitCapped(t, 0, 0, actor)
+}
+
+// connectToolkitCapped is connectToolkitActor with the daemon's per-session
+// ceilings set, for the tests that check a toolkit session cannot exceed them.
+func connectToolkitCapped(t *testing.T, maxUSD, maxTokens int64, actor *actors.WebActor) *rig {
+	t.Helper()
 	toolkitOn = true
 	t.Cleanup(func() { toolkitOn = false })
-	return connectActor(t, 0, 0, nil, actor)
+	return connectActor(t, maxUSD, maxTokens, nil, actor)
 }
 
 // toolkitOn gates registration for the test rig. A package-level flag rather than
