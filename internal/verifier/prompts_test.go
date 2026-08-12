@@ -249,14 +249,28 @@ func TestAnUnusableResponseLeavesEveryPairUnjudged(t *testing.T) {
 
 // TestAnEnormousClaimCannotSetTheBatchSize. A page that produced a 40kB "claim"
 // would otherwise decide the prompt size of every batch it lands in.
+// Measured as GROWTH over a normal pair rather than as a total, because a total
+// also counts the fixed instructions — so sharpening the adjudication prompt broke
+// this test while the clamping it is named after still worked perfectly. An
+// assertion that fails when an unrelated part of the prompt gets longer is
+// measuring the wrong thing.
 func TestAnEnormousClaimCannotSetTheBatchSize(t *testing.T) {
-	batch := []Pair{{
+	normal, _ := adjudicateUserPrompt([]Pair{{
+		A: &core.Claim{ID: "c_a", Text: "a normal claim"},
+		B: &core.Claim{ID: "c_b", Text: "a normal claim"},
+	}})
+	huge, _ := adjudicateUserPrompt([]Pair{{
 		A: &core.Claim{ID: "c_a", Text: strings.Repeat("filler ", 20_000)},
 		B: &core.Claim{ID: "c_b", Text: "a normal claim"},
-	}}
-	prompt, _ := adjudicateUserPrompt(batch)
-	if len(prompt) > 4000 {
-		t.Errorf("prompt is %d bytes; one oversized claim was not clamped", len(prompt))
+	}})
+
+	// 140kB of claim may add at most a clamp's worth of prompt.
+	if growth := len(huge) - len(normal); growth > 2_000 {
+		t.Errorf("a 140kB claim grew the prompt by %d bytes; it was not clamped", growth)
+	}
+	if len(huge) < len(normal) {
+		t.Fatalf("huge=%d normal=%d; the fixture is not exercising anything",
+			len(huge), len(normal))
 	}
 }
 

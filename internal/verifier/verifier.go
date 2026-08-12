@@ -47,6 +47,11 @@ type Verifier struct {
 	// default.
 	BatchSize int
 
+	// ConfirmEdges re-judges every verdict that would build an edge and keeps only
+	// the ones a second call agrees with. See confirm() for the measurement behind
+	// it: 51% precision becomes 70%, at 53 edges where one judgement kept 105.
+	ConfirmEdges bool
+
 	// StalenessGap is how far apart two publication dates must be for a
 	// contradiction to read as staleness (§11.2). Zero takes the default.
 	StalenessGap time.Duration
@@ -103,6 +108,11 @@ type Result struct {
 	// PairsDecidedFree were settled by a mechanical rule, with no model call.
 	PairsDecidedFree int
 	PairsJudged      int
+	// PairsConfirmed and PairsUnconfirmed count the second judgement's outcome when
+	// ConfirmEdges is on. Unconfirmed pairs kept their claims and lost their edge.
+	PairsConfirmed   int
+	PairsUnconfirmed int
+
 	// PairsUnjudged is pairs a batch did not return a verdict for, plus pairs
 	// skipped because the allowance ran out.
 	PairsUnjudged int
@@ -208,6 +218,7 @@ func (v *Verifier) Run(ctx context.Context, sessionID string) (*Result, error) {
 	consumed := 0
 	for _, batch := range Batches(pairs, v.BatchSize) {
 		judged, unjudged, stop := v.adjudicate(ctx, sessionID, batch, res)
+		judged = v.confirm(ctx, sessionID, judged, res)
 		verdicts = append(verdicts, judged...)
 		res.PairsUnjudged += len(unjudged)
 		consumed += len(batch)
@@ -327,6 +338,94 @@ func (v *Verifier) followUpsPerRoot(ctx context.Context, sessionID string) (map[
 // journals is settled by looking at journals — but taking a parameter it ignores
 // would only look like it already did.
 func followUpActor() core.ActorType { return core.ActorWeb }
+
+// confirm re-judges the verdicts that would build an edge, and keeps only the ones
+// the model stands behind twice.
+//
+// Measured, on 149 hand-labelled pairs from §14.2's contradiction corpus: a single
+// judgement calls "contradicts" correctly 51% of the time. Half the contradiction
+// edges in a graph were wrong, and 50 of the 51 graph-changing errors were the same
+// mistake — "contradicts" on a pair that is merely related. Requiring a second,
+// agreeing judgement raises precision to 70%.
+//
+// It is a trade, not a free win: it keeps 53 edges where one judgement kept 105, and
+// F1 barely moves. The trade is taken because the two errors do not cost the same. A
+// false contradiction penalises the confidence of true claims, prints "sources
+// disagree" in a report, and proposes a follow-up lead — it spends money researching
+// a disagreement that does not exist. A missed one is a silence.
+//
+// Only the positives are re-judged, so the cost is the share of pairs that produced
+// an edge — 14% more adjudication calls on the corpus, against a verification stage
+// that is already a rounding error beside fetching and mining.
+//
+// A pair that cannot be re-judged (allowance gone, provider failing) KEEPS its first
+// verdict rather than being dropped. Degrading to "no edges at all" because the
+// second opinion was unaffordable would be worse than the single-judgement graph
+// this replaces.
+func (v *Verifier) confirm(ctx context.Context, sessionID string, judged []Judged, res *Result) []Judged {
+	if !v.ConfirmEdges || len(judged) == 0 {
+		return judged
+	}
+	positives := positivesOf(judged)
+	if len(positives) == 0 {
+		return judged
+	}
+
+	second := map[string]Relation{}
+	for _, batch := range Batches(positives, v.BatchSize) {
+		again, _, stop := v.adjudicate(ctx, sessionID, batch, res)
+		for _, j := range again {
+			second[j.Pair.Key()] = j.Relation.Normalize()
+		}
+		if stop != nil {
+			break
+		}
+	}
+	return v.applyConfirmations(judged, second, res)
+}
+
+// positivesOf is the subset worth a second call: the verdicts that build an edge.
+//
+// Re-confirming "neither" would multiply the cost of verification for nothing —
+// it is 86% of pairs and builds no edge either way.
+func positivesOf(judged []Judged) []Pair {
+	var out []Pair
+	for _, j := range judged {
+		if j.Relation.EffectOf() != EffectInert {
+			out = append(out, j.Pair)
+		}
+	}
+	return out
+}
+
+// applyConfirmations is the rule, separated from the calls so it can be tested
+// without a provider.
+func (v *Verifier) applyConfirmations(judged []Judged, second map[string]Relation, res *Result) []Judged {
+	out := make([]Judged, 0, len(judged))
+	for _, j := range judged {
+		if j.Relation.EffectOf() == EffectInert {
+			out = append(out, j)
+			continue
+		}
+		got, asked := second[j.Pair.Key()]
+		switch {
+		case !asked:
+			// Never re-judged. Keep the first verdict; see the doc comment.
+			out = append(out, j)
+		case got == j.Relation.Normalize():
+			res.PairsConfirmed++
+			out = append(out, j)
+		default:
+			// The second look disagreed. The edge is not written, and the pair
+			// falls back to the relation that changes nothing.
+			res.PairsUnconfirmed++
+			j.Relation = RelNeither
+			j.Rationale = "withheld: a second judgement did not agree (" + string(got) + ")"
+			out = append(out, j)
+		}
+	}
+	return out
+}
 
 // adjudicate reserves, calls, settles, and parses one batch.
 //

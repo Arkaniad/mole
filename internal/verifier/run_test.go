@@ -1176,3 +1176,74 @@ func TestTheVerifierModelOverrideReachesEveryCall(t *testing.T) {
 		}
 	}
 }
+
+// TestTheConfirmPassIsWiredIntoTheRun.
+//
+// The rule is unit-tested in confirm_test.go; this pins the WIRING, and it exists
+// because deleting the confirm call from Run left every one of those unit tests
+// green. A rule nothing calls is not a rule.
+//
+// The scripted model says "contradicts" on the first pass and "neither" on the
+// second — which is exactly the shape the measurement found, since a single
+// judgement is right about half the time.
+func TestTheConfirmPassIsWiredIntoTheRun(t *testing.T) {
+	claims := []core.Claim{
+		{ID: "c_a", Text: "The peak comes in 2084.", Source: "https://a.example"},
+		{ID: "c_b", Text: "The peak comes in 2100.", Source: "https://b.example"},
+	}
+	var second bool
+	r := newRig(t, 200_000, claims, func(call int, prompt string) (string, error) {
+		rel := "contradicts"
+		if call > 0 {
+			rel, second = "neither", true
+		}
+		return `{"verdicts":[{"pair":1,"relation":"` + rel + `","confidence":0.9,"why":"x"}]}`, nil
+	})
+	r.v.ConfirmEdges = true
+
+	res, err := r.v.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !second {
+		t.Fatal("no second adjudication call was made; the confirm pass is not wired in")
+	}
+	for _, e := range r.edges(t) {
+		if e.Kind == core.EdgeContradicts {
+			t.Errorf("an unconfirmed contradiction was written to the graph: %+v", e)
+		}
+	}
+	if res.PairsUnconfirmed != 1 {
+		t.Errorf("PairsUnconfirmed = %d, want 1", res.PairsUnconfirmed)
+	}
+}
+
+// TestAConfirmedContradictionIsStillWritten, so the pass withholds rather than
+// suppresses.
+func TestAConfirmedContradictionIsStillWritten(t *testing.T) {
+	claims := []core.Claim{
+		{ID: "c_a", Text: "The peak comes in 2084.", Source: "https://a.example"},
+		{ID: "c_b", Text: "The peak comes in 2100.", Source: "https://b.example"},
+	}
+	r := newRig(t, 200_000, claims, func(int, string) (string, error) {
+		return `{"verdicts":[{"pair":1,"relation":"contradicts","confidence":0.9,"why":"x"}]}`, nil
+	})
+	r.v.ConfirmEdges = true
+
+	res, err := r.v.Run(context.Background(), r.sess.ID)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var found bool
+	for _, e := range r.edges(t) {
+		if e.Kind == core.EdgeContradicts {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a contradiction both calls agreed on was not written")
+	}
+	if res.PairsConfirmed != 1 {
+		t.Errorf("PairsConfirmed = %d, want 1", res.PairsConfirmed)
+	}
+}

@@ -112,6 +112,11 @@ type Runner struct {
 	// VerifierBatchSize caps pairs per adjudication call. Zero takes the default.
 	VerifierBatchSize int
 
+	// NoConfirmEdges disables the second adjudication pass. Phrased as an opt-OUT
+	// because confirming is the measured default and the flag exists for somebody
+	// who has measured differently on their own data.
+	NoConfirmEdges bool
+
 	// Academic researches scholarly leads (§10.2). Nil disables the actor.
 	//
 	// Nil in two cases, not one: an install with no contact email (§10.3 makes
@@ -347,7 +352,11 @@ func (r *Runner) Run(ctx context.Context, sess *core.Session, spec Spec) (*Resul
 		Log:       r.logger(),
 		Model:     r.VerifierModel,
 		BatchSize: r.VerifierBatchSize,
-		Grounder:  &verifier.Grounder{Fetch: actor.Fetch, Extract: actor.Extract},
+		// On by default: a single judgement gets "contradicts" right 51% of the
+		// time, and a false contradiction spends a research lead as well as
+		// misleading the reader. See verifier.confirm for the measurement.
+		ConfirmEdges: !r.NoConfirmEdges,
+		Grounder:     &verifier.Grounder{Fetch: actor.Fetch, Extract: actor.Extract},
 	}
 
 	owner := r.Owner
