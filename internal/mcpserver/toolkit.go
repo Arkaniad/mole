@@ -9,9 +9,9 @@ package mcpserver
 // guard and rate limits here, quote verification and the aggregation gate in later
 // slices.
 //
-// See docs/proposals/toolkit-mode.md for what this trades away — chiefly that
-// §3.2's prompt-injection fence stops being a guarantee and becomes a convention,
-// because the fetched text lands in a prompt mole does not assemble.
+// What this trades away is in the README's toolkit-mode section, and the chief
+// item is that §3.2's prompt-injection fence stops being a guarantee and becomes a
+// convention: the fetched text lands in a prompt mole does not assemble.
 
 import (
 	"context"

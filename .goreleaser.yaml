@@ -79,7 +79,7 @@ nfpms:
 # out in favour of `homebrew_casks`. Kept deliberately: casks are macOS-only, and a
 # formula serves Linux Homebrew from the same definition. Revisit when GoReleaser
 # removes it, or when macOS binaries are signed and a cask stops meaning a
-# Gatekeeper prompt (see docs/RELEASING.md).
+# Gatekeeper prompt (see RELEASING notes).
 brews:
   - name: mole
     ids: [default]
