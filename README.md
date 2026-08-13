@@ -65,15 +65,23 @@ the paths below.
 **Homebrew** — macOS and Linux:
 
 ```sh
-brew install lajosdeme/tap/mole
+brew install lajosdeme/mole/mole
 ```
+
+Fully qualified, and it has to be: an unrelated `mole` (a macOS cleanup tool) is in
+homebrew/core, so `brew install mole` will always mean that one. Both install a
+binary called `mole`, so only one can be linked at a time.
 
 **Arch Linux** — from the AUR:
 
 ```sh
-yay -S mole-bin      # prebuilt release binaries
-yay -S mole          # build from source
+yay -S mole-research-bin      # prebuilt release binaries
+yay -S mole-research          # build from source
 ```
+
+Not `mole`: that name and `mole-bin` on the AUR belong to an SSH tunnelling tool
+that has held them since 2020. The package installs `/usr/bin/mole` and declares
+the conflict, so pacman will tell you rather than overwrite anything.
 
 **Debian and Ubuntu** — `.deb` from the [releases page](https://github.com/lajosdeme/mole/releases):
 
@@ -290,6 +298,8 @@ metric it cannot compute says so instead of quietly reading zero.
 Bug reports and issues are welcome. Code contributions go through a CLA — see
 [CONTRIBUTING.md](CONTRIBUTING.md), which explains what it is for and what it
 cannot do.
+
+Maintainers: the release runbook is [RELEASING.md](RELEASING.md).
 
 The one practice this project asks for that most do not: **falsify your own fix**.
 After a change, revert the mechanism and confirm the test fails. A test that passes

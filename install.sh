@@ -75,10 +75,22 @@ if [ -z "$VERSION" ]; then
 	# Resolved from the redirect rather than the API, so this works without a
 	# token and does not count against an unauthenticated rate limit that a
 	# shared CI address will already have spent.
-	VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+	resolved=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
 		"https://github.com/$REPO/releases/latest" 2>/dev/null |
 		sed 's#.*/tag/##')
-	[ -n "$VERSION" ] || die "could not determine the latest version; pass --version=vX.Y.Z"
+	# Validated, not merely non-empty. When there is no release to redirect to —
+	# or the repository is private, which is the case this was written against —
+	# curl reports the URL it was given, sed finds no /tag/ to strip, and VERSION
+	# became the whole URL. The installer then built
+	# ".../download/https://github.com/.../mole_https://...tar.gz" and reported a
+	# download failure, which sends the reader looking in the wrong place.
+	case "$resolved" in
+	v[0-9]*) VERSION="$resolved" ;;
+	*)
+		die "could not determine the latest version of $REPO.
+Is the repository public, and has a release been published? Otherwise pass the
+tag yourself: --version=vX.Y.Z" ;;
+	esac
 fi
 # Tags are published with a leading v; archives are named without one.
 NUM_VERSION="${VERSION#v}"

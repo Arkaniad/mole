@@ -2,7 +2,7 @@
 
 Everything is derived from the tag. `git tag v0.1.0 && git push origin v0.1.0`
 builds every artifact, publishes a **draft** release, updates the Homebrew tap, and
-pushes `mole-bin` to the AUR.
+pushes `mole-research-bin` to the AUR.
 
 The release is a draft on purpose: it is the one artifact that cannot be recalled
 once somebody's installer has cached it, so it gets a human look before it exists.
@@ -18,13 +18,13 @@ git push origin v0.1.0      # CI does the rest
 Four things must exist before the first tag, and three of them cannot be created
 from inside this repository.
 
-### 1. `lajosdeme/homebrew-tap`
+### 1. `lajosdeme/homebrew-mole`
 
 A public GitHub repository with that exact name — Homebrew resolves
-`brew install lajosdeme/tap/mole` to `github.com/lajosdeme/homebrew-tap`. It can be
+`brew install lajosdeme/mole/mole` to `github.com/lajosdeme/homebrew-mole`. It can be
 empty; GoReleaser writes `Formula/mole.rb` into it.
 
-### 2. `HOMEBREW_TAP_TOKEN` secret
+### 2. `HOMEBREW_TAP_GITHUB_TOKEN` secret
 
 A fine-grained PAT with **contents: write** on the tap repository only.
 
@@ -43,13 +43,14 @@ to your account, then:
 cat ~/.ssh/aur   # paste into GitHub → Settings → Secrets → Actions
 ```
 
-The `mole-bin` package is created on first push. The **source** package (`mole`) is
+The `mole-research-bin` package is created on first push. The **source** package
+(`mole-research`) is
 maintained by hand, because a source build has nothing to verify against but the
 tag:
 
 ```sh
 git clone ssh://aur@aur.archlinux.org/mole.git aur-mole
-cp packaging/aur/mole/PKGBUILD aur-mole/
+cp packaging/aur/mole-research/PKGBUILD aur-mole/
 cd aur-mole
 # Update pkgver, then:
 updpkgsums
@@ -84,7 +85,7 @@ letting macOS users discover it themselves.
 | `checksums.txt` | the install script's verification step |
 | `mole_<version>_<arch>.deb` / `.rpm` | Debian, Ubuntu, Fedora |
 | `Formula/mole.rb` in the tap | `brew install` |
-| `mole-bin` PKGBUILD + .SRCINFO on the AUR | `yay -S mole-bin` |
+| `mole-research-bin` PKGBUILD + .SRCINFO on the AUR | `yay -S mole-research-bin` |
 
 Both binaries ship in one archive. `mole-mcp` is useless without the daemon `mole`
 provides, and a user who gets one and not the other sees a confusing failure from

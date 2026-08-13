@@ -1,12 +1,17 @@
 # Maintainer: Lajos Deme <l@deme.ventures>
 #
-# Source package. The binary package (mole-bin) is generated and pushed by
+# Source package. The binary package (mole-research-bin) is generated and pushed by
 # GoReleaser on release with checksums computed from the artifacts themselves;
 # this one is maintained by hand, because a source build has nothing to verify
 # against but the tag.
 #
 # To bump: edit pkgver, run `updpkgsums`, then `makepkg --printsrcinfo > .SRCINFO`.
-pkgname=mole
+pkgname=mole-research
+# The upstream repository is called mole; the package cannot be, because `mole` and
+# `mole-bin` on the AUR are an unrelated SSH tunnelling tool. _repo keeps the two
+# apart — the release tarball extracts to mole-$pkgver, not $pkgname-$pkgver, and
+# building in the wrong directory is the mistake this variable exists to prevent.
+_repo=mole
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Deep-research agent with an enforced budget and verified quotes"
@@ -16,12 +21,12 @@ license=('Apache-2.0')
 depends=()
 makedepends=('go>=1.25')
 provides=('mole')
-conflicts=('mole-bin')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/lajosdeme/mole/archive/refs/tags/v$pkgver.tar.gz")
+conflicts=('mole' 'mole-bin' 'mole-research-bin')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/lajosdeme/$_repo/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 build() {
-  cd "$pkgname-$pkgver"
+  cd "$_repo-$pkgver"
   # CGO off is not a preference: the pure-Go SQLite driver is what makes mole one
   # static binary with no libc to match, which the README promises.
   export CGO_ENABLED=0
@@ -32,14 +37,14 @@ build() {
 }
 
 check() {
-  cd "$pkgname-$pkgver"
+  cd "$_repo-$pkgver"
   # The suite is the reason to trust the binary. A package that skips it ships
   # something nobody verified.
   go test ./...
 }
 
 package() {
-  cd "$pkgname-$pkgver"
+  cd "$_repo-$pkgver"
   install -Dm755 build/mole "$pkgdir/usr/bin/mole"
   install -Dm755 build/mole-mcp "$pkgdir/usr/bin/mole-mcp"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

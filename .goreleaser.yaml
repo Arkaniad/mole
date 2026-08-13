@@ -68,6 +68,10 @@ nfpms:
     license: Apache-2.0
     section: utils
     formats: [deb, rpm]
+    # Version-less file names, so `releases/latest/download/mole_amd64.deb` is a
+    # URL that keeps working. Each release has its own asset namespace, so there
+    # is no collision; `dpkg -i` reports the version it installed.
+    file_name_template: "{{ .PackageName }}_{{ .Arch }}"
     # No dependencies to declare: static binaries.
     contents:
       - src: LICENSE
@@ -80,13 +84,18 @@ nfpms:
 # formula serves Linux Homebrew from the same definition. Revisit when GoReleaser
 # removes it, or when macOS binaries are signed and a cask stops meaning a
 # Gatekeeper prompt (see RELEASING notes).
+#
+# `mole` already exists in homebrew/core — a macOS cleanup tool, unrelated. That
+# is survivable in a tap, since `brew install lajosdeme/mole/mole` is unambiguous,
+# but `brew install mole` will always mean the other one and the two cannot be
+# linked together. The install instructions must therefore stay fully qualified.
 brews:
   - name: mole
     ids: [default]
     repository:
       owner: lajosdeme
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+      name: homebrew-mole
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Formula
     homepage: https://github.com/lajosdeme/mole
     description: Deep-research agent with an enforced budget and verified quotes
@@ -98,8 +107,10 @@ brews:
       bin.install "mole-mcp"
 
 aurs:
-  # mole-bin: the release archive, not a source build. AUR convention is that a
-  # -bin package installs published binaries, and it is what users on Arch
+  # mole-research-bin, not mole-bin: `mole` and `mole-bin` on the AUR are an
+  # unrelated SSH tunnelling tool that has held those names since 2020, and only
+  # its maintainer can push to them. The -bin suffix is AUR convention for a
+  # package that installs published binaries, and it is what users on Arch
   # actually want for a Go program — a source build makes every user compile what
   # CI already compiled.
   #
@@ -107,27 +118,35 @@ aurs:
   # this release and pushes them, which is the only arrangement in which those two
   # files cannot drift from the artifacts they describe. The hand-maintained source
   # package lives in packaging/aur/mole.
-  - name: mole-bin
+  - name: mole-research-bin
     homepage: https://github.com/lajosdeme/mole
     description: Deep-research agent with an enforced budget and verified quotes
     maintainers:
       - Lajos Deme <l@deme.ventures>
     license: Apache-2.0
     private_key: "{{ .Env.AUR_KEY }}"
-    git_url: ssh://aur@aur.archlinux.org/mole-bin.git
+    git_url: ssh://aur@aur.archlinux.org/mole-research-bin.git
+    # Not published on prereleases: an -rc tag that reached the AUR would be
+    # installed by anyone tracking the package.
+    skip_upload: auto
+    # Both this and the unrelated `mole` package install /usr/bin/mole, so the
+    # conflict is real and is declared rather than discovered at install time.
     provides: [mole]
-    conflicts: [mole]
+    conflicts: [mole, mole-bin]
     package: |-
       install -Dm755 "./mole" "${pkgdir}/usr/bin/mole"
       install -Dm755 "./mole-mcp" "${pkgdir}/usr/bin/mole-mcp"
-      install -Dm644 "./LICENSE" "${pkgdir}/usr/share/licenses/mole-bin/LICENSE"
-      install -Dm644 "./NOTICE" "${pkgdir}/usr/share/licenses/mole-bin/NOTICE"
+      install -Dm644 "./LICENSE" "${pkgdir}/usr/share/licenses/mole-research-bin/LICENSE"
+      install -Dm644 "./NOTICE" "${pkgdir}/usr/share/licenses/mole-research-bin/NOTICE"
 
 release:
   github:
     owner: lajosdeme
     name: mole
   draft: true
+  # An -rc or -beta tag is published as a prerelease, which is also what stops the
+  # AUR upload above.
+  prerelease: auto
   # Drafted rather than published: a release is the one artifact that cannot be
   # unpublished once somebody's installer has cached it, so it gets a human look
   # before it exists.
