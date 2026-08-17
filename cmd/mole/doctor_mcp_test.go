@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lajosdeme/mole/internal/testutil"
 )
 
 // `mole doctor`'s M7 checks, which were "informational until their milestone
@@ -22,8 +24,8 @@ import (
 // privateRuntimeDir points defaultSocket() at a directory this test owns.
 func privateRuntimeDir(t *testing.T, mode os.FileMode) string {
 	t.Helper()
-	dir := t.TempDir()
-	// t.TempDir() inherits the umask — 0755 on the machine this was written on —
+	dir := testutil.SocketDir(t)
+	// The temp dir inherits the umask — 0755 on the machine this was written on —
 	// so the mode is always set explicitly rather than assumed.
 	if err := os.Chmod(dir, mode); err != nil {
 		t.Fatal(err)

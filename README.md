@@ -113,7 +113,7 @@ You need a search provider and a model provider. Keys live in
 leak into process listings, and never in `.mcp.json`.
 
 ```bash
-mole config set search.provider tavily          # or: brave
+mole config set search.provider tavily          # or: brave, searxng
 mole config set search.tavily-key tvly-...
 
 mole config set llm.provider anthropic          # or: openai-compatible
@@ -123,6 +123,25 @@ mole config set llm.cheap-model claude-haiku-4-5
 
 mole doctor                                     # verify everything above
 ```
+
+A self-hosted [SearXNG](https://docs.searxng.org) works too, and takes an instance
+address where the others take a key:
+
+```bash
+mole config set search.provider searxng
+mole config set search.searxng-url http://localhost:8080
+mole config set search.searxng-token ...            # only if it is behind a proxy
+```
+
+SearXNG has no accounts of its own, so the token is optional and a local instance
+needs none. If yours is published somewhere and fronted by an authenticating
+proxy, set it — it is sent as `Authorization: Bearer`.
+
+Your instance needs `json` listed under `search.formats` in its `settings.yml` —
+it is not on by default, and without it every query comes back as a web page.
+Searching then costs nothing, which makes a session's whole spend its fetches and
+its model calls. The trade is that SearXNG returns snippets rather than page text,
+so every result costs a fetch — where Tavily's extracted content often skips one.
 
 Any OpenAI-compatible endpoint works — DeepSeek, Ollama, llama.cpp, vLLM, a proxy:
 

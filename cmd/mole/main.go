@@ -451,21 +451,25 @@ func reportConfig(r *checks) {
 		report(true, "config perms", detail)
 	}
 
-	switch {
-	case cfg.Search.Provider == "":
-		report(false, "search provider", "not selected (run: mole config set search.provider brave|tavily)")
-	case cfg.Search.ActiveKey() == "":
-		report(false, "search provider",
-			fmt.Sprintf("%s selected but no key (run: mole config set search.%s-key ...)",
-				cfg.Search.Provider, cfg.Search.Provider))
-	default:
+	if err := cfg.Search.CheckReady(); err != nil {
+		report(false, "search provider", err.Error())
+	} else {
+		// What the provider is reached with differs by provider: a key for the
+		// hosted two, an address for the self-hosted one.
+		detail := "key " + config.Mask(cfg.Search.ActiveKey())
 		note := ""
-		if cfg.Search.Provider == "tavily" {
+		switch cfg.Search.Provider {
+		case "tavily":
 			// Worth surfacing: it changes how many fetches a session makes.
 			note = " — returns page content, skips fetches"
+		case "searxng":
+			detail = cfg.Search.SearxngURL
+			if cfg.Search.SearxngToken != "" {
+				detail += ", token " + config.Mask(cfg.Search.SearxngToken)
+			}
+			note = " — snippets only, and free: every result costs a fetch, no query costs money"
 		}
-		report(true, "search provider",
-			fmt.Sprintf("%s, key %s%s", cfg.Search.Provider, config.Mask(cfg.Search.ActiveKey()), note))
+		report(true, "search provider", fmt.Sprintf("%s, %s%s", cfg.Search.Provider, detail, note))
 	}
 
 	reportLLM(report, cfg)

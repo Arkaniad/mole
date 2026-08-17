@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/lajosdeme/mole/internal/testutil"
 )
 
 // TestStdinEOFDoesNotDiscardTheReplyInFlight.
@@ -74,7 +76,7 @@ func TestStdinEOFDoesNotDiscardTheReplyInFlight(t *testing.T) {
 // tells it, and it is easy to leave out because everything still appears to work
 // until connections accumulate.
 func TestTheDaemonSeesEOFWhenStdinEnds(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.SocketDir(t)
 	path := filepath.Join(dir, "s.sock")
 	ln, err := net.Listen("unix", path)
 	if err != nil {
@@ -149,7 +151,7 @@ func TestBytesAreForwardedUnchanged(t *testing.T) {
 // server would not start". "connect: no such file or directory" does not tell
 // them the daemon is not running.
 func TestAMissingDaemonSaysWhatToDo(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "absent.sock")
+	missing := filepath.Join(testutil.SocketDir(t), "absent.sock")
 	err := run(missing, 200*time.Millisecond)
 	if err == nil {
 		t.Fatal("connecting to a nonexistent socket succeeded")
@@ -163,7 +165,7 @@ func TestAMissingDaemonSaysWhatToDo(t *testing.T) {
 
 	// A socket file with nothing behind it is a different situation and gets a
 	// different answer: the daemon died without cleaning up.
-	stale := filepath.Join(t.TempDir(), "stale.sock")
+	stale := filepath.Join(testutil.SocketDir(t), "stale.sock")
 	ln, err := net.Listen("unix", stale)
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +194,7 @@ func TestAMissingDaemonSaysWhatToDo(t *testing.T) {
 // path production never takes.
 func socketPair(t *testing.T) (client, server net.Conn) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "p.sock")
+	path := filepath.Join(testutil.SocketDir(t), "p.sock")
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)

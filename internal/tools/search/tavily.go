@@ -191,6 +191,16 @@ func (f *domainFilter) allows(rawURL string) bool {
 	if f == nil || len(f.suffixes) == 0 {
 		return true
 	}
+	return f.matches(rawURL)
+}
+
+// matches reports whether rawURL's host is on the list. An empty filter matches
+// nothing, which is what makes it usable for exclusion as well as inclusion:
+// "no domains named" has to mean "exclude nothing", not "exclude everything".
+func (f *domainFilter) matches(rawURL string) bool {
+	if f == nil || len(f.suffixes) == 0 {
+		return false
+	}
 	host := hostOf(rawURL)
 	if host == "" {
 		return false

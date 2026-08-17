@@ -1,11 +1,14 @@
 // Package search turns a question into candidate URLs.
 //
-// Two providers ship: Brave and Tavily. They are not interchangeable in one
-// respect that matters more than price — Tavily returns extracted page content
-// alongside each result, so a result that arrives with usable text skips the
-// fetch entirely. §10.4 lists that as the first thing to try before adding any
-// fetch capability, because it removes latency, failure modes, and rate-limit
-// pressure all at once.
+// Three providers ship: Brave, Tavily, and SearXNG. They are not
+// interchangeable in one respect that matters more than price — Tavily returns
+// extracted page content alongside each result, so a result that arrives with
+// usable text skips the fetch entirely. §10.4 lists that as the first thing to
+// try before adding any fetch capability, because it removes latency, failure
+// modes, and rate-limit pressure all at once.
+//
+// SearXNG is the other end of the same trade: self-hosted, no key, nothing per
+// query, and snippets only — so it costs the most fetches and the least money.
 package search
 
 import (
@@ -25,14 +28,33 @@ import (
 type Kind string
 
 const (
-	KindBrave  Kind = "brave"
-	KindTavily Kind = "tavily"
+	KindBrave   Kind = "brave"
+	KindTavily  Kind = "tavily"
+	KindSearxng Kind = "searxng"
 )
 
-func (k Kind) Valid() bool { return k == KindBrave || k == KindTavily }
+func (k Kind) Valid() bool {
+	switch k {
+	case KindBrave, KindTavily, KindSearxng:
+		return true
+	}
+	return false
+}
 
 // Kinds lists the providers this build supports.
-func Kinds() []Kind { return []Kind{KindBrave, KindTavily} }
+func Kinds() []Kind { return []Kind{KindBrave, KindTavily, KindSearxng} }
+
+// RequiresKey reports whether the provider authenticates with an API key.
+//
+// SearXNG does not: it is the user's own instance, and what it needs instead is
+// the address to reach it at. The distinction is load-bearing at both call
+// sites that gate on credentials before building a provider — treating a
+// missing key as fatal there would make a working configuration unusable.
+func (k Kind) RequiresKey() bool { return k != KindSearxng }
+
+// RequiresBaseURL reports whether the provider has no default endpoint and must
+// be told where to find one.
+func (k Kind) RequiresBaseURL() bool { return k == KindSearxng }
 
 // Result is one search hit.
 type Result struct {
@@ -194,6 +216,11 @@ type Config struct {
 const (
 	DefaultBraveCostMicros  = 5_000 // ~$5 / 1000 queries
 	DefaultTavilyCostMicros = 8_000 // ~$8 / 1000 queries
+	// SearXNG is self-hosted and bills nothing per query. Zero is the honest
+	// price rather than a placeholder: it makes search free to the ledger, so a
+	// session's spend is its fetches and its model calls alone. A user paying
+	// for hosting can still price it with CostPerQueryMicros.
+	DefaultSearxngCostMicros = 0
 )
 
 // New builds the configured provider.
@@ -204,8 +231,11 @@ func New(cfg Config, client *http.Client) (Provider, error) {
 	if !cfg.Provider.Valid() {
 		return nil, fmt.Errorf("search: unknown provider %q (want one of %v)", cfg.Provider, Kinds())
 	}
-	if strings.TrimSpace(cfg.APIKey) == "" {
+	if cfg.Provider.RequiresKey() && strings.TrimSpace(cfg.APIKey) == "" {
 		return nil, fmt.Errorf("search: no API key configured for %s", cfg.Provider)
+	}
+	if cfg.Provider.RequiresBaseURL() && strings.TrimSpace(cfg.BaseURL) == "" {
+		return nil, fmt.Errorf("search: %s has no default endpoint — configure the instance URL", cfg.Provider)
 	}
 	if client == nil {
 		client = &http.Client{}
@@ -219,6 +249,8 @@ func New(cfg Config, client *http.Client) (Provider, error) {
 		return newBrave(cfg, client), nil
 	case KindTavily:
 		return newTavily(cfg, client), nil
+	case KindSearxng:
+		return newSearxng(cfg, client), nil
 	default:
 		return nil, fmt.Errorf("search: unhandled provider %q", cfg.Provider)
 	}

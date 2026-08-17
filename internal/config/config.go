@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -65,26 +66,90 @@ type Config struct {
 }
 
 type SearchConfig struct {
-	// Provider is "brave" or "tavily".
+	// Provider is one of searchProviders.
 	Provider string `json:"provider,omitempty"`
 	// BraveKey and TavilyKey are stored separately so switching providers does
 	// not require re-entering a key you already gave.
 	BraveKey  string `json:"brave_key,omitempty"`
 	TavilyKey string `json:"tavily_key,omitempty"`
+	// SearxngURL is the self-hosted instance to query, e.g.
+	// http://localhost:8080. SearXNG has no default address, so this is what
+	// authenticating is to the other two: without it there is nothing to call.
+	SearxngURL string `json:"searxng_url,omitempty"`
+	// SearxngToken is an optional bearer token, for an instance published
+	// somewhere it can be reached from and put behind an authenticating proxy.
+	// SearXNG itself has no accounts; a token here is the proxy's, not the
+	// search engine's, which is why an empty one is a complete configuration.
+	SearxngToken string `json:"searxng_token,omitempty"`
 	// CostPerQueryMicros overrides the default price for the active provider,
 	// for users on a plan that differs from the published entry tier.
 	CostPerQueryMicros int64 `json:"cost_per_query_micros,omitempty"`
 }
 
-// ActiveKey returns the key for the selected provider.
+// searchProviders are the backends `mole config set search.provider` accepts.
+//
+// A copy of the search package's own list, which stays the authority on what
+// exists. Config does not import it — a settings file has no business pulling
+// in an HTTP client — so a test asserts the two agree rather than trusting them
+// to.
+var searchProviders = []string{"brave", "tavily", "searxng"}
+
+func validSearchProvider(name string) bool {
+	for _, p := range searchProviders {
+		if p == name {
+			return true
+		}
+	}
+	return false
+}
+
+// ActiveKey returns the credential for the selected provider.
+//
+// Empty is not the same as unconfigured here: SearXNG's token is optional, so
+// callers deciding whether something is missing must ask CheckReady rather than
+// compare this against "".
 func (s SearchConfig) ActiveKey() string {
 	switch s.Provider {
 	case "brave":
 		return s.BraveKey
 	case "tavily":
 		return s.TavilyKey
+	case "searxng":
+		return s.SearxngToken
 	}
 	return ""
+}
+
+// ActiveBaseURL returns the endpoint override for the selected provider. Only
+// SearXNG has one; Brave and Tavily are reached at their published addresses.
+func (s SearchConfig) ActiveBaseURL() string {
+	if s.Provider == "searxng" {
+		return s.SearxngURL
+	}
+	return ""
+}
+
+// CheckReady reports why the selected provider cannot be built, or nil.
+//
+// One rule for every caller that gates on search being configured — the CLI
+// before a run, and doctor when reporting. Written twice, the two drift, and
+// the half that drifts is whichever one the user is not looking at.
+func (s SearchConfig) CheckReady() error {
+	switch {
+	case s.Provider == "":
+		return fmt.Errorf("no search provider selected (run: mole config set search.provider %s)",
+			strings.Join(searchProviders, "|"))
+	case !validSearchProvider(s.Provider):
+		return fmt.Errorf("unknown search provider %q (want one of %s)",
+			s.Provider, strings.Join(searchProviders, ", "))
+	case s.Provider == "searxng" && s.SearxngURL == "":
+		return errors.New("searxng selected but no instance URL " +
+			"(run: mole config set search.searxng-url http://localhost:8080)")
+	case s.Provider != "searxng" && s.ActiveKey() == "":
+		return fmt.Errorf("%s selected but no key (run: mole config set search.%s-key ...)",
+			s.Provider, s.Provider)
+	}
+	return nil
 }
 
 type LLMConfig struct {
@@ -209,6 +274,8 @@ func (c *Config) applyEnv() {
 	setIf(&c.Search.Provider, "MOLE_SEARCH_PROVIDER")
 	setIf(&c.Search.BraveKey, "MOLE_BRAVE_API_KEY", "BRAVE_API_KEY")
 	setIf(&c.Search.TavilyKey, "MOLE_TAVILY_API_KEY", "TAVILY_API_KEY")
+	setIf(&c.Search.SearxngURL, "MOLE_SEARXNG_URL", "SEARXNG_URL")
+	setIf(&c.Search.SearxngToken, "MOLE_SEARXNG_TOKEN", "SEARXNG_TOKEN")
 	setIf(&c.LLM.APIKey, "MOLE_LLM_API_KEY", "ANTHROPIC_API_KEY")
 	setIf(&c.LLM.BaseURL, "MOLE_LLM_BASE_URL")
 	setIf(&c.LLM.Model, "MOLE_LLM_MODEL")
@@ -284,12 +351,13 @@ type Field struct {
 func Fields() []Field {
 	return []Field{
 		{
-			Name: "search.provider", Help: "search backend: brave | tavily",
+			Name: "search.provider", Help: "search backend: " + strings.Join(searchProviders, " | "),
 			get: func(c *Config) string { return c.Search.Provider },
 			set: func(c *Config, v string) error {
 				v = strings.ToLower(strings.TrimSpace(v))
-				if v != "brave" && v != "tavily" {
-					return fmt.Errorf("search.provider must be brave or tavily, got %q", v)
+				if !validSearchProvider(v) {
+					return fmt.Errorf("search.provider must be one of %s, got %q",
+						strings.Join(searchProviders, ", "), v)
 				}
 				c.Search.Provider = v
 				return nil
@@ -304,6 +372,36 @@ func Fields() []Field {
 			Name: "search.tavily-key", Secret: true, Help: "Tavily API key (tvly-…)",
 			get: func(c *Config) string { return c.Search.TavilyKey },
 			set: func(c *Config, v string) error { c.Search.TavilyKey = strings.TrimSpace(v); return nil },
+		},
+		{
+			Name: "search.searxng-url", Help: "SearXNG instance base URL, e.g. http://localhost:8080",
+			get: func(c *Config) string { return c.Search.SearxngURL },
+			set: func(c *Config, v string) error {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					c.Search.SearxngURL = ""
+					return nil
+				}
+				// Checked here rather than at the first query: a scheme-less
+				// "localhost:8080" is the likely typo, and it fails at request
+				// time with an error about a missing protocol that says nothing
+				// about which setting produced it.
+				u, err := url.Parse(v)
+				if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+					return fmt.Errorf("search.searxng-url must be an http(s) URL like http://localhost:8080, got %q", v)
+				}
+				c.Search.SearxngURL = strings.TrimSuffix(v, "/")
+				return nil
+			},
+		},
+		{
+			Name: "search.searxng-token", Secret: true,
+			Help: "bearer token for a SearXNG instance behind an authenticating proxy; leave unset for a local one",
+			get:  func(c *Config) string { return c.Search.SearxngToken },
+			set: func(c *Config, v string) error {
+				c.Search.SearxngToken = strings.TrimSpace(v)
+				return nil
+			},
 		},
 		{
 			Name: "llm.provider", Help: "model backend: anthropic | openai-compatible",

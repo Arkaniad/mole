@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/lajosdeme/mole/internal/daemon"
+	"github.com/lajosdeme/mole/internal/testutil"
 )
 
 // `mole doctor`'s socket check, which was informational for two milestones after
@@ -17,7 +18,7 @@ import (
 // as much about the two staying together as about the reporting.
 
 func TestAnExposedSocketDirectoryIsAProblem(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "shared")
+	dir := filepath.Join(testutil.SocketDir(t), "shared")
 	if err := os.MkdirAll(dir, 0o777); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +44,7 @@ func TestAnExposedSocketDirectoryIsAProblem(t *testing.T) {
 // umask is a test that reports the environment rather than the code.
 func privateDir(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	dir := testutil.SocketDir(t)
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

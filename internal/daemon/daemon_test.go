@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/lajosdeme/mole/internal/daemon"
+	"github.com/lajosdeme/mole/internal/testutil"
 )
 
 func echoHandler() daemon.Handler {
@@ -24,7 +25,7 @@ func echoHandler() daemon.Handler {
 func newServer(t *testing.T, h daemon.Handler) *daemon.Server {
 	t.Helper()
 	return &daemon.Server{
-		Socket:        filepath.Join(t.TempDir(), "sub", "mole.sock"),
+		Socket:        filepath.Join(testutil.SocketDir(t), "sub", "mole.sock"),
 		Handler:       h,
 		ShutdownGrace: 5 * time.Second,
 	}
@@ -95,7 +96,7 @@ func TestTheSocketIsNotReachableByOtherUsers(t *testing.T) {
 func TestAStaleSocketIsReplacedAndALiveOneIsNot(t *testing.T) {
 	// A private subdirectory: Listen refuses a directory group or other can
 	// reach, and t.TempDir() is 0755 under the usual umask.
-	dir := filepath.Join(t.TempDir(), "priv")
+	dir := filepath.Join(testutil.SocketDir(t), "priv")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +268,7 @@ func TestListenRejectsAnOverlongPathClearly(t *testing.T) {
 // gap shipped.
 func TestListenRefusesADirectoryOtherUsersCanReach(t *testing.T) {
 	for _, mode := range []os.FileMode{0o755, 0o770, 0o707} {
-		dir := filepath.Join(t.TempDir(), "shared")
+		dir := filepath.Join(testutil.SocketDir(t), "shared")
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -289,7 +290,7 @@ func TestListenRefusesADirectoryOtherUsersCanReach(t *testing.T) {
 	}
 
 	// And a private one is still accepted, or the check is just a refusal.
-	dir := filepath.Join(t.TempDir(), "priv")
+	dir := filepath.Join(testutil.SocketDir(t), "priv")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

@@ -11,7 +11,81 @@ import (
 	"time"
 
 	"github.com/lajosdeme/mole/internal/config"
+	"github.com/lajosdeme/mole/internal/tools/search"
 )
+
+// TestEverySearchProviderIsSettable guards the one duplicated list in the
+// codebase. Config deliberately does not import the search package — a settings
+// file has no business pulling in an HTTP client — so `mole config set
+// search.provider` keeps its own copy of the names, and a provider added to
+// only one of the two would be unreachable from the CLI with no compile error
+// to say so.
+func TestEverySearchProviderIsSettable(t *testing.T) {
+	for _, kind := range search.Kinds() {
+		cfg := &config.Config{}
+		if err := cfg.Set("search.provider", string(kind)); err != nil {
+			t.Errorf("search package ships %q but config rejects it: %v", kind, err)
+		}
+	}
+	if err := (&config.Config{}).Set("search.provider", "google"); err == nil {
+		t.Error("a provider that does not exist was accepted")
+	}
+}
+
+// TestSearxngNeedsAUrlNotAKey: the readiness rule is per-provider, and both
+// halves matter — an instance URL is what SearXNG has instead of a key, so
+// gating it on a key would reject a complete configuration.
+func TestSearxngNeedsAUrlNotAKey(t *testing.T) {
+	cfg := &config.Config{}
+	if err := cfg.Set("search.provider", "searxng"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Search.CheckReady(); err == nil {
+		t.Error("searxng with no instance URL reported ready")
+	}
+
+	if err := cfg.Set("search.searxng-url", "localhost:8080"); err == nil {
+		t.Error("a scheme-less URL was accepted; it fails at request time instead")
+	}
+	if err := cfg.Set("search.searxng-url", "http://localhost:8080/"); err != nil {
+		t.Fatalf("valid URL rejected: %v", err)
+	}
+	if cfg.Search.SearxngURL != "http://localhost:8080" {
+		t.Errorf("url = %q, want the trailing slash trimmed", cfg.Search.SearxngURL)
+	}
+
+	// Ready with no key at all — the whole point.
+	if err := cfg.Search.CheckReady(); err != nil {
+		t.Errorf("searxng with a URL and no key: %v", err)
+	}
+	if cfg.Search.ActiveBaseURL() != "http://localhost:8080" {
+		t.Errorf("ActiveBaseURL = %q", cfg.Search.ActiveBaseURL())
+	}
+
+	// A token is for an instance behind an authenticating proxy, so it travels
+	// as the active credential when set and changes nothing when it is not.
+	if cfg.Search.ActiveKey() != "" {
+		t.Errorf("active key = %q, want empty for an unsecured instance", cfg.Search.ActiveKey())
+	}
+	if err := cfg.Set("search.searxng-token", " proxy-secret "); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Search.ActiveKey() != "proxy-secret" {
+		t.Errorf("active key = %q, want the trimmed token", cfg.Search.ActiveKey())
+	}
+	if err := cfg.Search.CheckReady(); err != nil {
+		t.Errorf("searxng with a URL and a token: %v", err)
+	}
+
+	// The hosted providers keep the opposite rule, and no endpoint of their own.
+	_ = cfg.Set("search.provider", "brave")
+	if err := cfg.Search.CheckReady(); err == nil {
+		t.Error("brave with no key reported ready")
+	}
+	if cfg.Search.ActiveBaseURL() != "" {
+		t.Errorf("brave got a base URL override: %q", cfg.Search.ActiveBaseURL())
+	}
+}
 
 // isolate points config at a temp dir so tests never touch a real one.
 func isolate(t *testing.T) string {
@@ -22,7 +96,9 @@ func isolate(t *testing.T) string {
 	// overrides would leak into assertions about file contents.
 	for _, k := range []string{
 		"MOLE_SEARCH_PROVIDER", "MOLE_BRAVE_API_KEY", "BRAVE_API_KEY",
-		"MOLE_TAVILY_API_KEY", "TAVILY_API_KEY", "MOLE_LLM_API_KEY",
+		"MOLE_TAVILY_API_KEY", "TAVILY_API_KEY",
+		"MOLE_SEARXNG_URL", "SEARXNG_URL",
+		"MOLE_SEARXNG_TOKEN", "SEARXNG_TOKEN", "MOLE_LLM_API_KEY",
 		"ANTHROPIC_API_KEY", "MOLE_LLM_BASE_URL", "MOLE_LLM_MODEL",
 		"MOLE_CONTACT_EMAIL",
 	} {

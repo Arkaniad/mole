@@ -61,6 +61,40 @@ const tavilyFixture = `{
   ]
 }`
 
+const searxngFixture = `{
+  "query": "byte level llm",
+  "number_of_results": 0,
+  "results": [
+    {
+      "url": "https://arxiv.org/abs/2401.13660",
+      "title": "MambaByte: Token-free Selective State Space Model",
+      "content": "We show that MambaByte achieves 1.31 BPB on PG-19.",
+      "publishedDate": "2024-01-24T00:00:00",
+      "engine": "google",
+      "engines": ["google", "duckduckgo"],
+      "score": 2.5,
+      "category": "general"
+    },
+    {
+      "url": "https://example.com/byte-level",
+      "title": "Byte-level models overview",
+      "content": "A survey of tokenizer-free architectures.",
+      "engine": "duckduckgo",
+      "score": 1.1
+    },
+    {
+      "url": "https://spam.example/seo",
+      "title": "Best byte level llm 2024 click here",
+      "content": "",
+      "engine": "google",
+      "score": 0.2
+    },
+    { "title": "no url here", "url": "" }
+  ],
+  "answers": [],
+  "unresponsive_engines": []
+}`
+
 func serve(t *testing.T, status int, body string, capture func(*http.Request)) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -243,6 +277,192 @@ func TestTavilyPrefersRawContent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// SearXNG
+// ---------------------------------------------------------------------------
+
+func newSearxng(t *testing.T, srv *httptest.Server) search.Provider {
+	t.Helper()
+	p, err := search.New(search.Config{
+		Provider: search.KindSearxng, BaseURL: srv.URL, RateLimit: fastLimit(),
+	}, srv.Client())
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	return p
+}
+
+func TestSearxngParsesResults(t *testing.T) {
+	var got *http.Request
+	srv := serve(t, 200, searxngFixture, func(r *http.Request) { got = r.Clone(r.Context()) })
+
+	// No API key anywhere in this call: a self-hosted instance has none, and
+	// requiring one would make a working configuration unusable.
+	resp, err := newSearxng(t, srv).Search(context.Background(), "byte level llm", search.Options{MaxResults: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	if len(resp.Results) != 3 {
+		t.Fatalf("got %d results, want 3 (the empty-URL row is dropped)", len(resp.Results))
+	}
+	r0 := resp.Results[0]
+	if r0.URL != "https://arxiv.org/abs/2401.13660" {
+		t.Errorf("url = %q", r0.URL)
+	}
+	if r0.Rank != 1 {
+		t.Errorf("rank = %d, want 1", r0.Rank)
+	}
+	if r0.Score != 2.5 {
+		t.Errorf("score = %v, want 2.5", r0.Score)
+	}
+	if r0.PublishedAt == nil || r0.PublishedAt.Year() != 2024 {
+		t.Errorf("published = %v, want 2024", r0.PublishedAt)
+	}
+	// An engine that reported no date leaves it nil rather than guessing one.
+	if resp.Results[1].PublishedAt != nil {
+		t.Errorf("missing publishedDate became %v, want nil", resp.Results[1].PublishedAt)
+	}
+
+	// Snippets only, like Brave: every result still costs a fetch.
+	if r0.HasUsableContent() {
+		t.Error("SearXNG result reported usable content")
+	}
+
+	// format=json is the whole reason the response parses; categories is pinned
+	// so an instance tuned for another default still answers with web pages.
+	if f := got.URL.Query().Get("format"); f != "json" {
+		t.Errorf("format = %q, want json", f)
+	}
+	if c := got.URL.Query().Get("categories"); c != "general" {
+		t.Errorf("categories = %q, want general", c)
+	}
+	if got.Header.Get("Authorization") != "" {
+		t.Error("sent an Authorization header to an instance that has no credentials")
+	}
+}
+
+// TestSearxngSendsABearerTokenWhenOneIsConfigured: SearXNG has no accounts of
+// its own, but an instance reachable from anywhere but its own host is normally
+// behind an authenticating proxy. The token is optional, and where it goes
+// matters — a header is redacted in the cassette layer, a query parameter is
+// not.
+func TestSearxngSendsABearerTokenWhenOneIsConfigured(t *testing.T) {
+	var got *http.Request
+	srv := serve(t, 200, searxngFixture, func(r *http.Request) { got = r.Clone(r.Context()) })
+
+	p, err := search.New(search.Config{
+		Provider: search.KindSearxng, BaseURL: srv.URL,
+		APIKey: "proxy-secret", RateLimit: fastLimit(),
+	}, srv.Client())
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if _, err := p.Search(context.Background(), "q", search.Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if h := got.Header.Get("Authorization"); h != "Bearer proxy-secret" {
+		t.Errorf("Authorization = %q", h)
+	}
+	if strings.Contains(got.URL.String(), "proxy-secret") {
+		t.Error("the token appeared in the URL, where header redaction does not reach it")
+	}
+}
+
+// TestSearxngFiltersDomainsClientSide: the query string is passed through to
+// every configured engine verbatim, so a -site: operator would reach engines
+// that do not implement it as literal text to search for. Both options are
+// therefore honoured locally rather than pushed into the query.
+func TestSearxngFiltersDomainsClientSide(t *testing.T) {
+	var got *http.Request
+	srv := serve(t, 200, searxngFixture, func(r *http.Request) { got = r.Clone(r.Context()) })
+
+	resp, err := newSearxng(t, srv).Search(context.Background(), "topic", search.Options{
+		ExcludeDomains: []string{"spam.example"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := got.URL.Query().Get("q"); q != "topic" {
+		t.Errorf("query = %q, want it sent unmodified", q)
+	}
+	if len(resp.Results) != 2 {
+		t.Fatalf("got %d results, want 2 after the exclude filter", len(resp.Results))
+	}
+	for _, r := range resp.Results {
+		if strings.Contains(r.URL, "spam.example") {
+			t.Errorf("excluded domain survived: %s", r.URL)
+		}
+	}
+
+	resp, err = newSearxng(t, srv).Search(context.Background(), "topic", search.Options{
+		IncludeDomains: []string{"arxiv.org"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Results) != 1 || !strings.Contains(resp.Results[0].URL, "arxiv.org") {
+		t.Errorf("include filter kept %d results: %v", len(resp.Results), resp.Results)
+	}
+}
+
+// TestSearxngTruncatesToMaxResults: SearXNG has no count parameter — a page
+// holds whatever the engines returned, merged — so the bound is applied here or
+// not at all.
+func TestSearxngTruncatesToMaxResults(t *testing.T) {
+	srv := serve(t, 200, searxngFixture, nil)
+	resp, err := newSearxng(t, srv).Search(context.Background(), "q", search.Options{MaxResults: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Results) != 2 {
+		t.Errorf("got %d results, want 2", len(resp.Results))
+	}
+}
+
+// TestSearxngSaysWhenJSONIsNotEnabled: json is opt-in in the instance's
+// settings.yml, and an instance without it answers 200 with the ordinary
+// results page. Handing back a page of markup would name the symptom; the error
+// has to name the setting.
+func TestSearxngSaysWhenJSONIsNotEnabled(t *testing.T) {
+	srv := serve(t, 200, `<!DOCTYPE html><html><body>results</body></html>`, nil)
+	_, err := newSearxng(t, srv).Search(context.Background(), "q", search.Options{})
+	if err == nil {
+		t.Fatal("an HTML response was accepted")
+	}
+	if !strings.Contains(err.Error(), "search.formats") {
+		t.Errorf("error = %v, want it to name the setting to change", err)
+	}
+}
+
+// TestSearxngIsFreeByDefault: a self-hosted instance bills nothing per query,
+// so search drops out of the ledger entirely and a session's spend is its
+// fetches and model calls alone.
+func TestSearxngIsFreeByDefault(t *testing.T) {
+	srv := serve(t, 200, searxngFixture, nil)
+	resp, err := newSearxng(t, srv).Search(context.Background(), "q", search.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Cost.USDMicros != 0 {
+		t.Errorf("cost = %d micros, want 0", resp.Cost.USDMicros)
+	}
+
+	// Still priceable, for anyone paying to host it.
+	p, _ := search.New(search.Config{
+		Provider: search.KindSearxng, BaseURL: srv.URL,
+		CostPerQueryMicros: 300, RateLimit: fastLimit(),
+	}, srv.Client())
+	resp, err = p.Search(context.Background(), "q", search.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Cost.USDMicros != 300 {
+		t.Errorf("cost = %d micros, want the configured 300", resp.Cost.USDMicros)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Shared behaviour
 // ---------------------------------------------------------------------------
 
@@ -299,11 +519,32 @@ func TestConfigValidation(t *testing.T) {
 	if _, err := search.New(search.Config{Provider: search.KindBrave, APIKey: "  "}, nil); err == nil {
 		t.Error("whitespace API key accepted")
 	}
+
+	// What a provider needs differs by provider. SearXNG has no key to give and
+	// no default address to fall back on, so the two requirements swap.
+	if _, err := search.New(search.Config{Provider: search.KindSearxng}, nil); err == nil {
+		t.Error("searxng accepted with no instance URL")
+	}
+	if _, err := search.New(search.Config{Provider: search.KindSearxng, BaseURL: "  "}, nil); err == nil {
+		t.Error("searxng accepted a whitespace instance URL")
+	}
+	if _, err := search.New(search.Config{
+		Provider: search.KindSearxng, BaseURL: "http://localhost:8080",
+	}, nil); err != nil {
+		t.Errorf("searxng rejected for want of a key it does not have: %v", err)
+	}
 }
 
 func TestProviderIsSelectable(t *testing.T) {
 	for _, kind := range search.Kinds() {
-		p, err := search.New(search.Config{Provider: kind, APIKey: "k"}, nil)
+		cfg := search.Config{Provider: kind}
+		if kind.RequiresKey() {
+			cfg.APIKey = "k"
+		}
+		if kind.RequiresBaseURL() {
+			cfg.BaseURL = "http://localhost:8080"
+		}
+		p, err := search.New(cfg, nil)
 		if err != nil {
 			t.Fatalf("%s: %v", kind, err)
 		}
