@@ -92,6 +92,19 @@ sudo dpkg -i mole_amd64.deb
 
 An `.rpm` is published for the same platforms.
 
+**Nix** — flakes:
+
+```sh
+nix run github:lajosdeme/mole -- doctor        # try it without installing
+nix profile install github:lajosdeme/mole      # or add it to a profile
+```
+
+The flake exposes `packages.default` (both binaries, tests run at build time),
+`overlays.default`, a dev shell with the Go toolchain and goreleaser, and modules
+for NixOS and home-manager — see [Nix](#nix) below. The attribute is
+`mole-research`, not `mole`, for the same reason the AUR package is: nixpkgs
+already has a `mole`.
+
 **From source** — needs Go 1.25+:
 
 ```sh
@@ -265,6 +278,100 @@ flag adds a surface rather than replacing one:
 mole sessions                # recent sessions and what they cost
 mole trace <session-id>      # per-call cost and timing breakdown
 mole stats --fetch           # why fetches failed, across sessions
+```
+
+---
+
+## Nix
+
+The flake in this repository packages both binaries and the daemon that sits
+between them.
+
+```nix
+{
+  inputs.mole.url = "github:lajosdeme/mole";
+  inputs.mole.inputs.nixpkgs.follows = "nixpkgs";
+}
+```
+
+Outputs: `packages.default` (`mole` and `mole-mcp`, `CGO_ENABLED=0`, the full test
+suite run in the sandbox), `overlays.default` adding `pkgs.mole-research`,
+`apps.mole` / `apps.mole-mcp`, `devShells.default`, `nixosModules.default` and
+`homeModules.default`.
+
+### home-manager
+
+Runs `mole serve` as a user service — systemd on Linux, a launchd agent on Darwin —
+so research keeps running after the editor that started it exits.
+
+```nix
+{ config, ... }:
+{
+  imports = [ inputs.mole.homeModules.default ];
+
+  programs.mole = {
+    enable = true;
+
+    # Non-secret settings, written to ~/.config/mole/config.json.
+    settings = {
+      search = {
+        provider = "searxng";
+        searxng_url = "http://localhost:8888";
+      };
+      llm = {
+        provider = "anthropic";
+        model = "claude-sonnet-5";
+        cheap_model = "claude-haiku-4-5";
+      };
+      contact_email = "you@example.com";
+      max_session_usd = 2000000;        # micro-dollars: a $2.00 ceiling per MCP session
+    };
+
+    # Secrets. Every credential has an environment override, and the environment
+    # wins over the file — so keys reach the daemon without passing through the
+    # Nix store. agenix, sops-nix or a hand-written 0600 file all work.
+    environmentFile = config.age.secrets.mole-env.path;
+  };
+}
+```
+
+That file is `KEY=value` lines:
+
+```
+MOLE_LLM_API_KEY=sk-...
+MOLE_BRAVE_API_KEY=...
+MOLE_SEARXNG_TOKEN=...
+```
+
+Loaded by the service manager into the daemon's own environment — not a command
+line, so nothing appears in `ps`. `programs.mole.settings` is `null` by default,
+which leaves `mole config set` in charge; set it and the file becomes declarative.
+
+Point your MCP client at the shim without hardcoding a store path that changes on
+every update:
+
+```nix
+home.file.".mcp.json".text = builtins.toJSON {
+  mcpServers = config.programs.mole.mcpServers;
+};
+```
+
+### NixOS
+
+Same options under `services.mole`, minus `settings` — a system module has no
+business writing into a home directory. `users` restricts the user service and
+enables lingering for those accounts, so the daemon survives logout:
+
+```nix
+{
+  imports = [ inputs.mole.nixosModules.default ];
+
+  services.mole = {
+    enable = true;
+    users = [ "alice" ];
+    environmentFile = "/run/agenix/mole-env";
+  };
+}
 ```
 
 ---
